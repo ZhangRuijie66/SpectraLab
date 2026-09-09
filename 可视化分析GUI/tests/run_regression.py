@@ -258,6 +258,40 @@ def t_gui_auto_lambda_default():
     assert not w.lifetime_lambda_spin.isEnabled(), "勾选自动后 λ 输入框应禁用"
 
 
+@check("GUI：寿命拟合参数「存为默认值」下次启动生效")
+def t_gui_lifetime_defaults():
+    app, w = _make_gui()
+    if not w.settings.isWritable():
+        raise Skip("QSettings 不可写，注册表被限制")
+    keys = ["defaults/" + k for k, _, _ in w._LIFETIME_DEFAULT_SPECS]
+    keys.append("defaults/lifetime_saved")
+    old = {k: w.settings.value(k, None) for k in keys}
+    try:
+        w.lifetime_method_combo.setCurrentIndex(0)          # MEM（λ 才有意义）
+        w.lifetime_nrates_spin.setValue(123)
+        w.lifetime_kmin_spin.setValue(0.005)
+        w.lifetime_kmax_spin.setValue(50.0)
+        w.lifetime_fixed_taus_edit.setText("3.6, 0.5")
+        w.lifetime_lambda_spin.setValue(0.01)
+        w.lifetime_auto_lambda_check.setChecked(False)
+        assert w._save_lifetime_defaults(), "保存默认值失败"
+        app2, w2 = _make_gui()
+        assert w2.lifetime_nrates_spin.value() == 123, "网格点数未套用默认值"
+        assert abs(w2.lifetime_kmin_spin.value() - 0.005) < 1e-9
+        assert abs(w2.lifetime_kmax_spin.value() - 50.0) < 1e-9
+        assert w2.lifetime_fixed_taus_edit.text() == "3.6, 0.5"
+        assert abs(w2.lifetime_lambda_spin.value() - 0.01) < 1e-9
+        assert not w2.lifetime_auto_lambda_check.isChecked(), "自动拟合 λ 应恢复为不勾选"
+        assert w2.lifetime_lambda_spin.isEnabled(), "MEM + 手动 λ 时 λ 输入框应可用"
+    finally:
+        for k, v in old.items():
+            if v is None:
+                w.settings.remove(k)
+            else:
+                w.settings.setValue(k, v)
+        w.settings.sync()
+
+
 @check("GUI：长文件夹路径缩成短名并保留完整 tooltip")
 def t_gui_short_path():
     app, w = _make_gui()
@@ -679,6 +713,102 @@ def t_spectracle_alignment():
     assert len(a['wl']) == 9, f"缺格行应整行丢弃，实际 {len(a['wl'])} 点"
     assert np.allclose(a['intensity'], 100.0 + (a['wl'] - 400.0)), \
         "波长与强度错位（逐列去 NaN 后按 min_len 截断的老 bug）"
+
+
+@check("全局拟合（共享分布）：能收敛且各数据集自洽（G3）")
+def t_global_fit():
+    import plot_lifetime as pl
+    t, decay, irf = _synth_double_exponential()
+    sets = [{'name': 's0', 'time': t, 'decay': decay, 'irf': irf},
+            {'name': 's1', 'time': t, 'decay': np.maximum(decay * 0.3, 0.0),
+             'irf': irf}]
+    res = pl.fit_global(sets, method='MEM', n_rates=101, verbose=False)
+    assert res['solver_converged'], "全局拟合应报告收敛"
+    # 两个数据集各自 χ²R≈1 → Σχ²R≈2（旧实现会停在 400+）
+    assert res['chi2R_total'] < 6.0, f"Σχ²R={res['chi2R_total']:.3g} 过大"
+    taus = sorted(res['tau_list'])
+    assert len(taus) == 2, f"应恢复 2 个共享分量：{taus}"
+    assert abs(taus[0] - 2.5) / 2.5 < 0.15, f"快分量 {taus[0]:.3f} 偏离真值"
+    assert abs(taus[1] - 8.0) / 8.0 < 0.15, f"慢分量 {taus[1]:.3f} 偏离真值"
+    for e in res['per_dataset']:
+        assert e['chi2R'] < 3.0, f"{e['name']} χ²R={e['chi2R']:.3g} 过大"
+
+
+@check("全局离散拟合：共享 τ、各样品独立幅度（G3）")
+def t_global_discrete():
+    import plot_lifetime as pl
+    t, decay, irf = _synth_double_exponential()
+    sets = [{'name': 's0', 'time': t, 'decay': decay, 'irf': irf},
+            {'name': 's1', 'time': t, 'decay': np.maximum(decay * 0.4, 0.0),
+             'irf': irf}]
+    res = pl.fit_global_discrete(sets, n_comp=2, verbose=False)
+    taus = sorted(res['taus'])
+    assert len(taus) == 2
+    assert abs(taus[0] - 2.5) / 2.5 < 0.2, f"共享快分量 {taus[0]:.3f} 偏离"
+    assert abs(taus[1] - 8.0) / 8.0 < 0.2, f"共享慢分量 {taus[1]:.3f} 偏离"
+    for e in res['per_dataset']:
+        assert e['chi2R'] < 4.0, f"{e['name']} χ²R={e['chi2R']:.3g} 过大"
+        assert abs(sum(e['alpha']) - 1.0) < 1e-6, "各样品占比之和应为 1"
+
+
+@check("3D 扫描：瑞利/拉曼散射带剔除只动散射区（G4）")
+def t_scatter_removal():
+    import plot_3d_scan as p3
+    em = np.arange(300.0, 601.0, 1.0)
+    ex = np.arange(300.0, 401.0, 1.0)
+    EMg, EXg = np.meshgrid(em, ex, indexing='ij')
+    fluo = 1000 * np.exp(-0.5 * ((EMg - 450) / 40.0) ** 2)
+    ray = 5000 * np.exp(-0.5 * ((EMg - EXg) / 2.0) ** 2)
+    ram_c = 1.0 / (1.0 / EXg - 3350e-7)
+    ram = 800 * np.exp(-0.5 * ((EMg - ram_c) / 4.0) ** 2)
+    data = {'label': 'synth', 'ex_wavelengths': ex, 'em_wavelengths': em,
+            'intensity': fluo + ray + ram + 5.0}
+    mask, n_ray, n_ram = p3._scatter_mask(em, ex)
+    assert 0 < mask.mean() < 0.3, f"散射掩膜覆盖 {mask.mean():.1%}，不合理"
+    kw = dict(verbose=False, notch_comb=False, spike_window=0, sigma_em=0,
+              sigma_ex=0, smooth_factor=1)
+    z0 = p3.prepare_grid(data, remove_scatter=False, **kw)['Z_orig']
+    z1 = p3.prepare_grid(data, remove_scatter=True, **kw)['Z_orig']
+    assert z1[mask].mean() < 0.6 * z0[mask].mean(), "散射带没有被压下去"
+    assert np.max(np.abs(z1[~mask] - z0[~mask])) < 1e-6, \
+        "非散射区被改动了（不应该）"
+    # 内滤校正
+    corr, fac = p3.inner_filter_correction(data, np.full(len(ex), 0.2),
+                                           np.full(len(em), 0.1))
+    assert abs(fac.mean() - 10 ** 0.15) < 1e-6, "内滤校正因子应为 10^((Aex+Aem)/2)"
+    assert corr.shape == data['intensity'].shape
+
+
+@check("寿命：跨样品汇总图与 PDF 报告能落盘（G5/G6）")
+def t_summary_and_pdf():
+    import plot_lifetime as pl
+    import tempfile
+    t, decay, irf = _synth_double_exponential()
+    results = []
+    for i in range(3):
+        f = pl.MEMFitter(verbose=False, name=f's{i}')
+        f.load(t, np.maximum(decay * (1.0 - 0.2 * i), 0.0), irf)
+        f.preprocess()
+        f.fit(method='SESM', n_rates=101)
+        f.postprocess()
+        results.append(f.serialize(None))
+    out = tempfile.mkdtemp(prefix='qls_rep_')
+    png = pl.plot_summary(results, save_dir=out, verbose=False)
+    assert os.path.getsize(png) > 20000, "汇总图文件过小"
+    pdf = pl.export_report_pdf(results, save_dir=out, verbose=False)
+    assert os.path.getsize(pdf) > 20000, "PDF 报告文件过小"
+    with open(pdf, 'rb') as fh:
+        assert fh.read(5) == b'%PDF-', "PDF 报告文件头不对"
+    try:
+        import pymupdf
+        doc = pymupdf.open(pdf)
+        assert doc.page_count == len(results) + 1, \
+            f"PDF 页数应为 {len(results) + 1}，实际 {doc.page_count}"
+        doc.close()
+    except ImportError:
+        pass
+    import shutil
+    shutil.rmtree(out, ignore_errors=True)
 
 
 def main():

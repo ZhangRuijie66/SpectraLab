@@ -228,6 +228,45 @@ tau_1 = 0.886 ns, 占比 44.1%
 tau_2 = 6.23  ns, 占比 55.9%
 ```
 
+## 全局拟合（v4.22 新增）
+
+### 1. 共享速率分布：`fit_global()`
+
+同一样品的多次测量 / 多检测窗：所有数据集共享同一份速率分布 `p`，
+各自只有幅度 `s_d`（`y_d = (A_d @ p)·decay_max_d·s_d + bg_d`）。
+
+```python
+import plot_lifetime as pl
+res = pl.fit_global(datasets, method='MEM', n_rates=201)
+print(res['tau_list'], res['chi2R_total'])
+for e in res['per_dataset']:
+    print(e['name'], e['chi2R'], e['scale'], e['alpha'])
+```
+
+### 2. 共享寿命 τ、各样品独立幅度：`fit_global_discrete()`
+
+滴定 / 系列样品（FRET A0→A24）用这个：共享 `n_comp` 个寿命，
+每个样品解自己的幅度（NNLS），τ 用 Nelder-Mead 优化。
+
+```python
+res = pl.fit_global_discrete(datasets, n_comp=3)
+print(res['taus'])                      # 共享寿命
+for e in res['per_dataset']:
+    print(e['name'], e['chi2R'], e['alpha'])   # 各样品占比 → 可做滴定曲线
+```
+
+实测 7 份 FRET 数据（n_comp=3）：共享 τ = 0.735/2.018/3.521 ns，Σχ²R = 17.8。
+
+## 跨样品汇总图与 PDF 报告（v4.22 新增）
+
+```python
+pl.plot_summary(results, save_dir='./plots', xlabel='受体浓度')  # τ/α/χ²R 三联图
+pl.export_report_pdf(results, save_dir='./plots')                # 多页 PDF 报告
+```
+
+GUI 寿命模式下对应两个按钮：**「📈 跨样品汇总图」**、**「📄 导出 PDF 报告」**
+（会自动并行拟合当前文件夹全部文件）。
+
 ## 注意事项
 
 - 计数率过低（峰计数 < ~1000）时 χ² 加权统计意义变差，结果仅供参考

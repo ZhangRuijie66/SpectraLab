@@ -526,10 +526,60 @@ def _sanitize_axes(ex, em, Z):
     return ex, em, Z, info
 
 
+def _scatter_mask(em, ex, rayleigh_width=10.0, raman_shift_cm=3350.0,
+                  raman_width=15.0):
+    """构造瑞利/拉曼散射带掩膜（True = 判为散射，需要剔除）。
+
+    - **瑞利**：EM ≈ EX（|EM − EX| ≤ rayleigh_width nm），包括一级与（近似的）二级；
+    - **拉曼**：水的 O–H 伸缩振动位移 ≈ 3350 cm⁻¹，
+      EM = 1 / (1/EX − Δν·1e-7)（nm），± raman_width nm 内判为拉曼带。
+
+    返回 (mask, n_rayleigh, n_raman)，mask 形状 (len(em), len(ex))。
+    """
+    em = np.asarray(em, dtype=float)
+    ex = np.asarray(ex, dtype=float)
+    EMg, EXg = np.meshgrid(em, ex, indexing='ij')
+    ray = np.abs(EMg - EXg) <= float(rayleigh_width)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ram = 1.0 / (1.0 / EXg - float(raman_shift_cm) * 1e-7)
+    ram = np.where(np.isfinite(ram) & (ram > 0), ram, np.inf)
+    raman = np.abs(EMg - ram) <= float(raman_width)
+    return (ray | raman), int(ray.sum()), int(raman.sum())
+
+
+def inner_filter_correction(data, a_ex, a_em):
+    """内滤效应校正：F_corr = F_obs · 10^((A_ex + A_em)/2)。
+
+    内滤效应会让 EEM 在强吸收区被压低（激发光被吸收、发射光再被吸收），
+    定量比较峰高/峰位前应当校正。
+
+    Args:
+        data: parse_3d_scan_csv 的返回（含 intensity）
+        a_ex: 各 EX 波长处的吸光度（长度 = len(ex)）
+        a_em: 各 EM 波长处的吸光度（长度 = len(em)）
+
+    Returns:
+        (校正后的 intensity 数组, 校正因子矩阵)
+    """
+    Z = np.asarray(data['intensity'], dtype=float)
+    a_ex = np.asarray(a_ex, dtype=float).ravel()
+    a_em = np.asarray(a_em, dtype=float).ravel()
+    if a_ex.size != Z.shape[1] or a_em.size != Z.shape[0]:
+        raise ValueError(
+            f"吸光度长度与 EEM 不匹配：a_ex={a_ex.size}（应为 {Z.shape[1]}），"
+            f"a_em={a_em.size}（应为 {Z.shape[0]}）")
+    if not (np.isfinite(a_ex).all() and np.isfinite(a_em).all()):
+        raise ValueError("吸光度含 NaN/Inf，请先清洗")
+    factor = 10.0 ** ((a_em[:, None] + a_ex[None, :]) / 2.0)
+    return Z * factor, factor
+
+
 def prepare_grid(data, smooth_factor=3, spike_window=5, sigma_em=1.0, sigma_ex=0.0,
                  clip_saturation=True, log_scale=False, notch_comb=True,
                  notch_period=None, notch_harmonics=4, notch_strength=5.0,
-                 comb_mode='minima', verbose=True):
+                 comb_mode='minima', verbose=True, remove_scatter=False,
+                 rayleigh_width=10.0, raman_shift_cm=3350.0, raman_width=15.0,
+                 blank=None):
     """
     清洗 + 加密，返回画图所需的一切。
 
@@ -541,13 +591,20 @@ def prepare_grid(data, smooth_factor=3, spike_window=5, sigma_em=1.0, sigma_ex=0
     sigma_ex      : 沿 EX 的高斯平滑 sigma
     clip_saturation : 自动识别并修补饱和点
     log_scale     : 是否返回 log10 强度（画图时用）
+    remove_scatter : 剔除瑞利/拉曼散射带（EM≈EX 与 EM=1/(1/EX−Δν·1e-7)）。
+                    **默认关闭**——它会沿对角线插值补洞、在锐利边缘附近让样条
+                    轻微振铃，适合"想看真实荧光结构"时显式开启（CLI: --remove-scatter）
+    rayleigh_width : 瑞利带半宽（nm，默认 ±10）
+    raman_shift_cm / raman_width : 拉曼位移（cm⁻¹，默认 3350）与半宽（nm）
+    blank         : 空白（溶剂）数据集 dict（同 parse_3d_scan_csv 的格式），
+                    给出时先做 Z − Z_blank 的空白扣除（要求 EX/EM 网格一致）
 
     返回 dict：
       ex / em        加密后的坐标（1D）
       EX / EM        meshgrid
       Z              加密后的强度（可能已取 log10）
       ex_orig/em_orig/Z_orig  清洗后、未加密的原始网格（waterfall 用）
-      stats          清洗统计（饱和值、修补点数、去窄线前后差异、色标建议）
+      stats          清洗统计（饱和值、修补点数、散射剔除数、去窄线前后差异、色标建议）
     """
     ex = np.asarray(data['ex_wavelengths'], dtype=float)
     em = np.asarray(data['em_wavelengths'], dtype=float)
@@ -560,16 +617,52 @@ def prepare_grid(data, smooth_factor=3, spike_window=5, sigma_em=1.0, sigma_ex=0
              'sigma_ex': float(sigma_ex), 'log_scale': bool(log_scale),
              'comb_period': None, 'comb_strength': 0.0, 'comb_notched': False,
              'spline_ok': False, 'neg_after_spline': 0, 'axis_uniform': True,
-             'cols_filled_em': 0, 'cols_filled_ex': 0, 'nan_left': 0}
+             'cols_filled_em': 0, 'cols_filled_ex': 0, 'nan_left': 0,
+             'scatter_removed': 0, 'scatter_rayleigh': 0, 'scatter_raman': 0,
+             'blank_subtracted': False}
 
     # 坐标轴校验：EX/EM 都要求严格递增（插值器要求），重复值取均值合并
     ex, em, Z, axis_info = _sanitize_axes(ex, em, Z)
     stats.update(axis_info)
 
+    # ⓪ 空白（溶剂）扣除：Z − Z_blank
+    if blank is not None:
+        b_ex = np.asarray(blank['ex_wavelengths'], dtype=float)
+        b_em = np.asarray(blank['em_wavelengths'], dtype=float)
+        b_Z = np.asarray(blank['intensity'], dtype=float)
+        if b_Z.shape != Z.shape or len(b_ex) != len(ex) or len(b_em) != len(em):
+            raise ValueError(
+                f"空白数据网格与样品不一致：样品 {Z.shape}，空白 {b_Z.shape}；"
+                "请先用相同 EX/EM 设置测量空白")
+        if not (np.allclose(b_ex, ex) and np.allclose(b_em, em)):
+            raise ValueError("空白数据的 EX/EM 波长与样品不一致，无法直接相减")
+        Z = Z - b_Z
+        stats['blank_subtracted'] = True
+
     # ① 空值 → NaN → 沿 EM 补全（整列缺失时改沿 EX，实在不行保留 NaN）
     if stats['nan_in']:
         Z, fill_stats = _fill_nan_along_em(Z)
         stats.update(fill_stats)
+
+    # ①' 瑞利/拉曼散射带：掩掉后沿 EM 插值补全（内插，不外推）
+    if remove_scatter:
+        mask, n_ray, n_ram = _scatter_mask(em, ex, rayleigh_width,
+                                           raman_shift_cm, raman_width)
+        stats['scatter_rayleigh'] = int(n_ray)
+        stats['scatter_raman'] = int(n_ram)
+        # 安全阀：掩膜覆盖超过一半数据说明宽度设错了（例如把 raman_width
+        # 当成 nm 却按几百 nm 给），此时宁可不动也不要毁掉数据
+        if mask.any() and mask.mean() > 0.5:
+            stats['scatter_skipped'] = True
+            _safe_log(f"  ⚠️  散射掩膜覆盖 {mask.mean():.0%} 的数据，"
+                      "已跳过（请检查 rayleigh_width / raman_width）",
+                      verbose=verbose)
+        elif mask.any():
+            Z = Z.copy()
+            Z[mask] = np.nan
+            Z, fill_stats = _fill_nan_along_em(Z)
+            stats['scatter_removed'] = int(n_ray + n_ram)
+            stats['nan_left'] = int(np.isnan(Z).sum())
 
     # ② 饱和点掩膜 + 补全
     if clip_saturation:
@@ -802,6 +895,12 @@ def _report_stats(stats, verbose=True):
     """打印清洗统计（verbose=False 时静默，供 GUI 调用）。"""
     if not verbose:
         return
+    if stats.get('blank_subtracted'):
+        _safe_print("  🧪 已做空白（溶剂）扣除")
+    if stats.get('scatter_removed'):
+        _safe_print(f"  🚫 剔除散射带 {stats['scatter_removed']} 点"
+                    f"（瑞利 {stats.get('scatter_rayleigh', 0)}，"
+                    f"拉曼 {stats.get('scatter_raman', 0)}），已沿 EM 内插补全")
     if stats.get('cols_filled_em') or stats.get('cols_filled_ex'):
         _safe_print(f"  🧩 空值补全：沿 EM {stats.get('cols_filled_em', 0)} 列，"
                     f"沿 EX {stats.get('cols_filled_ex', 0)} 列，"
@@ -985,6 +1084,12 @@ def main():
                         help="沿 EX 的高斯平滑 sigma（默认 0）")
     parser.add_argument("--no-clip-saturation", action="store_true",
                         help="不自动修补饱和点")
+    parser.add_argument("--remove-scatter", action="store_true",
+                        help="剔除瑞利/拉曼散射带（默认关闭）")
+    parser.add_argument("--rayleigh-width", type=float, default=10.0,
+                        help="瑞利带半宽 (nm)，默认 10")
+    parser.add_argument("--raman-width", type=float, default=15.0,
+                        help="拉曼带半宽 (nm)，默认 15")
     parser.add_argument("--log", action="store_true", help="对数色标/强度")
     parser.add_argument("--percentile", default="1,99.5",
                         help="稳健色标分位（默认 1,99.5）")
@@ -1002,6 +1107,9 @@ def main():
                    notch_period=args.comb_period,
                    notch_harmonics=args.notch_harmonics,
                    comb_mode=args.comb_mode,
+                   remove_scatter=args.remove_scatter,
+                   rayleigh_width=args.rayleigh_width,
+                   raman_width=args.raman_width,
                    log_scale=args.log)
 
     _safe_print(f"\n📄 处理: {args.file}")

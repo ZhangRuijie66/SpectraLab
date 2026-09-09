@@ -292,6 +292,103 @@ class DataMixin:
         except Exception as e:
             log_exception("恢复会话失败", e)
 
+    # 「存为默认值」的荧光寿命拟合参数（v4.22 修订）。
+    # 键前缀 defaults/ 与上次会话的 param/ 分开：启动时在 _restore_session 之后
+    # 套用，因此**优先级高于上次会话**——用户显式固定过的那组参数说了算。
+    _LIFETIME_DEFAULT_SPECS = (
+        ("lifetime_method", "lifetime_method_combo", "combo"),
+        ("lifetime_nrates", "lifetime_nrates_spin", "int"),
+        ("lifetime_kmin", "lifetime_kmin_spin", "float"),
+        ("lifetime_kmax", "lifetime_kmax_spin", "float"),
+        ("lifetime_fixed_taus", "lifetime_fixed_taus_edit", "str"),
+        ("lifetime_lambda", "lifetime_lambda_spin", "float"),
+        ("lifetime_auto_lambda", "lifetime_auto_lambda_check", "bool"),
+    )
+
+    def _save_lifetime_defaults(self):
+        """把当前荧光寿命拟合参数存为默认值（QSettings defaults/*）。
+
+        与「上次会话」的区别：会话是每次关闭自动覆盖的，而默认值只有点这个
+        按钮才更新，因此临时试参数不会把默认值改掉。
+        """
+        s = self.settings
+        try:
+            for key, attr, kind in self._LIFETIME_DEFAULT_SPECS:
+                w = getattr(self, attr, None)
+                if w is None:
+                    continue
+                try:
+                    if kind == "combo":
+                        s.setValue("defaults/" + key, int(w.currentIndex()))
+                    elif kind == "bool":
+                        s.setValue("defaults/" + key, bool(w.isChecked()))
+                    elif kind == "int":
+                        s.setValue("defaults/" + key, int(w.value()))
+                    elif kind == "float":
+                        s.setValue("defaults/" + key, float(w.value()))
+                    else:
+                        s.setValue("defaults/" + key, str(w.text()))
+                except Exception:
+                    continue
+            s.setValue("defaults/lifetime_saved", True)
+            s.sync()
+            method = str(self.lifetime_method_combo.currentText()).split("（")[0]
+            auto = bool(self.lifetime_auto_lambda_check.isChecked())
+            lam = "自动" if auto else f"{float(self.lifetime_lambda_spin.value()):g}"
+            taus = self.lifetime_fixed_taus_edit.text().strip() or "无"
+            msg = (f"已存为默认值：{method} / {int(self.lifetime_nrates_spin.value())} 点"
+                   f" / k {float(self.lifetime_kmin_spin.value()):g}"
+                   f"–{float(self.lifetime_kmax_spin.value()):g}"
+                   f" / λ {lam} / 固定 τ {taus}")
+            if hasattr(self, 'status_bar'):
+                self.status_bar.showMessage(msg, 6000)
+            logging.getLogger('qls').info(msg)
+            return True
+        except Exception as e:
+            log_exception("保存寿命拟合默认值失败", e)
+            if hasattr(self, 'status_bar'):
+                self.status_bar.showMessage("保存默认值失败，详见日志", 6000)
+            return False
+
+    def _apply_lifetime_defaults(self):
+        """启动时套用「存为默认值」的寿命拟合参数（须在 _restore_session 之后调用）。"""
+        s = self.settings
+        raw = s.value("defaults/lifetime_saved", False)
+        if isinstance(raw, str):
+            saved = raw.strip().lower() in ('true', '1', 'yes')
+        else:
+            saved = bool(raw)
+        if not saved:
+            return False
+        applied = 0
+        for key, attr, kind in self._LIFETIME_DEFAULT_SPECS:
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            try:
+                v = s.value("defaults/" + key, None)
+                if v is None:
+                    continue
+                if kind == "combo":
+                    idx = int(v)
+                    if 0 <= idx < w.count():
+                        w.setCurrentIndex(idx)
+                elif kind == "bool":
+                    if isinstance(v, str):
+                        w.setChecked(v.strip().lower() in ('true', '1', 'yes'))
+                    else:
+                        w.setChecked(bool(v))
+                elif kind == "int":
+                    w.setValue(int(float(v)))
+                elif kind == "float":
+                    w.setValue(float(v))
+                else:
+                    w.setText(str(v))
+                applied += 1
+            except Exception:
+                continue
+        return applied > 0
+
     def _last_mode_index(self):
         """上次使用的模式索引（默认 0）"""
         try:
@@ -520,6 +617,11 @@ class DataMixin:
         # 寿命专属的「导出拟合结果」按钮：仅寿命模式显示
         if hasattr(self, 'export_current_fit_btn'):
             self.export_current_fit_btn.setVisible(is_lifetime)
+        # 寿命专属的「跨样品汇总图」「导出 PDF 报告」按钮（v4.22）
+        for attr in ('summary_plot_btn', 'pdf_report_btn'):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setVisible(is_lifetime)
         if hasattr(self, 'subtract_group'):
             # 光谱减法只用于吸收/发射模式
             self.subtract_group.setVisible(is_spectrum)

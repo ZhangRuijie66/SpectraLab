@@ -937,6 +937,103 @@ class PlotMixin:
             f"正在并行拟合 {len(self.data_cache)} 个文件…", indeterminate=True)
         self.plot_worker.start()
 
+    # ---------- v4.22：跨样品汇总图 / 多页 PDF 报告 ----------
+
+    def _run_summary_plot(self):
+        """并行拟合全部文件 → 画 τ/α/χ²R 随样品变化的三联图。"""
+        self._run_batch_export('summary')
+
+    def _run_pdf_report(self):
+        """并行拟合全部文件 → 导出多页 PDF 报告。"""
+        self._run_batch_export('pdf')
+
+    def _run_batch_export(self, kind):
+        if self.spectrum_type != "lifetime":
+            return
+        if not self.data_cache:
+            QMessageBox.warning(self, "提示", "请先加载寿命数据")
+            return
+        if getattr(self, '_plotting', False):
+            QMessageBox.information(self, "提示", "正在拟合中，请稍候…")
+            return
+        save_dir = QFileDialog.getExistingDirectory(
+            self, "选择保存目录", self._dialog_start_dir(),
+            QFileDialog.ShowDirsOnly)
+        if not save_dir:
+            return
+        self._plotting = True
+        self._long_task = True
+        self._fit_cancelled = False
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.status_bar.showMessage(
+            f"正在并行拟合 {len(self.data_cache)} 个文件（多进程，请稍候）...")
+        params = self._collect_plot_params()
+        params['kind'] = kind
+        params['save_dir'] = save_dir
+        self.plot_worker = PlotWorker(self._do_batch_export, params)
+        params['worker'] = self.plot_worker
+        self.plot_worker.finished.connect(self._on_batch_export_finished)
+        self.plot_worker.error.connect(self._on_plot_error)
+        self.plot_worker.progress.connect(self._on_worker_progress)
+        self._set_canvas_busy(True)
+        self._start_progress_dialog(
+            f"正在并行拟合 {len(self.data_cache)} 个文件…", indeterminate=True)
+        self.plot_worker.start()
+
+    def _do_batch_export(self, params=None):
+        """后台线程：fit_many 并行拟合 → 汇总图 / PDF 报告，返回提示文字。"""
+        import plot_lifetime as _pl
+        if params is None:
+            params = {}
+        worker = params.get('worker')
+        fit_kwargs = dict(
+            method=params.get('lifetime_method', 'MEM'),
+            n_rates=int(params.get('lifetime_nrates', 201)),
+            k_min=float(params.get('lifetime_kmin', 0.01)),
+            k_max=float(params.get('lifetime_kmax', 100.0)),
+            lambda_coeff=float(params.get('lifetime_lambda', 1e-3)),
+            auto_lambda=bool(params.get('lifetime_auto_lambda', True)),
+            fixed_taus=params.get('lifetime_fixed_taus') or None,
+        )
+        datasets = []
+        for name, info in self.data_cache.items():
+            d = info['data']
+            datasets.append({'name': name, 'time': d['time'],
+                             'decay': d['decay'], 'irf': d['irf'],
+                             'meta': d.get('meta')})
+        try:
+            results = _pl.fit_many(datasets, fit_kwargs=fit_kwargs)
+        except (OSError, RuntimeError) as e:
+            log_exception("并行拟合不可用，退回串行", e)
+            results = _pl.fit_many(datasets, max_workers=1,
+                                   fit_kwargs=fit_kwargs)
+        if worker is not None and worker.is_cancelled():
+            self._fit_cancelled = True
+            return "已取消"
+        results = [r for r in results if r]
+        if not results:
+            raise RuntimeError("没有成功拟合的样品（请检查数据与拟合参数）")
+        save_dir = params.get('save_dir') or '.'
+        if params.get('kind') == 'pdf':
+            path = _pl.export_report_pdf(results, save_dir=save_dir,
+                                         verbose=False)
+        else:
+            path = _pl.plot_summary(results, save_dir=save_dir, verbose=False)
+        return f"已保存（{len(results)} 个样品）：\n{path}"
+
+    def _on_batch_export_finished(self, msg):
+        self._plotting = False
+        self._long_task = False
+        self._set_canvas_busy(False)
+        self._close_progress_dialog()
+        self.progress_bar.setVisible(False)
+        if getattr(self, '_fit_cancelled', False):
+            self.status_bar.showMessage("已取消")
+            return
+        QMessageBox.information(self, "成功", str(msg))
+        self.status_bar.showMessage(str(msg).splitlines()[-1])
+
     def _do_overlay_lifetime(self, params=None):
         """后台线程：fit_many 并行拟合 + 画叠加分布图。"""
         import plot_lifetime as _pl

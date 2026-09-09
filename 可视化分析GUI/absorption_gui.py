@@ -75,6 +75,12 @@ class AbsorptionGUI(UiMixin, DataMixin, PlotMixin, QMainWindow):
         except Exception as e:
             from gui_log import log_exception
             log_exception("恢复会话失败", e)
+        # 「💾 存为默认值」固定的寿命拟合参数优先于上次会话（v4.22 修订）
+        try:
+            self._apply_lifetime_defaults()
+        except Exception as e:
+            from gui_log import log_exception
+            log_exception("套用默认值失败", e)
         # 入口界面选择的模块优先；未指定则沿用上次模式
         if initial_mode in self.MODE_INDEX:
             idx = self.MODE_INDEX[initial_mode]

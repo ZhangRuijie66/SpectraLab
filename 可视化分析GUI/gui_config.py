@@ -24,7 +24,7 @@ APP_ORG = "QLSLab"
 APP_NAME = "光谱可视化分析工具"
 
 # 版本号（窗口标题 / 应用版本信息）
-APP_VERSION = "4.21"
+APP_VERSION = "4.22"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-09-09"
 

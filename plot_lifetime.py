@@ -966,6 +966,16 @@ class MEMFitter:
             np.arange(-q_final, len(self.irf) - q_final - 0.01))
 
         chi_sqr = _chi2(x_final, A_shifted)
+        if os.environ.get('QLS_DEBUG_CHI2'):
+            _safe_print("[DEBUG] chi_sqr=%.6g  recompute=%.6g  npts=%d len(d1)=%d "
+                        "dmax=%.6g bg=%.6g  x_sum=%.6g"
+                        % (chi_sqr,
+                           float(np.sum((y_fitted - decay1_t) ** 2 / decay1_t) / npts),
+                           npts, len(decay1_t), decay_max, decay_background,
+                           float(np.sum(x_final))))
+            _safe_print("[DEBUG] y_fitted[:4]=", np.asarray(y_fitted)[:4],
+                        " decay1_t[:4]=", np.asarray(decay1_t)[:4],
+                        " q_final=", q_final)
         chi_sqr_pearson = _chi2_pearson(x_final, A_shifted)
         # 残差按所选权重口径给出，保证「残差 / ACF / 离群占比 / χ²R」口径一致
         if weight_mode == 'pearson':
@@ -1517,6 +1527,205 @@ def export_fit_results(results, save_dir, name="lifetime_fit_results",
 
 # ======================== 3. 绘图 ========================
 
+def plot_summary(results, save_dir='./plots', name='lifetime_summary',
+                 x=None, xlabel='样品序号', show=False, dpi=200, fmt='.png',
+                 verbose=True):
+    """跨样品汇总图（v4.22 新增）：把一批拟合结果画成「参数 vs 样品」曲线。
+
+    三个面板（共享横轴）：
+      ① 各寿命分量 τ_i（每条分量一条折线，点标注数值）
+      ② 各分量强度占比 α_i
+      ③ χ²R（对数纵轴，>1 的点一目了然）
+
+    适合滴定/系列样品：直接看 τ 或 α 随浓度/样品的变化，不用手动导 Excel。
+
+    Args:
+        results: serialize() dict 列表（可含 None，会被跳过）
+        x: 横轴数值（如浓度）；默认用 1..N
+        xlabel: 横轴标题
+    Returns:
+        写出的图片路径（str）
+    """
+    import matplotlib.pyplot as plt
+    results = [r for r in (results or []) if r and r.get('peak_result')]
+    if not results:
+        raise ValueError("没有可汇总的拟合结果（peak_result 为空）")
+    setup_chinese_font()
+    n_max = max(len(r['peak_result']) for r in results)
+    xs = np.arange(1, len(results) + 1, dtype=float) if x is None else \
+        np.asarray(x, dtype=float)
+    if xs.size != len(results):
+        raise ValueError(f"x 长度 {xs.size} 与结果数 {len(results)} 不一致")
+
+    fig, axes = plt.subplots(3, 1, figsize=(max(7.0, 0.9 * len(results)), 9.0),
+                             sharex=True)
+    ax_tau, ax_alpha, ax_chi = axes
+    cmap = plt.get_cmap('tab10')
+    for i in range(n_max):
+        taus, alphas = [], []
+        for r in results:
+            pk = r['peak_result']
+            taus.append(pk[i][0] if i < len(pk) else np.nan)
+            alphas.append(pk[i][1] * 100 if i < len(pk) else np.nan)
+        ax_tau.plot(xs, taus, 'o-', color=cmap(i % 10), label=f'τ{i + 1}')
+        ax_alpha.plot(xs, alphas, 's-', color=cmap(i % 10), label=f'α{i + 1}')
+    ax_tau.set_ylabel('寿命 τ (ns)')
+    ax_tau.set_yscale('log')
+    ax_tau.set_title('各寿命分量 vs ' + xlabel)
+    ax_tau.legend(fontsize=9, ncol=min(n_max, 4))
+    ax_alpha.set_ylabel('强度占比 α (%)')
+    ax_alpha.set_ylim(0, 105)
+    ax_alpha.legend(fontsize=9, ncol=min(n_max, 4))
+    chi = [float(r['info'].get('chi_sqr', np.nan)) for r in results]
+    ax_chi.semilogy(xs, chi, 'd-', color='#cc6677')
+    ax_chi.axhline(1.0, color='#888888', linestyle='--', linewidth=0.8)
+    ax_chi.set_ylabel('χ²R (对数轴)')
+    ax_chi.set_xlabel(xlabel)
+    names = [str(r.get('name', f'#{i + 1}')) for i, r in enumerate(results)]
+    ax_chi.set_xticks(xs)
+    ax_chi.set_xticklabels(names, rotation=30, ha='right', fontsize=8)
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out = Path(save_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{name}{fmt}"
+    fig.savefig(path, dpi=dpi, bbox_inches='tight')
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    if verbose:
+        _safe_print(f"  ✔ 汇总图已保存: {path}")
+    return str(path)
+
+
+def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
+                      title=None, dpi=150, verbose=True):
+    """把一批拟合结果导出成**多页 PDF 报告**（v4.22 新增）。
+
+    第 1 页：汇总表（文件名 / 方法 / χ²R / 拟合区间 / 各分量 τ 与占比）+ χ²R 柱状图；
+    之后每个样品一页：衰减+拟合（对数纵轴）+ 残差 + 寿命分布。
+
+    Args:
+        results: serialize() dict 列表
+    Returns:
+        写出的 PDF 路径（str）
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    results = [r for r in (results or []) if r]
+    if not results:
+        raise ValueError("没有可导出的拟合结果")
+    setup_chinese_font()
+    out = Path(save_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{name}.pdf"
+
+    with PdfPages(path) as pdf:
+        # ---------- 第 1 页：汇总表 + χ²R 柱状图 ----------
+        fig = plt.figure(figsize=(8.27, 11.69))     # A4 纵向
+        fig.suptitle(title or "荧光寿命拟合报告", fontsize=15, y=0.97)
+        ax_t = fig.add_axes([0.06, 0.52, 0.88, 0.40])
+        ax_t.axis('off')
+        n_max = max(len(r.get('peak_result') or []) for r in results)
+        head = ['样品', '方法', 'χ²R', '拟合区间(ns)']
+        head += [f'τ{i + 1} (ns)' for i in range(n_max)]
+        head += [f'α{i + 1} (%)' for i in range(n_max)]
+        rows = []
+        for r in results:
+            info = r.get('info', {})
+            pk = r.get('peak_result') or []
+            t = np.asarray(r.get('time', []), dtype=float)
+            dt = (t[1] - t[0]) if len(t) > 1 else 1.0
+            fs, fe = int(info.get('fit_start', 0)), int(info.get('fit_end', 0))
+            row = [str(r.get('name', '')), str(info.get('method', '')),
+                   f"{info.get('chi_sqr', float('nan')):.3g}",
+                   f"{t[fs]:.2f}–{t[min(fe, len(t) - 1)]:.2f}" if len(t) else '-']
+            row += [f"{pk[i][0]:.3g}" if i < len(pk) else '-'
+                    for i in range(n_max)]
+            row += [f"{pk[i][1] * 100:.1f}" if i < len(pk) else '-'
+                    for i in range(n_max)]
+            rows.append(row)
+        tbl = ax_t.table(cellText=rows, colLabels=head, loc='upper center',
+                         cellLoc='center')
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(max(5.5, min(9.0, 90.0 / max(len(head), 1))))
+        tbl.scale(1.0, 1.25)
+        for j in range(len(head)):
+            tbl[0, j].set_facecolor('#dbeafe')
+            tbl[0, j].set_text_props(weight='bold')
+        ax_c = fig.add_axes([0.12, 0.08, 0.78, 0.34])
+        chi = [float(r.get('info', {}).get('chi_sqr', np.nan)) for r in results]
+        names = [str(r.get('name', '')) for r in results]
+        ax_c.bar(range(len(chi)), chi, color='#66ccee')
+        ax_c.axhline(1.0, color='#888888', linestyle='--', linewidth=0.8)
+        ax_c.set_ylabel('χ²R')
+        ax_c.set_title('各样品拟合优度（虚线 = 1）')
+        ax_c.set_xticks(range(len(names)))
+        ax_c.set_xticklabels(names, rotation=30, ha='right', fontsize=8)
+        ax_c.grid(True, axis='y', alpha=0.3)
+        pdf.savefig(fig, dpi=dpi)
+        plt.close(fig)
+
+        # ---------- 每个样品一页 ----------
+        for r in results:
+            info = r.get('info', {})
+            time = np.asarray(r.get('time', []), dtype=float)
+            decay = np.asarray(r.get('decay', []), dtype=float)
+            y_fit = np.asarray(info.get('y_fitted', []), dtype=float)
+            resid = np.asarray(info.get('residuals', []), dtype=float)
+            k = np.asarray(r.get('k', []), dtype=float)
+            dist = np.asarray(r.get('k_distribution', []), dtype=float)
+            if time.size == 0 or k.size == 0:
+                continue
+            fs, fe = int(info.get('fit_start', 0)), int(info.get('fit_end', len(time)))
+            fig, axes = plt.subplots(2, 1, figsize=(8.27, 11.69),
+                                     gridspec_kw={'height_ratios': [2, 1]})
+            ax = axes[0]
+            ax.semilogy(time, np.maximum(decay, 0.5), '.', ms=2, alpha=0.5,
+                        color='#66ccee', label='实验数据')
+            ax.semilogy(time[fs:fs + len(y_fit)], np.maximum(y_fit, 0.5),
+                        '-', lw=1.4, color='#ee6677', label='拟合')
+            irf_s = np.asarray(info.get('irf_shifted', []), dtype=float)
+            if irf_s.size:
+                sc = decay.max() / max(irf_s.max(), 1e-9) * 0.9
+                ax.semilogy(time[:len(irf_s)], np.maximum(irf_s * sc, 0.5),
+                            '-', lw=0.8, color='#ccbb44', label='IRF（平移后）')
+            ax.axvline(time[fs], color='#16A34A', ls='--', lw=0.8)
+            ax.axvline(time[min(fe, len(time) - 1)], color='#16A34A', ls='--', lw=0.8)
+            pk_txt = "，".join(f"τ{i + 1}={p[0]:.3g} ns ({p[1] * 100:.1f}%)"
+                              for i, p in enumerate(r.get('peak_result') or []))
+            ax.set_title(f"{r.get('name', '')} — {info.get('method', '')}"
+                         f"，χ²R={info.get('chi_sqr', float('nan')):.3g}\n{pk_txt}",
+                         fontsize=11)
+            ax.set_ylabel('计数（对数）')
+            ax.legend(fontsize=8)
+            ax.grid(True, which='both', alpha=0.25)
+            ax2 = axes[1]
+            ax2.semilogx(1.0 / np.maximum(k, 1e-12), dist, '-', color='#1e293b',
+                         label='寿命分布')
+            for p in (r.get('peak_result') or []):
+                ax2.axvline(p[0], color='#ee6677', ls='--', lw=0.8, alpha=0.8)
+                ax2.annotate(f"τ={p[0]:.3g} ns\n{p[1] * 100:.1f}%",
+                             xy=(p[0], dist.max() * 0.9 if dist.size else 1),
+                             fontsize=8, color='#ee6677', ha='center')
+            ax2.set_xlabel('τ (ns)')
+            ax2.set_ylabel('分布强度')
+            ax2.legend(fontsize=8)
+            ax2.grid(True, alpha=0.25)
+            if resid.size:
+                ax2.set_title(f"残差均值 {resid.mean():.3g}，标准差 {resid.std():.3g}",
+                              fontsize=9)
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=dpi)
+            plt.close(fig)
+
+    if verbose:
+        _safe_print(f"  ✔ PDF 报告已保存: {path}")
+    return str(path)
+
+
 def plot_result(result, save_dir='./plots', name=None, show=False,
                 dpi=600, fmt='png'):
     """
@@ -1681,6 +1890,525 @@ def fit_many(datasets, max_workers=None, fit_kwargs=None, post_kwargs=None,
             _safe_print(f"  [WARN] 并行拟合不可用（{type(e).__name__}: {e}），"
                         f"退回串行")
         return [_safe_fit_one(t) for t in tasks]
+
+
+def fit_global(datasets, method='MEM', n_rates=201, k_min=0.01, k_max=100.0,
+               lambda_coeff=1e-3, auto_lambda=False, max_runs=10, res_tol=1e-6,
+               weight_mode='neyman', verbose=True, progress_cb=None,
+               cancel_cb=None, _debug_grad=False):
+    """全局（多数据集）寿命分析：**共享速率分布形状，各数据集只有幅度不同**。
+
+    适用场景：同一体系的多次测量 / 多波长衰减 / 滴定序列（如 FRET A0→A24）。
+    逐个独立拟合时噪声会让 τ 抖动，全局拟合把所有数据集的信息合起来约束分布形状。
+
+    模型（每个数据集 d 有自己的时间轴、IRF、拟合窗与本底）::
+
+        y_d(t) = (A_d @ p) · decay_max_d · s_d + bg_d
+
+        A_d : 第 d 个数据集自己的 IRF 重卷积基函数（n_rates 列）
+        p   : 共享的速率分布，约束 Σp = 1
+        s_d : 第 d 个数据集的幅度（自由参数，与 p 的尺度不再简并）
+
+    目标函数 ``Σ_d χ²R_d − λ·S(p)``，SLSQP + 解析梯度 + 等式约束 Σp=1。
+    （auto_lambda 时对 λ 做一次粗扫描，取 Σχ²R 不超过 target 的最大 λ。）
+
+    Args:
+        datasets: [{'name','time','decay','irf','meta'}, ...]（至少 2 个）
+        method: 'MEM'（熵正则）或 'SESM'（二阶差分平滑）
+        n_rates / k_min / k_max: 共享速率网格
+        lambda_coeff: 正则权重；auto_lambda=True 时作为扫描起点
+        weight_mode: 'neyman'（默认）/ 'pearson' / 'poisson'
+
+    Returns:
+        dict: {
+          'k', 'k_distribution', 'peak_result', 'info',
+          'scales': [s_1..s_D], 'per_dataset': [{'name','chi2R','scale',
+             'alpha': [...], 'time','decay','y_fitted','irf_shifted'}, ...],
+          'chi2R_total', 'tau_list'
+        }
+    """
+    datasets = list(datasets or [])
+    if len(datasets) < 2:
+        raise ValueError("全局拟合至少需要 2 个数据集（单数据集请用 MEMFitter）")
+    if not (0 < k_min < k_max):
+        raise ValueError("速率网格必须满足 0 < k_min < k_max")
+    n_rates = int(n_rates)
+    if n_rates < 3:
+        raise ValueError("n_rates 至少为 3")
+    method = method.upper()
+    if method not in ('MEM', 'SESM'):
+        raise ValueError(f"未知拟合方法 {method!r}（只支持 MEM / SESM）")
+    weight_mode = str(weight_mode).lower()
+    if weight_mode not in ('neyman', 'pearson', 'poisson'):
+        raise ValueError(f"未知权重口径 {weight_mode!r}")
+
+    def _tick(frac, msg):
+        if progress_cb is not None:
+            try:
+                progress_cb(float(frac), str(msg))
+            except Exception:
+                pass
+
+    def _check_cancel():
+        if cancel_cb is not None and cancel_cb():
+            raise FitCancelled("用户取消了全局拟合")
+
+    rates = np.logspace(math.log10(k_min), math.log10(k_max), n_rates)
+
+    # ---------- 为每个数据集准备基函数 ----------
+    sets = []
+    for d in datasets:
+        _check_cancel()
+        f = MEMFitter(verbose=False, name=d.get('name', 'dataset'))
+        f.load(d['time'], d['decay'], d['irf'], d.get('meta'))
+        f.preprocess()
+        info = f.info
+        fit_start, fit_end = int(info['fit_start']), int(info['fit_end'])
+        npts = fit_end - fit_start
+        if npts < 3:
+            raise ValueError(f"{f.name}: 拟合窗口只有 {npts} 点，无法参与全局拟合")
+        time1 = f.time[:fit_end]
+        irf1 = np.maximum(f.irf[:fit_end] - float(info.get('irf_background', 0.0)),
+                          0.0)
+        if not np.any(irf1 > 0):
+            raise ValueError(f"{f.name}: 扣除基线后 IRF 全为 0")
+        irf_norm = irf1 / irf1.sum()
+        a_ij = np.exp(-rates[None, :] * time1[:, None])
+        A = scipy.signal.fftconvolve(a_ij, irf_norm[:, None], mode='full',
+                                     axes=0)[:fit_end]
+        pchip = scipy.interpolate.PchipInterpolator(
+            np.arange(fit_end), A, axis=0, extrapolate=True)
+        sets.append({
+            'name': f.name, 'fit_start': fit_start, 'fit_end': fit_end,
+            'bg': float(info['decay_background']),
+            'dmax': float(info['decay_max']),
+            'd': np.maximum(f.decay[fit_start:fit_end], 1.0),
+            'q': float(info['qshift_suggested']), 'pchip': pchip, 'npts': npts,
+            'time': f.time, 'decay': f.decay, 'irf': f.irf,
+            'info': dict(info), 'fitter': f,
+        })
+    n_sets = len(sets)
+
+    def _A(s, q=None):
+        q = s['q'] if q is None else q
+        return s['pchip'](np.arange(s['fit_start'] - q, s['fit_end'] - q - 0.01))
+
+    def _model(s, p, scale):
+        return (_A(s) @ p) * s['dmax'] * scale + s['bg']
+
+    def _chi2_one(s, p, scale):
+        y = _model(s, p, scale)
+        if weight_mode == 'pearson':
+            return float(np.sum((s['d'] - y) ** 2 / np.maximum(y, 1.0)) / s['npts'])
+        if weight_mode == 'poisson':
+            ys = np.maximum(y, 1e-9)
+            dev = 2.0 * (s['d'] * np.log(s['d'] / ys) - (s['d'] - ys))
+            return float(np.sum(dev) / s['npts'])
+        r = (y - s['d']) / s['d']
+        return float(np.sum(r ** 2 * s['d']) / s['npts'])   # = Σ(y−d)²/d
+
+    # ---------- 目标函数与解析梯度 ----------
+    # p 用 softmax 参数化（Σp ≡ 1，无需等式约束；SLSQP 在这类问题上会
+    # 停在"报告成功但没动"的点，实测 L-BFGS-B 从 522.7 降到 2.19）
+    lam_holder = [float(lambda_coeff)]
+    D2 = np.zeros((max(n_rates - 2, 0), n_rates))
+    for _i in range(D2.shape[0]):
+        D2[_i, _i:_i + 3] = (1.0, -2.0, 1.0)
+
+    def _softmax(z):
+        e = np.exp(np.clip(z - np.max(z), -50.0, 50.0))
+        return e / e.sum()
+
+    def _cost_grad(x):
+        z = np.clip(x[:n_rates], -30.0, 30.0)
+        p = _softmax(z)
+        scales = np.clip(x[n_rates:], 1e-12, None)
+        lam_c = lam_holder[0]
+        total = 0.0
+        gp = np.zeros(n_rates)
+        gs = np.zeros(n_sets)
+        for k, s in enumerate(sets):
+            Ash = _A(s)
+            Ap = Ash @ p
+            y = Ap * s['dmax'] * scales[k] + s['bg']
+            if weight_mode == 'pearson':
+                ys = np.maximum(y, 1.0)
+                u = s['d'] - ys
+                r = -(u / ys) - 0.5 * (u / ys) ** 2      # 见 fit() 的说明
+                total += float(np.sum(u ** 2 / ys) / s['npts'])
+            elif weight_mode == 'poisson':
+                ys = np.maximum(y, 1e-9)
+                dev = 2.0 * (s['d'] * np.log(s['d'] / ys) - (s['d'] - ys))
+                r = 1.0 - s['d'] / ys
+                total += float(np.sum(dev) / s['npts'])
+            else:
+                r = (y - s['d']) / s['d']
+                # Neyman：χ² = Σ(y−d)²/d = Σ r²·d（注意不是 Σ r²！）
+                # cost 与 gradient 必须同口径，否则优化器会沿错误方向游走
+                total += float(np.sum(r ** 2 * s['d']) / s['npts'])
+            gp += 2.0 * s['dmax'] * scales[k] * (Ash.T @ r) / s['npts']
+            gs[k] = 2.0 * s['dmax'] * float(np.dot(Ap, r)) / s['npts']
+        pn = np.maximum(p, 1e-300)
+        if method == 'MEM':
+            total -= lam_c * float(-(pn * np.log(pn)).sum())
+            gp += lam_c * (np.log(pn) + 1.0)
+        else:
+            total += lam_c * float((np.diff(p, 2) ** 2).sum()) / max(n_rates, 1)
+            gp += (2.0 * lam_c / max(n_rates, 1)) * (D2.T @ (D2 @ p))
+        # 链式法则：∂cost/∂z_j = p_j (g_j − Σ_i p_i g_i)
+        gz = p * (gp - float(np.dot(p, gp)))
+        return total, np.concatenate([gz, gs])
+
+    def _optimize(x_start, lam_c):
+        lam_holder[0] = float(lam_c)
+        return scipy.optimize.minimize(
+            lambda x: _cost_grad(x)[0], x_start,
+            jac=lambda x: _cost_grad(x)[1], method='L-BFGS-B',
+            bounds=[(-30.0, 30.0)] * n_rates + [(1e-12, None)] * n_sets,
+            options={'maxiter': 20000, 'ftol': float(res_tol), 'gtol': 1e-10})
+
+    # 起点：① 均匀分布 ② 数据量最大的数据集单独拟合出的分布（warm start）
+    starts = [np.concatenate([np.zeros(n_rates), np.ones(n_sets)])]
+    try:
+        best_s = max(sets, key=lambda s: s['dmax'])
+        f1 = best_s['fitter']
+        f1.fit(method=method, n_rates=n_rates, k_min=k_min, k_max=k_max,
+               lambda_coeff=float(lambda_coeff))
+        p_warm = np.asarray(f1.k_distribution, dtype=float)
+        if p_warm.size == n_rates and np.isfinite(p_warm).all() and p_warm.sum() > 0:
+            p_warm = np.maximum(p_warm / p_warm.sum(), 1e-6)
+            starts.append(np.concatenate([np.log(p_warm), np.ones(n_sets)]))
+    except Exception as e:
+        if verbose:
+            _safe_print(f"  [WARN] 单独拟合起点不可用（{e}）")
+
+    # ---------- λ 自动扫描（可选） ----------
+    lam = float(lambda_coeff)
+    if auto_lambda and method == 'MEM':
+        grid = np.logspace(-5, -1, 9)
+        best_lam = lam
+        for i, lam_c in enumerate(grid):
+            _check_cancel()
+            _tick(0.05 + 0.25 * i / len(grid), f"λ 扫描 {i + 1}/{len(grid)}")
+            r_scan = _optimize(starts[0], lam_c)
+            lam_holder[0] = 0.0                 # 只看数据项，便于跨 λ 比较
+            chi_data = float(_cost_grad(r_scan.x)[0])
+            lam_holder[0] = lam_c
+            if chi_data <= 1.5 and lam_c > best_lam:
+                best_lam = lam_c
+        lam = best_lam
+
+    # ---------- 主优化：多起点取最优 ----------
+    _check_cancel()
+    if _debug_grad:      # 维护用：暴露目标/梯度闭包供 check_grad 验证
+        return {'_cost_grad': _cost_grad, '_sets': sets, '_A': _A,
+                'rates': rates, 'x0': starts[0]}
+    _tick(0.35, "全局优化中")
+    best_res = None
+    for si, x_start in enumerate(starts):
+        _check_cancel()
+        _tick(0.35 + 0.1 * si, f"全局优化（起点 {si + 1}/{len(starts)}）")
+        r = _optimize(x_start, lam)
+        if best_res is None or r.fun < best_res.fun:
+            best_res = r
+    res = best_res
+    p_shared = _softmax(np.clip(res.x[:n_rates], -30.0, 30.0))
+    scales = np.clip(res.x[n_rates:], 1e-12, None)
+
+    # ---------- 每个数据集：qshift 精修 + 结果整理 ----------
+    per = []
+    chi2_total = 0.0
+    for k, s in enumerate(sets):
+        _check_cancel()
+        _tick(0.7 + 0.25 * k / max(n_sets, 1), f"整理 {s['name']}")
+        chi_before = _chi2_one(s, p_shared, scales[k])
+
+        def _chi2_one_q(s_, p_, sc_, q_):
+            y = (_A(s_, q_) @ p_) * s_['dmax'] * sc_ + s_['bg']
+            if weight_mode == 'pearson':
+                return float(np.sum((s_['d'] - y) ** 2 / np.maximum(y, 1.0))
+                             / s_['npts'])
+            if weight_mode == 'poisson':
+                ys = np.maximum(y, 1e-9)
+                dev = 2.0 * (s_['d'] * np.log(s_['d'] / ys) - (s_['d'] - ys))
+                return float(np.sum(dev) / s_['npts'])
+            r = (y - s_['d']) / s_['d']
+            return float(np.sum(r ** 2 * s_['d']) / s_['npts'])
+
+        q_best = s['q']
+        try:
+            r_q = scipy.optimize.minimize_scalar(
+                lambda q: _chi2_one_q(s, p_shared, scales[k], q),
+                bounds=(s['q'] - 4.0, s['q'] + 4.0), method='bounded',
+                options={'xatol': 1e-3})
+            if np.isfinite(r_q.fun) and r_q.fun <= chi_before:
+                q_best = float(r_q.x)
+        except Exception:
+            pass
+        chi_after = _chi2_one_q(s, p_shared, scales[k], q_best)
+        chi2_total += chi_after
+        y_fit = (_A(s, q_best) @ p_shared) * s['dmax'] * scales[k] + s['bg']
+        per.append({
+            'name': s['name'], 'chi2R': float(chi_after), 'scale': float(scales[k]),
+            'qshift': float(q_best), 'qshift_ns': float(
+                q_best * (s['time'][1] - s['time'][0]) if len(s['time']) > 1 else 0.0),
+            'fit_start': s['fit_start'], 'fit_end': s['fit_end'],
+            'time': s['time'], 'decay': s['decay'], 'irf': s['irf'],
+            'y_fitted': y_fit,
+        })
+
+    # ---------- 共享分布的峰分解 ----------
+    _tick(0.97, "分解共享分布")
+    tmp = MEMFitter(verbose=False, name='global')
+    tmp.k = rates
+    tmp.k_distribution = p_shared
+    tmp.info = {'k_min': float(k_min), 'k_max': float(k_max),
+                'n_rates': n_rates, 'method': method}
+    try:
+        tmp.postprocess()
+    except Exception as e:
+        if verbose:
+            _safe_print(f"  [WARN] 共享分布峰分解失败（{e}）")
+    peaks = list(tmp.peak_result or [])
+
+    # 每个数据集的强度占比 = 共享占比（形状相同），仅幅度不同 → 占比一致，
+    # 但绝对发光量按 scale 缩放；这里同时给出两者，便于做滴定曲线
+    alpha = [float(row[1]) for row in peaks]
+    for entry in per:
+        entry['alpha'] = alpha
+        entry['amplitude'] = [a * entry['scale'] for a in alpha]
+
+    out = {
+        'k': rates, 'k_distribution': p_shared, 'peak_result': peaks,
+        'tau_list': [float(row[0]) for row in peaks],
+        'scales': [float(v) for v in scales],
+        'per_dataset': per, 'chi2R_total': float(chi2_total),
+        'lambda_coeff': float(lam), 'method': method,
+        'weight_mode': weight_mode,
+        'solver_converged': bool(res.success),
+        'solver_status': int(res.status),
+        'solver_nit': int(getattr(res, 'nit', 0)),
+        'info': {'k_min': float(k_min), 'k_max': float(k_max),
+                 'n_rates': n_rates, 'n_datasets': n_sets,
+                 'tau_min_ns': float(1.0 / k_max), 'tau_max_ns': float(1.0 / k_min),
+                 'peaks_found': tmp.info.get('peaks_found'),
+                 'peaks_dropped': tmp.info.get('peaks_dropped'),
+                 'intensity_share_unassigned':
+                     tmp.info.get('intensity_share_unassigned')},
+    }
+    if verbose:
+        _safe_print(f"[全局拟合] {n_sets} 个数据集，Σχ²R = {chi2_total:.4g}，"
+                    f"λ = {lam:.4g}，收敛 = {res.success}")
+        _safe_print("  共享分量：" + "，".join(
+            f"τ{i + 1}={row[0]:.4g} ns（{row[1] * 100:.1f}%）"
+            for i, row in enumerate(peaks)))
+        for entry in per:
+            _safe_print(f"  {entry['name']}: χ²R={entry['chi2R']:.4g}, "
+                        f"幅度={entry['scale']:.4g}")
+    _tick(1.0, "全局拟合完成")
+    return out
+
+
+def fit_global_discrete(datasets, n_comp=2, tau_init=None, weight_mode='neyman',
+                        n_restarts=3, verbose=True, progress_cb=None,
+                        cancel_cb=None):
+    """全局离散多指数拟合：**所有数据集共享寿命 τ_i，各自有自己的幅度**。
+
+    与 `fit_global`（共享整个速率分布）的区别：这里把 τ_i 当作全局参数一起优化，
+    每个数据集只解自己的幅度 a_{d,i}（给定 τ 时是线性问题，用 NNLS 精确求解）。
+    适合**系列样品/滴定**（如 FRET A0→A24，供体寿命随受体浓度变化），
+    不适合"同一个样品重复测量"（那种情况用 fit_global 共享分布更稳）。
+
+    做法：交替 (a) 给定 τ 用 NNLS 解各数据集的幅度 → (b) 用 Nelder-Mead
+    优化 log τ（n_comp ≤ 4，无导数也稳）；多组初值取最优。
+
+    Args:
+        datasets: [{'name','time','decay','irf','meta'}, ...]
+        n_comp: 共享寿命分量个数（建议 2–4）
+        tau_init: 初始 τ 列表（ns）；默认取各数据集单独 MEM 拟合的峰位平均
+        weight_mode: 'neyman'（默认）/ 'pearson' / 'poisson'
+        n_restarts: 初值组数（对数等距 + 单独拟合峰位）
+
+    Returns:
+        dict: {'taus': [τ_1..τ_m], 'per_dataset': [{'name','amplitudes','alpha',
+              'chi2R','y_fitted', ...}], 'chi2R_total', 'solver_converged', ...}
+    """
+    datasets = list(datasets or [])
+    if len(datasets) < 2:
+        raise ValueError("全局拟合至少需要 2 个数据集")
+    n_comp = int(n_comp)
+    if not (1 <= n_comp <= 8):
+        raise ValueError(f"n_comp 应在 1–8 之间（当前 {n_comp}）")
+
+    def _tick(frac, msg):
+        if progress_cb is not None:
+            try:
+                progress_cb(float(frac), str(msg))
+            except Exception:
+                pass
+
+    def _check_cancel():
+        if cancel_cb is not None and cancel_cb():
+            raise FitCancelled("用户取消了全局拟合")
+
+    # ---------- 预处理每个数据集 ----------
+    sets = []
+    for d in datasets:
+        _check_cancel()
+        f = MEMFitter(verbose=False, name=d.get('name', 'dataset'))
+        f.load(d['time'], d['decay'], d['irf'], d.get('meta'))
+        f.preprocess()
+        info = f.info
+        fs, fe = int(info['fit_start']), int(info['fit_end'])
+        if fe - fs < 3:
+            raise ValueError(f"{f.name}: 拟合窗口只有 {fe - fs} 点")
+        irf1 = np.maximum(f.irf[:fe] - float(info.get('irf_background', 0.0)), 0.0)
+        if not np.any(irf1 > 0):
+            raise ValueError(f"{f.name}: 扣除基线后 IRF 全为 0")
+        sets.append({
+            'name': f.name, 'fs': fs, 'fe': fe,
+            'bg': float(info['decay_background']),
+            'dmax': float(info['decay_max']),
+            'd': np.maximum(f.decay[fs:fe], 1.0),
+            'npts': fe - fs, 'q': float(info['qshift_suggested']),
+            'irf_norm': irf1 / irf1.sum(), 'time': f.time, 'decay': f.decay,
+            'irf': f.irf, 'fitter': f,
+        })
+    n_sets = len(sets)
+
+    def _basis(s, taus):
+        """给定量程 τ 列表，返回该数据集的基函数 (npts, m)（单位幅度、含 IRF 卷积与位移）。
+
+        构造顺序必须与 MEMFitter 一致：**先卷积、后按 qshift 做 PCHIP 平移**。
+        反过来（先平移 IRF 再卷积）在 qshift 较大时会产生亚通道的系统性偏差，
+        实测同一数据的 χ²R 会从 3.7 恶化到 285。
+        """
+        fe = s['fe']
+        t_axis = s['time'][:fe]
+        taus = np.maximum(np.asarray(taus, dtype=float), 1e-6)
+        cols = np.exp(-t_axis[:, None] / taus[None, :])
+        A_full = scipy.signal.fftconvolve(cols, s['irf_norm'][:, None],
+                                          mode='full', axes=0)[:fe]
+        pchip = scipy.interpolate.PchipInterpolator(
+            np.arange(fe), A_full, axis=0, extrapolate=True)
+        return pchip(np.arange(s['fs'] - s['q'], s['fe'] - s['q'] - 0.01))
+
+    def _solve_amps(s, A):
+        """给定基函数，NNLS 解幅度（返回 (amps, y_fit)）。"""
+        target = s['d'] - s['bg']
+        try:
+            amps, _ = scipy.optimize.nnls(A * s['dmax'], target)
+        except Exception:
+            amps = np.linalg.lstsq(A * s['dmax'], target, rcond=None)[0]
+            amps = np.maximum(amps, 0.0)
+        y = (A @ amps) * s['dmax'] + s['bg']
+        return amps, y
+
+    def _chi2(s, y):
+        if weight_mode == 'pearson':
+            return float(np.sum((s['d'] - y) ** 2 / np.maximum(y, 1.0)) / s['npts'])
+        if weight_mode == 'poisson':
+            ys = np.maximum(y, 1e-9)
+            dev = 2.0 * (s['d'] * np.log(s['d'] / ys) - (s['d'] - ys))
+            return float(np.sum(dev) / s['npts'])
+        r = (y - s['d']) / s['d']
+        return float(np.sum(r ** 2 * s['d']) / s['npts'])
+
+    def _total_chi2(log_taus):
+        taus = np.exp(np.asarray(log_taus, dtype=float))
+        tot = 0.0
+        for s in sets:
+            A = _basis(s, taus)
+            _, y = _solve_amps(s, A)
+            tot += _chi2(s, y)
+        return tot
+
+    # ---------- 初值：单独拟合峰位 + 对数等距 ----------
+    inits = []
+    if tau_init:
+        inits.append(np.log(np.asarray(tau_init, dtype=float)))
+    else:
+        peaks = []
+        for s in sets[:min(n_sets, 4)]:
+            try:
+                _check_cancel()
+                f = MEMFitter(verbose=False, name=s['name'])
+                f.load(s['time'], s['decay'], s['irf'])
+                f.preprocess()
+                f.fit(method='MEM', n_rates=101)
+                f.postprocess()
+                peaks += [float(p[0]) for p in (f.peak_result or [])]
+            except Exception:
+                pass
+        peaks = [p for p in peaks if np.isfinite(p) and p > 0]
+        if len(peaks) >= n_comp:
+            peaks = np.sort(np.asarray(peaks))
+            idx = np.linspace(0, len(peaks) - 1, n_comp).astype(int)
+            inits.append(np.log(np.maximum(peaks[idx], 1e-4)))
+    # 对数等距兜底初值（覆盖 0.1–30 ns）
+    for lo, hi in ((0.2, 10.0), (0.5, 20.0), (0.1, 30.0)):
+        inits.append(np.log(np.geomspace(lo, hi, n_comp)))
+    inits = inits[:max(1, int(n_restarts) + 1)]
+
+    # ---------- 优化 ----------
+    best = None
+    for i, x0 in enumerate(inits):
+        _check_cancel()
+        _tick(0.2 + 0.6 * i / max(len(inits), 1), f"全局离散拟合（初值 {i + 1}/{len(inits)}）")
+        try:
+            r = scipy.optimize.minimize(
+                _total_chi2, x0, method='Nelder-Mead',
+                options={'maxiter': 4000, 'xatol': 1e-6, 'fatol': 1e-10})
+        except Exception:
+            continue
+        if best is None or r.fun < best.fun:
+            best = r
+    if best is None:
+        raise RuntimeError("全局离散拟合失败：所有初值都未能收敛")
+
+    taus = np.exp(np.asarray(best.x, dtype=float))
+    order = np.argsort(taus)
+    taus = taus[order]
+
+    per = []
+    chi2_total = 0.0
+    for s in sets:
+        _check_cancel()
+        A = _basis(s, taus)
+        amps, y = _solve_amps(s, A)
+        chi2 = _chi2(s, y)
+        chi2_total += chi2
+        # 光子占比 ∝ 幅度 × τ（基函数是单位幅度指数）
+        w = amps * taus
+        alpha = (w / w.sum()).tolist() if w.sum() > 0 else [0.0] * len(taus)
+        per.append({
+            'name': s['name'], 'chi2R': float(chi2),
+            'amplitudes': [float(v) for v in amps],
+            'alpha': [float(v) for v in alpha],
+            'qshift': float(s['q']),
+            'fit_start': s['fs'], 'fit_end': s['fe'],
+            'time': s['time'], 'decay': s['decay'], 'irf': s['irf'],
+            'y_fitted': y,
+        })
+
+    out = {
+        'taus': [float(v) for v in taus],
+        'per_dataset': per, 'chi2R_total': float(chi2_total),
+        'n_comp': n_comp, 'weight_mode': weight_mode,
+        'solver_converged': bool(best.success),
+        'solver_nit': int(getattr(best, 'nit', 0)),
+        'model': 'discrete-shared-tau',
+    }
+    if verbose:
+        _safe_print(f"[全局离散拟合] {n_sets} 个数据集，共享 {n_comp} 个寿命，"
+                    f"Σχ²R = {chi2_total:.4g}（收敛 = {best.success}）")
+        _safe_print("  共享寿命：" + "，".join(f"τ{i + 1}={t:.4g} ns"
+                                              for i, t in enumerate(taus)))
+        for e in per:
+            _safe_print(f"  {e['name']}: χ²R={e['chi2R']:.4g}，占比="
+                        + "/".join(f"{a * 100:.1f}%" for a in e['alpha']))
+    _tick(1.0, "全局离散拟合完成")
+    return out
 
 
 def fit_lifetime(files, save_dir='./plots', method='MEM', show=False,

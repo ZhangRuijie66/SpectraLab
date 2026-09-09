@@ -112,8 +112,10 @@ class UiMixin:
         splitter.addWidget(self.param_panel)
         splitter.addWidget(self.canvas_panel)
         # 前三栏用最小宽度兜底，图片区 stretch 占满剩余
-        # 参数栏最小/默认宽度略增：寿命与 3D 选项组控件较多（v4.19 用户反馈）
-        self._col_widths = [170, 170, 340]
+        # 参数栏收窄到与左两栏接近（v4.22 修订：删掉小字说明、标签/组标题压缩、
+        # 波长范围与 k 范围改为上下排列后，内容最小宽度 384 → 254；
+        # 竖向滚动条另占约 15 px，故最小宽度取 275）
+        self._col_widths = [170, 170, 275]
         self.tree_panel.setMinimumWidth(self._col_widths[0])
         self.file_panel.setMinimumWidth(self._col_widths[1])
         self.param_panel.setMinimumWidth(self._col_widths[2])
@@ -124,7 +126,7 @@ class UiMixin:
         splitter.setStretchFactor(3, 1000)  # 图片占满所有剩余宽度
         # 初始给图片区更大的默认宽度（前几栏按内容保留较窄宽度），
         # 窗口放大时通过 stretchFactor(1000) 让图片区吃满剩余空间
-        splitter.setSizes([200, 210, 360, 730])
+        splitter.setSizes([200, 210, 285, 805])
         main_layout.addWidget(splitter)
 
         # 设置全局字体大小（适配高分辨率屏幕）
@@ -191,12 +193,13 @@ class UiMixin:
                 "（time / decay / IRF，表头 Labels/Type/Start/Stop/Step），"
                 "或多列 xlsx（时间 + 各样品列 + IRF，自动按列拆成多个数据集）</li>"
                 "<li><b>专属按钮</b>：「⏱ 开始拟合」（单文件 MEM/SESM 拟合）、"
-                "「📊 叠加寿命分布（并行拟合全部）」（多进程批量拟合后叠加对比）、"
+                "「📊 叠加寿命分布」（多进程批量拟合后叠加对比）、"
+                "「💾 存为默认值」（把当前拟合参数固定为下次启动的默认值）、"
                 "「💾 导出当前拟合结果」（PNG + 拟合结果 json）</li>"
                 "<li><b>参数</b>：拟合方法（MEM 最大熵 / SESM 平滑指数序列）、"
-                "速率网格点数、τ 范围（1/k_min – 1/k_max）、"
+                "速率网格点数、k 范围（τ = 1/k）、"
                 "「自动拟合 λ」（每次启动默认勾选，程序扫描最优熵权重）、"
-                "固定寿命分量（逗号分隔的 τ，作为不受熵约束的基函数）</li>"
+                "固定 τ（逗号分隔，作为不受熵约束的基函数）</li>"
                 "<li><b>F5 行为</b>：本模式下 F5 = <b>开始拟合</b>"
                 "（不是普通预览；拟合约 1–2 分钟，会弹出带「取消」的进度框）</li>"
                 "<li><b>拟合质量怎么看</b>：χ²R 的分母是拟合点数 M（不是自由度 ν）；"
@@ -524,7 +527,7 @@ class UiMixin:
         param_layout.addWidget(self.linewidth_spin)
 
         # DPI（带滑块；导出图片的分辨率，默认 600 dpi，最高 1200）
-        label = QLabel("分辨率 (DPI):")
+        label = QLabel("DPI:")
         param_layout.addWidget(label)
         self.dpi_spin = SliderSpin(72, 1200, 600, 10, scale=1, decimals=0, suffix="")
         param_layout.addWidget(self.dpi_spin)
@@ -571,7 +574,8 @@ class UiMixin:
         param_layout.addWidget(self.mark_peaks_check)
 
         # 峰位标数值（D7）：关掉后峰上不再写波长数字
-        self.peak_value_check = QCheckBox("峰位标数值 (nm)")
+        self.peak_value_check = QCheckBox("峰位标数值")
+        self.peak_value_check.setToolTip("在峰顶标注波长数值 (nm)")
         self.peak_value_check.setChecked(True)
         self.peak_value_check.stateChanged.connect(self._trigger_live_update)
         param_layout.addWidget(self.peak_value_check)
@@ -580,7 +584,8 @@ class UiMixin:
         emission_options = QVBoxLayout()
         emission_group = QGroupBox("发射光谱选项")
         self.normalize_check = QCheckBox("归一化强度")
-        self.show_ex_check = QCheckBox("标注激发波长 (EX)")
+        self.show_ex_check = QCheckBox("标注 EX")
+        self.show_ex_check.setToolTip("标注激发波长 (EX)")
         emission_options.addWidget(self.normalize_check)
         emission_options.addWidget(self.show_ex_check)
         emission_group.setLayout(emission_options)
@@ -603,7 +608,7 @@ class UiMixin:
             self.on_lifetime_method_changed)
         lifetime_options.addWidget(self.lifetime_method_combo)
 
-        lifetime_rates_label = QLabel("速率网格点数:")
+        lifetime_rates_label = QLabel("网格点数:")
         lifetime_options.addWidget(lifetime_rates_label)
         self.lifetime_nrates_spin = QSpinBox()
         self.lifetime_nrates_spin.setRange(51, 401)
@@ -612,71 +617,60 @@ class UiMixin:
         lifetime_options.addWidget(self.lifetime_nrates_spin)
 
         # 速率网格范围 k_min–k_max（k = 1/τ，单位 1/ns）
-        lifetime_krange_label = QLabel("速率网格范围 k (1/ns):")
-        lifetime_options.addWidget(lifetime_krange_label)
-        krange_row = QHBoxLayout()
+        # 上下排列（v4.22 修订）：并排一行最小宽度 188 px，是参数栏收不窄的主因。
+        lifetime_options.addWidget(QLabel("k_min (1/ns):"))
         self.lifetime_kmin_spin = QDoubleSpinBox()
         self.lifetime_kmin_spin.setRange(1e-5, 10.0)
         self.lifetime_kmin_spin.setDecimals(5)
         self.lifetime_kmin_spin.setValue(0.01)
         self.lifetime_kmin_spin.setSingleStep(0.01)
-        self.lifetime_kmin_spin.setMinimumWidth(110)
-        krange_row.addWidget(self.lifetime_kmin_spin)
-        krange_row.addWidget(QLabel("—"))
+        self.lifetime_kmin_spin.setMinimumWidth(84)
+        lifetime_options.addWidget(self.lifetime_kmin_spin)
+
+        lifetime_options.addWidget(QLabel("k_max (1/ns):"))
         self.lifetime_kmax_spin = QDoubleSpinBox()
         self.lifetime_kmax_spin.setRange(0.1, 1000.0)
         self.lifetime_kmax_spin.setDecimals(2)
         self.lifetime_kmax_spin.setValue(100.0)
         self.lifetime_kmax_spin.setSingleStep(1.0)
-        self.lifetime_kmax_spin.setMinimumWidth(110)
-        krange_row.addWidget(self.lifetime_kmax_spin)
-        lifetime_options.addLayout(krange_row)
-        krange_hint = QLabel("k = 1/τ：默认 0.01–100 对应 τ = 100 ns–10 ps。\n"
-                             "要拟合更长寿命（μs 级）把 k_min 调小。")
-        krange_hint.setWordWrap(True)
-        krange_hint.setProperty("role", "hint")
-        lifetime_options.addWidget(krange_hint)
+        self.lifetime_kmax_spin.setMinimumWidth(84)
+        lifetime_options.addWidget(self.lifetime_kmax_spin)
 
         # 固定寿命分量（不受熵约束的额外基函数）
-        lifetime_options.addWidget(QLabel("固定寿命分量 τ (ns，逗号分隔):"))
+        lifetime_options.addWidget(QLabel("固定 τ:"))
         self.lifetime_fixed_taus_edit = QLineEdit()
         self.lifetime_fixed_taus_edit.setPlaceholderText(
             "留空 = 不固定；例：3.6 或 0.5, 3.6")
         lifetime_options.addWidget(self.lifetime_fixed_taus_edit)
-        fixed_hint = QLabel(
-            "填了就把这些 τ 作为**不受熵约束**的基函数一起拟合，幅度自动求解——\n"
-            "用于扣除参照染料寿命、IRF 拖尾等已知分量。")
-        fixed_hint.setWordWrap(True)
-        fixed_hint.setProperty("role", "hint")
-        lifetime_options.addWidget(fixed_hint)
 
         # 熵权重 λ（MEM 目标函数 chi² - λ·S 中的 λ）：可手动修改，
         # 也可勾选「自动拟合 λ」让程序扫描最优值（对数滑块，跨 6 个数量级）
-        lambda_label = QLabel("熵权重 λ (MEM):")
+        lambda_label = QLabel("λ (MEM):")
         lifetime_options.addWidget(lambda_label)
         self.lifetime_lambda_spin = SliderSpin(
             1e-6, 1.0, 1e-3, 1e-6, decimals=6, logscale=True)
         lifetime_options.addWidget(self.lifetime_lambda_spin)
 
-        self.lifetime_auto_lambda_check = QCheckBox("自动拟合 λ（推荐）")
+        self.lifetime_auto_lambda_check = QCheckBox("自动拟合 λ")
+        self.lifetime_auto_lambda_check.setToolTip(
+            "推荐：程序按当前 λ 拟合后扫描 χ²R ≤ 1.1 的最大 λ 再重拟合")
         self.lifetime_auto_lambda_check.setChecked(True)   # 默认勾选（用户要求）
         self.lifetime_auto_lambda_check.toggled.connect(
             self.on_auto_lambda_toggled)
         lifetime_options.addWidget(self.lifetime_auto_lambda_check)
         self.on_auto_lambda_toggled(True)                  # 同步禁用 λ 输入框
 
-        lambda_hint = QLabel(
-            "λ = 熵正则强度：越大分布越平滑，越小越贴合噪声。\n"
-            "勾选后流程：按当前 λ 拟合 MEM → 扫描 χ²R ≤ 1.1 的最大 λ → "
-            "用新 λ 重新拟合（约 2–4 分钟/文件）")
-        lambda_hint.setWordWrap(True)
-        lambda_hint.setProperty("role", "hint")
-        lifetime_options.addWidget(lambda_hint)
-
-        lifetime_hint = QLabel("选中文件后点下方按钮开始拟合\n（MEM 约 1–2 分钟/文件）")
-        lifetime_hint.setWordWrap(True)
-        lifetime_hint.setProperty("role", "hint")
-        lifetime_options.addWidget(lifetime_hint)
+        # 存为默认值（v4.22 修订）：把当前拟合参数固定为每次启动的默认值
+        self.lifetime_save_defaults_btn = QPushButton("💾 存为默认值")
+        self.lifetime_save_defaults_btn.setProperty("variant", "neutral")
+        self.lifetime_save_defaults_btn.setCursor(Qt.PointingHandCursor)
+        self.lifetime_save_defaults_btn.setToolTip(
+            "把当前荧光寿命拟合参数存为默认值，下次启动自动套用：\n"
+            "拟合方法、速率网格点数、k 范围、固定 τ、λ 与自动拟合 λ。\n"
+            "临时改动不会自动变成默认值——想改默认值就再点一次本按钮。")
+        self.lifetime_save_defaults_btn.clicked.connect(
+            self._save_lifetime_defaults)
+        lifetime_options.addWidget(self.lifetime_save_defaults_btn)
 
         # 组内最下方的拟合按钮（显式触发，等效于「实时预览」）
         self.lifetime_fit_btn = QPushButton("⏱ 开始拟合")
@@ -687,13 +681,14 @@ class UiMixin:
         lifetime_options.addWidget(self.lifetime_fit_btn)
 
         # 并行拟合全部文件并叠加寿命分布对比（C1 + C8）
-        self.lifetime_overlay_btn = QPushButton("📊 叠加寿命分布（并行拟合全部）")
+        self.lifetime_overlay_btn = QPushButton("📊 叠加分布")
+        self.lifetime_overlay_btn.setToolTip("并行拟合全部文件后叠加寿命分布对比")
         self.lifetime_overlay_btn.setProperty("variant", "cyan")
         self.lifetime_overlay_btn.setCursor(Qt.PointingHandCursor)
         self.lifetime_overlay_btn.clicked.connect(self._run_overlay_lifetime)
         lifetime_options.addWidget(self.lifetime_overlay_btn)
 
-        lifetime_group = QGroupBox("荧光寿命拟合")
+        lifetime_group = QGroupBox("寿命拟合")
         lifetime_group.setLayout(lifetime_options)
         self.lifetime_options_group = lifetime_group
         lifetime_group.setVisible(False)
@@ -712,7 +707,7 @@ class UiMixin:
         self._style_combo(self.scan3d_plot_combo)
         scan3d_options.addWidget(self.scan3d_plot_combo)
 
-        scan3d_options.addWidget(QLabel("周期梳状伪迹处理:"))
+        scan3d_options.addWidget(QLabel("条纹处理:"))
         self.scan3d_comb_combo = QComboBox()
         self.scan3d_comb_combo.addItems([
             "只保留谷值通道",
@@ -723,32 +718,25 @@ class UiMixin:
         self._style_combo(self.scan3d_comb_combo)
         scan3d_options.addWidget(self.scan3d_comb_combo)
 
-        scan3d_options.addWidget(QLabel("中值去窄线窗口:"))
+        scan3d_options.addWidget(QLabel("去窄线:"))
         self.scan3d_despike_spin = SliderSpin(1, 15, 3, 1, scale=1, decimals=0)
         scan3d_options.addWidget(self.scan3d_despike_spin)
 
-        scan3d_options.addWidget(QLabel("EM 方向平滑 σ:"))
+        scan3d_options.addWidget(QLabel("σ_EM:"))
         self.scan3d_sigma_em_spin = SliderSpin(0, 5, 1.0, 0.1, scale=10,
                                                decimals=1)
         scan3d_options.addWidget(self.scan3d_sigma_em_spin)
 
-        scan3d_options.addWidget(QLabel("EX 方向平滑 σ:"))
+        scan3d_options.addWidget(QLabel("σ_EX:"))
         self.scan3d_sigma_ex_spin = SliderSpin(0, 5, 0.0, 0.1, scale=10,
                                                decimals=1)
         scan3d_options.addWidget(self.scan3d_sigma_ex_spin)
 
-        self.scan3d_log_check = QCheckBox("对数色标（强度跨数量级时更清楚）")
+        self.scan3d_log_check = QCheckBox("对数色标")
+        self.scan3d_log_check.setToolTip("强度跨数量级时更清楚")
         scan3d_options.addWidget(self.scan3d_log_check)
 
-        scan3d_hint = QLabel(
-            "EEM 数据常含 ~7 nm 周期条纹（等厚干涉/光栅鬼线）：位置固定在 EM、"
-            "峰值常饱和。默认只保留条纹谷值通道再插值，曲面才连续；"
-            "无条纹的数据选「不处理」。点选文件即绘制。")
-        scan3d_hint.setWordWrap(True)
-        scan3d_hint.setProperty("role", "hint")
-        scan3d_options.addWidget(scan3d_hint)
-
-        scan3d_group = QGroupBox("3D 扫描 (EEM) 选项")
+        scan3d_group = QGroupBox("3D 扫描")
         scan3d_group.setLayout(scan3d_options)
         self.scan3d_options_group = scan3d_group
         scan3d_group.setVisible(False)
@@ -825,39 +813,36 @@ class UiMixin:
         param_layout.addWidget(self.ratio_combo)
 
         # 显示范围（波长上/下限）
-        range_group = QGroupBox("显示范围 (nm)")
+        # 标签与输入框改为上下排列（v4.22 修订）：并排时「标签+输入框」最小
+        # 宽度约 204 px，是参数栏收不窄的主因；上下排列后仅取决于输入框本身。
+        range_group = QGroupBox("显示范围")
         range_layout = QVBoxLayout()
 
-        lo_layout = QHBoxLayout()
-        lo_layout.addWidget(QLabel("波长下限:"))
+        range_layout.addWidget(QLabel("波长下限:"))
         self.wl_min_spin = QDoubleSpinBox()
         self.wl_min_spin.setRange(0, 3000)
         self.wl_min_spin.setValue(200)
         self.wl_min_spin.setDecimals(1)
         self.wl_min_spin.setSuffix(" nm")
         self.wl_min_spin.setSingleStep(10)
-        # 显式最小宽度：压低「显示范围」组的最小宽度，避免把参数列撑出横向滚动条
-        self.wl_min_spin.setMinimumWidth(110)
+        self.wl_min_spin.setMinimumWidth(84)
         self.wl_min_spin.valueChanged.connect(self._trigger_live_update)
-        lo_layout.addWidget(self.wl_min_spin)
-        range_layout.addLayout(lo_layout)
+        range_layout.addWidget(self.wl_min_spin)
 
-        hi_layout = QHBoxLayout()
-        hi_layout.addWidget(QLabel("波长上限:"))
+        range_layout.addWidget(QLabel("波长上限:"))
         self.wl_max_spin = QDoubleSpinBox()
         self.wl_max_spin.setRange(0, 3000)
         self.wl_max_spin.setValue(900)
         self.wl_max_spin.setDecimals(1)
         self.wl_max_spin.setSuffix(" nm")
         self.wl_max_spin.setSingleStep(10)
-        self.wl_max_spin.setMinimumWidth(110)
+        self.wl_max_spin.setMinimumWidth(84)
         self.wl_max_spin.valueChanged.connect(self._trigger_live_update)
-        hi_layout.addWidget(self.wl_max_spin)
-        range_layout.addLayout(hi_layout)
+        range_layout.addWidget(self.wl_max_spin)
 
         # 自动范围按钮（E2）：只在首次加载某文件夹时自动设范围，之后想回到
         # 数据实际范围就点这里，不再每次加载都覆盖用户手填的区间
-        self.auto_range_btn = QPushButton("自动（按数据范围）")
+        self.auto_range_btn = QPushButton("自动范围")
         self.auto_range_btn.setToolTip("按已加载数据的实际波长范围重设上下限")
         self.auto_range_btn.setCursor(Qt.PointingHandCursor)
         self.auto_range_btn.setProperty("variant", "neutral")
@@ -884,18 +869,11 @@ class UiMixin:
         self.subtract_minuend_combo.addItem("所有光谱（各减本底）")
         subtract_layout.addWidget(self.subtract_minuend_combo)
 
-        subtract_layout.addWidget(QLabel("本底 / 减数 (B):"))
+        subtract_layout.addWidget(QLabel("减数 (B):"))
         self.subtract_ref_combo = QComboBox()
         self.subtract_ref_combo.currentIndexChanged.connect(self._trigger_live_update)
         self._style_combo(self.subtract_ref_combo)
         subtract_layout.addWidget(self.subtract_ref_combo)
-
-        subtract_hint = QLabel("A 选「所有光谱」时每条光谱都减去本底 B；\n"
-                               "A 选具体文件时只绘制 A − B 差谱。\n"
-                               "本底文件本身不再绘制。")
-        subtract_hint.setWordWrap(True)
-        subtract_hint.setProperty("role", "hint")
-        subtract_layout.addWidget(subtract_hint)
 
         subtract_group.setLayout(subtract_layout)
         self.subtract_group = subtract_group
@@ -942,6 +920,27 @@ class UiMixin:
             self._export_lifetime_fit_results)
         self.export_current_fit_btn.setVisible(False)
         action_layout.addWidget(self.export_current_fit_btn)
+
+        # 荧光寿命模式专属：跨样品汇总图（τ / α / χ²R vs 样品）
+        self.summary_plot_btn = QPushButton("📈 跨样品汇总图")
+        self.summary_plot_btn.setProperty("variant", "violet")
+        self.summary_plot_btn.setCursor(Qt.PointingHandCursor)
+        self.summary_plot_btn.setToolTip(
+            "并行拟合当前文件夹全部文件后，画「τ / 占比 / χ²R 随样品变化」的三联图\n"
+            "适合滴定序列（如 FRET A0→A24）")
+        self.summary_plot_btn.clicked.connect(self._run_summary_plot)
+        self.summary_plot_btn.setVisible(False)
+        action_layout.addWidget(self.summary_plot_btn)
+
+        # 荧光寿命模式专属：多页 PDF 报告
+        self.pdf_report_btn = QPushButton("📄 导出 PDF 报告")
+        self.pdf_report_btn.setProperty("variant", "violet")
+        self.pdf_report_btn.setCursor(Qt.PointingHandCursor)
+        self.pdf_report_btn.setToolTip(
+            "汇总表 + χ²R 柱状图 + 每个样品一页（衰减拟合 + 寿命分布）")
+        self.pdf_report_btn.clicked.connect(self._run_pdf_report)
+        self.pdf_report_btn.setVisible(False)
+        action_layout.addWidget(self.pdf_report_btn)
 
         action_group.setLayout(action_layout)
         outer.addWidget(action_group)

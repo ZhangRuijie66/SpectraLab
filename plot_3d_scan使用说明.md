@@ -161,7 +161,47 @@ CLI/GUI 的清洗报告也会打印：
 
 ---
 
-## 7. 已知限制
+## 7. 散射剥离与定量校正（v4.22 新增）
+
+### 瑞利 / 拉曼散射带剔除
+
+```python
+prep = prepare_grid(data, remove_scatter=True)          # 默认关闭，需显式开启
+prep = prepare_grid(data, remove_scatter=True, rayleigh_width=10.0,
+                    raman_shift_cm=3350.0, raman_width=15.0)
+```
+
+- 瑞利带：`|EM − EX| ≤ rayleigh_width`（默认 ±10 nm）；
+- 拉曼带：`EM = 1/(1/EX − Δν·1e-7)`，Δν 默认 3350 cm⁻¹（水的 O–H 伸缩），
+  半宽 `raman_width` 默认 ±15 nm；
+- 命中点置 NaN 后**沿 EM 内插补全**，统计写入 `stats['scatter_removed']` /
+  `scatter_rayleigh` / `scatter_raman`；
+- 掩膜覆盖 >50% 时自动跳过并告警（宽度设错不会毁数据）。
+
+实测（合成 EEM）：对角线区均值 982 → 330，**非散射区逐点零改动**。
+注意：开启后对角线会出现插值补洞的痕迹，锐利边缘附近样条可能轻微振铃
+（负值会被截断并记入 `neg_after_spline`），因此默认关闭。
+
+### 空白（溶剂）扣除
+
+```python
+blank = parse_3d_scan_csv("blank.csv", verbose=False)
+prep = prepare_grid(data, blank=blank)     # Z − Z_blank（要求 EX/EM 网格一致）
+```
+
+### 内滤效应校正
+
+```python
+Z_corr, factor = inner_filter_correction(data, a_ex, a_em)
+# F_corr = F_obs · 10^((A_ex + A_em)/2)
+```
+
+强吸收区 EEM 会被压低（激发光被吸收、发射光再被吸收），
+定量比较峰高/峰位前应先校正；`a_ex` 长度 = len(ex)，`a_em` 长度 = len(em)。
+
+---
+
+## 8. 已知限制
 
 - `minima` 模式把 EM 有效采样降到约一个条纹周期（实测 ~7 nm）。对 30–50 nm 宽的荧光带够用，
   但会抹掉真正窄于一个周期的发射线——这种情况请选 `divide` 或关闭处理；
@@ -175,7 +215,7 @@ CLI/GUI 的清洗报告也会打印：
 
 ---
 
-## 8. 相关文件
+## 9. 相关文件
 
 - 模块：`画图\plot_3d_scan.py`
 - GUI 集成：`可视化分析GUI\gui_ui.py`（选项组）、`gui_data.py`（`_load_scan3d_files`）、
