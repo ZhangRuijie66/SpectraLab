@@ -226,7 +226,7 @@ def t_gui_shortcuts():
     app, w = _make_gui()
     seqs = sorted(s.key().toString() for s in w._shortcuts)
     for need in ('F5', 'Ctrl+R', 'Ctrl+O', 'Ctrl+E', 'Ctrl+Shift+E',
-                 'Ctrl+D', 'F1'):
+                 'Ctrl+D', 'Ctrl+F', 'F1'):
         assert need in seqs, f"缺快捷键 {need}"
 
 
@@ -1041,6 +1041,163 @@ def t_gui_type_scale_density():
     # 同一探针实测：v4.24 = 1230+575+294 = 2099px（要滚 2.5 屏），v4.25 = 1100+494+126 = 1720px
     assert total < 1750, f"参数区内容总高 {total}px 偏大（字阶/间距回涨了？）"
     assert total > 800, f"参数区内容总高 {total}px 异常偏小，可能控件丢了"
+
+
+# ---------------------------------------------------------------- v4.26 新增
+@check("GUI：三栏可折叠 + 折叠后画布变宽 + 宽度记忆（v4.26）")
+def t_gui_panel_collapse():
+    app, w = _make_gui()
+    w.resize(1368, 783)                  # 默认窗口宽度，量出来的数才有意义
+    w.show()
+    app.processEvents()
+    w._apply_col_sizes()
+    app.processEvents()
+
+    btns = getattr(w, 'panel_toggle_btns', [])
+    assert len(btns) == 3, f"栏开关条应有 3 个按钮，实际 {len(btns)}"
+    assert all(b.isChecked() for b in btns), "初始应三栏都展开"
+    # 开关条必须在 splitter **之外**：栏折叠后栏内控件全都不显示，
+    # 折叠按钮如果放在栏里就等于"折起来就再也打不开"
+    assert w.splitter.indexOf(btns[0]) == -1, "开关条按钮不应位于 splitter 内"
+
+    base = w.splitter.sizes()[3]
+    w.toggle_panel(0)
+    app.processEvents()
+    assert w.tree_panel.isHidden(), "折叠后目录树栏应隐藏"
+    assert not btns[0].isChecked(), "折叠后开关条按钮应取消勾选"
+    one = w.splitter.sizes()[3]
+    assert one > base, f"折叠目录树后画布应变宽：{base} → {one}"
+    w.toggle_panel(1)
+    app.processEvents()
+    two = w.splitter.sizes()[3]
+    assert two > one, f"再折叠数据栏后画布应更宽：{one} → {two}"
+    assert two >= 1000, f"折叠目录树+数据后画布应 ≥1000px，实际 {two}"
+    w.toggle_panel(0)
+    w.toggle_panel(1)                    # 都展开回来
+    app.processEvents()
+    assert not w.tree_panel.isHidden() and not w.file_panel.isHidden()
+    assert all(b.isChecked() for b in btns), "展开后勾选态应恢复"
+    assert w.splitter.sizes()[3] == base, \
+        f"展开后画布宽度应回到 {base}，实际 {w.splitter.sizes()[3]}"
+
+    if not w.settings.isWritable():
+        raise Skip("QSettings 不可写，注册表被限制")
+    s = w.settings
+    old = {k: s.value(k, None) for k in ('ui/panel_hidden', 'ui/panel_widths')}
+    try:
+        s.setValue("ui/panel_hidden", [0, 1, 0])
+        s.setValue("ui/panel_widths", [240, 210, 320])
+        s.sync()
+        app2, w2 = _make_gui()
+        assert w2._col_hidden == [False, True, False], \
+            f"折叠状态未恢复：{w2._col_hidden}"
+        assert w2._col_widths == [240, 210, 320], f"宽度未恢复：{w2._col_widths}"
+        assert w2.file_panel.isHidden(), "数据栏应保持上次的折叠状态"
+        assert not w2.panel_toggle_btns[1].isChecked(), "开关条状态应同步"
+        # 坏设置（越界宽度）必须被忽略，否则界面会被搞乱
+        s.setValue("ui/panel_widths", [5, 99999, 285])
+        s.sync()
+        app3, w3 = _make_gui()
+        assert w3._col_widths == [200, 210, 285], \
+            f"越界宽度应被忽略并退回默认：{w3._col_widths}"
+    finally:
+        for k, v in old.items():
+            if v is None:
+                s.remove(k)
+            else:
+                s.setValue(k, v)
+        s.sync()
+
+
+@check("GUI：文件列表搜索过滤 + 全选只作用于筛选结果（v4.26）")
+def t_gui_file_search_select():
+    from PyQt5.QtCore import Qt as _Qt
+    from PyQt5.QtWidgets import QListWidgetItem
+    app, w = _make_gui()
+    assert hasattr(w, 'file_search_edit'), "数据栏应有搜索框"
+    assert hasattr(w, 'file_select_btn'), "数据栏应有全选按钮"
+    names = ["A0_1000cpc.csv", "A1_1000cpc.csv", "A2_10cpc.csv",
+             "A3_100cpc.csv", "A4_500cpc.csv"]
+    w.file_list.clear()
+    for n in names:
+        it = QListWidgetItem(n)
+        it.setFlags(it.flags() | _Qt.ItemIsUserCheckable)
+        it.setCheckState(_Qt.Unchecked)
+        w.file_list.addItem(it)
+    w._sync_file_item_tooltips()
+    w._apply_file_filter("")
+    assert len(w._visible_file_items()) == 5, "无搜索词时不应隐藏任何项"
+    assert w.file_count_label.text() == "已加载 5 个文件", \
+        f"计数标签异常：{w.file_count_label.text()!r}"
+    assert w.file_select_btn.text() == "全选"
+
+    w.file_search_edit.setText("1000")
+    app.processEvents()
+    shown = len(w._visible_file_items())
+    assert shown == 2, f"“1000” 应命中 2 个，实际 {shown}"
+    assert "显示 2" in w.file_count_label.text(), \
+        f"计数标签应显示过滤结果：{w.file_count_label.text()!r}"
+    w.toggle_select_all_visible()
+    app.processEvents()
+    assert len(w.get_checked_files()) == 2, \
+        f"全选应只勾筛选出的 2 个，实际 {len(w.get_checked_files())}"
+    assert w.file_select_btn.text() == "全不选", "筛选结果全勾后按钮应变「全不选」"
+    w.file_search_edit.setText("")
+    app.processEvents()
+    assert len(w.get_checked_files()) == 2, \
+        "清空搜索词不应改变已勾选的样品（过滤只影响显示）"
+    assert w.file_select_btn.text() == "全选", "仍有未勾选项，按钮应回到「全选」"
+    w.toggle_select_all_visible()
+    app.processEvents()
+    assert len(w.get_checked_files()) == 5, "无筛选时全选应勾上全部"
+    w.toggle_select_all_visible()
+    app.processEvents()
+    assert len(w.get_checked_files()) == 0, "再点一次应全部取消勾选"
+
+
+@check("GUI：积分结果改表格——表头 / 数值排序 / 导出 CSV（v4.26）")
+def t_gui_integration_table():
+    import tempfile
+    from PyQt5.QtCore import Qt as _Qt
+    from gui_plot import NumericTableItem
+    app, w = _make_gui()
+    assert hasattr(w, 'integ_table'), "积分结果应为 QTableWidget"
+    assert not hasattr(w, 'integ_output'), "旧的 QPlainTextEdit 应已移除"
+    assert hasattr(w, 'integ_csv_btn'), "应有导出 CSV 按钮"
+    table = w.integ_table
+    headers = [table.horizontalHeaderItem(c).text()
+               for c in range(table.columnCount())]
+    assert headers == ["样品", "区间 (nm)", "积分值"], f"表头异常：{headers}"
+    # 积分值列必须按**数值**排序（字符串排序会把 9 排在 100 后面）
+    assert NumericTableItem("9") < NumericTableItem("100"), \
+        "积分值列的排序必须是数值比较"
+
+    w._last_integration_results = {
+        'lo': 450.0, 'hi': 550.0,
+        'rows': [('s3', 900.0), ('s1', 100.0), ('s2', float('nan'))],
+    }
+    w._update_integration_output()
+    assert table.rowCount() == 2, f"NaN 样品应被跳过，实际 {table.rowCount()} 行"
+    table.sortItems(2, _Qt.AscendingOrder)
+    vals = [float(table.item(r, 2).text()) for r in range(2)]
+    assert vals == sorted(vals), f"积分值升序失败：{vals}"
+    table.sortItems(0, _Qt.AscendingOrder)
+    names_sorted = [table.item(r, 0).text() for r in range(2)]
+    assert names_sorted == ['s1', 's3'], f"样品列按文本排序异常：{names_sorted}"
+    assert table.item(0, 1).text() == "450–550", \
+        f"区间文本异常：{table.item(0, 1).text()!r}"
+    assert "共 2 个样品" in w.integ_count_label.text(), \
+        f"计数标签异常：{w.integ_count_label.text()!r}"
+
+    tsv = w._integration_tsv().strip().splitlines()
+    assert len(tsv) == 3 and '\t' in tsv[0], f"复制文本应为表头+2 行制表符文本：{tsv}"
+    tmp = tempfile.mkdtemp(prefix='integ_csv_')
+    out = w._export_integration_csv(save_dir=tmp)
+    assert out and os.path.exists(out), f"CSV 未生成：{out}"
+    raw = open(out, 'rb').read()
+    assert raw.startswith(b'\xef\xbb\xbf'), "CSV 应带 UTF-8 BOM（Excel 不乱码）"
+    lines = open(out, encoding='utf-8-sig').read().strip().splitlines()
+    assert len(lines) == 3, f"CSV 应为表头 + 2 行，实际 {len(lines)}"
 
 
 def main():

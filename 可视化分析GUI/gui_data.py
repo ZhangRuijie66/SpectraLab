@@ -193,6 +193,15 @@ class DataMixin:
                 s.setValue("geometry", self.saveGeometry())
             except Exception:
                 pass
+            # 三栏折叠状态 + 各栏宽度（v4.26：宽度记忆）
+            try:
+                if hasattr(self, '_col_hidden'):
+                    s.setValue("ui/panel_hidden",
+                               [1 if h else 0 for h in self._col_hidden])
+                    s.setValue("ui/panel_widths",
+                               [int(w) for w in self._col_widths])
+            except Exception:
+                pass
             # 白名单控件循环保存（E1）
             for key, attr, kind in self._SESSION_SPECS:
                 w = getattr(self, attr, None)
@@ -263,6 +272,8 @@ class DataMixin:
                     self.restoreGeometry(geo)
                 except Exception:
                     pass
+            # 三栏折叠状态与宽度（v4.26）
+            self._restore_panel_state(s)
             # 上次文件夹（不触发加载，等模式设置好后再加载）
             last_folder = s.value("last_folder", "", str)
             if last_folder and Path(last_folder).is_dir():
@@ -295,6 +306,32 @@ class DataMixin:
             self._refresh_recent_combo()
         except Exception as e:
             log_exception("恢复会话失败", e)
+
+    def _restore_panel_state(self, s):
+        """恢复三栏折叠状态与宽度（v4.26）。任何异常都退回默认布局。"""
+        if not hasattr(self, 'toggle_panel'):
+            return
+        try:
+            widths = s.value("ui/panel_widths", None)
+            if widths is not None:
+                vals = widths if isinstance(widths, (list, tuple)) else [widths]
+                for i, v in enumerate(list(vals)[:3]):
+                    try:
+                        w = int(float(v))
+                    except Exception:
+                        continue
+                    # 只接受合理值：太小/太大一律忽略（防止坏设置把界面搞乱）
+                    if 80 <= w <= 1200:
+                        self._col_widths[i] = w
+            hidden = s.value("ui/panel_hidden", None)
+            if hidden is not None:
+                vals = hidden if isinstance(hidden, (list, tuple)) else [hidden]
+                for i, v in enumerate(list(vals)[:3]):
+                    flag = str(v).strip().lower() not in ("0", "false", "", "none")
+                    self.toggle_panel(i, collapsed=flag)
+            self._apply_col_sizes()
+        except Exception as e:
+            log_exception("恢复栏布局失败", e)
 
     # 「存为默认值」的荧光寿命拟合参数（v4.22 修订）。
     # 键前缀 defaults/ 与上次会话的 param/ 分开：启动时在 _restore_session 之后
@@ -676,6 +713,7 @@ class DataMixin:
         if hasattr(self, '_lifetime_fit_cache'):
             self._lifetime_fit_cache.clear()
         self.file_list.clear()
+        self._update_file_count_label()   # v4.26：列表清空后计数归零
         if hasattr(self, 'current_folder'):
             self.load_data_from_folder(str(self.current_folder))
         else:
@@ -779,8 +817,8 @@ class DataMixin:
             # 完整文件名 tooltip，鼠标悬停即可看全（item.text() 本身没被截断，
             # 截断只发生在绘制阶段）
             self._sync_file_item_tooltips()
-            if hasattr(self, 'file_count_label'):
-                self.file_count_label.setText(f"已加载 {loaded_count} 个文件")
+            # v4.26：换文件夹后列表全变了，重新套用搜索过滤 + 刷新计数
+            self._apply_file_filter()
             self.current_folder = folder
             # 记入最近文件夹（D5）：只在真正加载到 ≥1 个文件时记（D2），
             # 否则浏览过的空目录也会挤进列表
@@ -1336,6 +1374,104 @@ class DataMixin:
                     item.setToolTip(item.text())
         except Exception as e:
             log_exception("设置文件列表 tooltip 失败", e)
+
+    # ---------- 文件列表：搜索过滤 / 全选（v4.26）----------
+
+    def _visible_file_items(self):
+        """当前未被搜索过滤隐藏的列表项（过滤只影响显示，不改勾选状态）。"""
+        out = []
+        try:
+            for i in range(self.file_list.count()):
+                item = self.file_list.item(i)
+                if item is not None and not item.isHidden():
+                    out.append(item)
+        except Exception:
+            pass
+        return out
+
+    def on_file_search_changed(self, text):
+        """搜索框内容变化 → 过滤文件列表（v4.26）。"""
+        self._apply_file_filter(text)
+
+    def _apply_file_filter(self, text=None):
+        """按搜索词过滤文件列表，返回显示出来的条数（v4.26）。
+
+        用 `QListWidgetItem.setHidden` 实现：只影响显示、**不动勾选状态**，
+        所以「筛选出 3 个 → 全选 → 清空搜索词」不会丢掉其它已勾选的样品。
+        """
+        if not hasattr(self, 'file_list'):
+            return 0
+        if text is None:
+            edit = getattr(self, 'file_search_edit', None)
+            text = edit.text() if edit is not None else ""
+        query = str(text).strip().lower()
+        shown = 0
+        try:
+            for i in range(self.file_list.count()):
+                item = self.file_list.item(i)
+                if item is None:
+                    continue
+                hit = (not query) or (query in item.text().lower())
+                item.setHidden(not hit)
+                if hit:
+                    shown += 1
+        except Exception as e:
+            log_exception("过滤文件列表失败", e)
+        self._update_file_count_label(shown)
+        self._update_file_select_btn()
+        return shown
+
+    def _update_file_count_label(self, shown=None):
+        """计数标签：有过滤时显示「已加载 N 个（显示 M）」（v4.26）。"""
+        label = getattr(self, 'file_count_label', None)
+        if label is None or not hasattr(self, 'file_list'):
+            return
+        try:
+            total = self.file_list.count()
+            if shown is None:
+                shown = len(self._visible_file_items())
+            if shown < total:
+                label.setText(f"已加载 {total} 个（显示 {shown}）")
+                label.setToolTip(f"已在列表中过滤：显示 {shown} / 共 {total} 个文件")
+            else:
+                label.setText(f"已加载 {total} 个文件")
+                label.setToolTip("")
+        except Exception:
+            pass
+
+    def _update_file_select_btn(self):
+        """「全选 / 全不选」按钮文字随当前勾选状态切换（v4.26）。"""
+        btn = getattr(self, 'file_select_btn', None)
+        if btn is None or not hasattr(self, 'file_list'):
+            return
+        try:
+            visible = self._visible_file_items()
+            btn.setText("全选" if any(it.checkState() != Qt.Checked
+                                      for it in visible) else "全不选")
+            btn.setEnabled(bool(visible))
+        except Exception:
+            pass
+
+    def toggle_select_all_visible(self):
+        """勾选 / 取消勾选当前显示的全部文件（受搜索过滤影响，v4.26）。"""
+        visible = self._visible_file_items()
+        if not visible:
+            return
+        target = Qt.Checked if any(it.checkState() != Qt.Checked
+                                   for it in visible) else Qt.Unchecked
+        # 逐项改会各自触发 itemChanged → 合并图重绘 N 次，这里合并成一次
+        self.file_list.blockSignals(True)
+        try:
+            for it in visible:
+                it.setCheckState(target)
+        finally:
+            self.file_list.blockSignals(False)
+        self._update_file_select_btn()
+        self._update_file_count_label()
+        if getattr(self, 'current_plot_type', 'combined') == "combined":
+            self._trigger_live_update()
+        self.status_bar.showMessage(
+            f"已{'勾选' if target == Qt.Checked else '取消勾选'} {len(visible)} 个文件")
 
     @staticmethod
     def _extract_xy(data):

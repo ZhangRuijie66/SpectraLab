@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QListWidget, QSplitter, QProgressBar, QStatusBar, QFrame,
     QSizePolicy, QLineEdit, QFileSystemModel, QTreeView, QSlider, QSpinBox,
     QPlainTextEdit, QToolButton, QMenu, QAction, QMessageBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
 from gui_config import (
@@ -34,6 +35,7 @@ from gui_config import (
 )
 from gui_components import (SliderSpin, ComboItemDelegate, MplCanvas,
                             resource_path, set_combo_palette)
+from gui_log import log_exception
 
 
 class UiMixin:
@@ -106,6 +108,16 @@ class UiMixin:
         self.param_panel = self.create_param_panel()
         self.canvas_panel = self.create_canvas_panel()
 
+        # ---- 三栏折叠状态与宽度记忆（v4.26）----
+        # 索引与下面 splitter 的前三个子控件一一对应：0=目录树 1=数据 2=参数
+        self._panel_widgets = (self.tree_panel, self.file_panel, self.param_panel)
+        self._panel_names = ("目录树", "数据", "参数")
+        self._panel_labels = ("目\n录", "数\n据", "参\n数")
+        self._col_min = [170, 170, 275]          # 各栏最小宽度（内容决定）
+        self._col_widths = [200, 210, 285]       # 各栏"展开时应有的宽度"（记住用户拖过的结果）
+        self._col_hidden = [False, False, False]
+        self._col_sizes_applied = False
+
         splitter = QSplitter(Qt.Horizontal)
         self.splitter = splitter
         splitter.addWidget(self.tree_panel)
@@ -116,10 +128,9 @@ class UiMixin:
         # 参数栏收窄到与左两栏接近（v4.22 修订：删掉小字说明、标签/组标题压缩、
         # 波长范围与 k 范围改为上下排列后，内容最小宽度 384 → 254；
         # 竖向滚动条另占约 15 px，故最小宽度取 275）
-        self._col_widths = [170, 170, 275]
-        self.tree_panel.setMinimumWidth(self._col_widths[0])
-        self.file_panel.setMinimumWidth(self._col_widths[1])
-        self.param_panel.setMinimumWidth(self._col_widths[2])
+        self.tree_panel.setMinimumWidth(self._col_min[0])
+        self.file_panel.setMinimumWidth(self._col_min[1])
+        self.param_panel.setMinimumWidth(self._col_min[2])
         self.canvas_panel.setMinimumWidth(400)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
@@ -127,7 +138,14 @@ class UiMixin:
         splitter.setStretchFactor(3, 1000)  # 图片占满所有剩余宽度
         # 初始给图片区更大的默认宽度（前几栏按内容保留较窄宽度），
         # 窗口放大时通过 stretchFactor(1000) 让图片区吃满剩余空间
-        splitter.setSizes([200, 210, 285, 805])
+        splitter.setSizes(self._col_widths + [805])
+        # 用户拖动分隔条后记住各栏宽度（v4.26：下次启动沿用）
+        splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        # 栏开关条（v4.26）：始终可见的折叠/展开入口。
+        # 它**不在** splitter 里——面板折叠后其内部所有控件（含折叠按钮）都会
+        # 一起消失，入口必须留在栏外，否则折叠了就再也点不回来。
+        main_layout.addWidget(self._create_panel_rail())
         main_layout.addWidget(splitter)
 
         # 设置全局字体大小（适配高分辨率屏幕）
@@ -162,6 +180,7 @@ class UiMixin:
             ("Ctrl+S", self.export_plot),           # E5：导出当前图
             ("Ctrl+Shift+E", self.export_all_plots),
             ("Ctrl+D", self._copy_integration_results),
+            ("Ctrl+F", self._focus_file_search),
             ("Ctrl+T", lambda: self.toggle_theme()),  # E5：切换主题
             ("F1", self.show_help),
         ]
@@ -183,6 +202,116 @@ class UiMixin:
                                     f"无法打开日志文件夹，请手动访问：\n{log_dir()}")
         except Exception as e:
             logging.warning("打开日志文件夹失败: %s", e)
+
+    # ---------- 三栏折叠 + 宽度记忆（v4.26）----------
+
+    def _create_panel_rail(self):
+        """最左侧的「栏开关条」：三个竖排按钮，随时折叠/展开对应栏目。
+
+        折叠用 setVisible(False) 实现（splitter 会跳过隐藏子控件，剩余栏自动
+        重排）；代价是栏内所有控件（含若放在栏内的折叠按钮）一起消失——所以
+        入口必须留在栏外，这条 rail 不参与 splitter，宽度固定 34px。
+        """
+        rail = QWidget()
+        rail.setObjectName("panelRail")
+        rail.setFixedWidth(34)
+        rv = QVBoxLayout(rail)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(6)
+
+        self.panel_toggle_btns = []
+        for idx, label in enumerate(self._panel_labels):
+            btn = QPushButton(label)
+            btn.setProperty("variant", "rail")
+            btn.setCheckable(True)
+            btn.setChecked(True)                 # 勾选 = 该栏展开
+            btn.setFixedSize(30, 56)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(f"{self._panel_names[idx]}栏：点击折叠 / 展开")
+            btn.clicked.connect(lambda _checked=False, i=idx: self.toggle_panel(i))
+            rv.addWidget(btn)
+            self.panel_toggle_btns.append(btn)
+        rv.addStretch(1)
+        return rail
+
+    def toggle_panel(self, idx, collapsed=None):
+        """折叠 / 展开第 idx 栏（0=目录树 1=数据 2=参数）。
+
+        collapsed=None 表示切换点击；显式传 True/False 供会话恢复用。
+        """
+        if idx not in (0, 1, 2) or not hasattr(self, 'splitter'):
+            return
+        panel = self._panel_widgets[idx]
+        if collapsed is None:
+            want_hidden = panel.isVisible()
+        else:
+            want_hidden = bool(collapsed)
+        if want_hidden and panel.isVisible() and panel.width() > 0:
+            # 折叠前记住实际宽度，展开时回到原样（最小值兜底）
+            self._col_widths[idx] = max(int(panel.width()), self._col_min[idx])
+        self._col_hidden[idx] = want_hidden
+        panel.setVisible(not want_hidden)
+        self._apply_col_sizes()
+        self._sync_panel_toggle_btns()
+        self.status_bar.showMessage(
+            f"{self._panel_names[idx]}栏已" + ("折叠" if want_hidden else "展开"))
+
+    def _apply_col_sizes(self):
+        """按「记忆宽度 + 画布吃剩余」重算 splitter 各栏宽度。"""
+        try:
+            sizes = []
+            used = 0
+            for i in range(3):
+                if self._col_hidden[i]:
+                    sizes.append(0)
+                else:
+                    sizes.append(int(self._col_widths[i]))
+                    used += int(self._col_widths[i])
+            avail = int(self.splitter.width())
+            # 隐藏栏宽度记 0（Qt 会跳过它），画布拿走剩下的全部
+            sizes.append(max(400, avail - used))
+            self.splitter.setSizes(sizes)
+        except Exception as e:
+            log_exception("重算栏宽失败", e)
+
+    def _sync_panel_toggle_btns(self):
+        """开关条按钮的勾选态与 tooltip 跟当前折叠状态同步。"""
+        for i, btn in enumerate(getattr(self, 'panel_toggle_btns', [])):
+            expanded = not self._col_hidden[i]
+            btn.blockSignals(True)
+            btn.setChecked(expanded)
+            btn.blockSignals(False)
+            btn.setToolTip(f"{self._panel_names[i]}栏："
+                           + ("已展开 —— 点击折叠" if expanded else "已折叠 —— 点击展开"))
+
+    def _on_splitter_moved(self, pos, index):
+        """用户拖动分隔条后记住各栏宽度（会话结束时写进 QSettings）。"""
+        try:
+            sizes = self.splitter.sizes()
+            for i in range(3):
+                if (not self._col_hidden[i] and i < len(sizes)
+                        and sizes[i] >= self._col_min[i]):
+                    self._col_widths[i] = int(sizes[i])
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        """首次显示后按真实宽度应用一次栏宽（setSizes 需要真实宽度才准确）。"""
+        super().showEvent(event)
+        if not getattr(self, '_col_sizes_applied', False):
+            self._col_sizes_applied = True
+            QTimer.singleShot(0, self._apply_col_sizes)
+
+    def _focus_file_search(self):
+        """Ctrl+F：聚焦数据栏的搜索框并选中已有内容（v4.26）。"""
+        edit = getattr(self, 'file_search_edit', None)
+        if edit is None:
+            return
+        # 搜索框在折叠的数据栏里就先把栏展开，否则聚焦了也看不见
+        if self._col_hidden[1]:
+            self.toggle_panel(1, collapsed=False)
+        edit.setFocus()
+        edit.selectAll()
 
     def _help_mode_section(self):
         """按当前模式返回帮助正文里的一段 HTML（E3）。"""
@@ -253,11 +382,17 @@ class UiMixin:
             "<li><b>Ctrl+E / Ctrl+S</b> — 导出当前图</li>"
             "<li><b>Ctrl+Shift+E</b> — 导出全部图片</li>"
             "<li><b>Ctrl+D</b> — 复制积分结果</li>"
+            "<li><b>Ctrl+F</b> — 跳到文件搜索框（数据栏折叠时会自动展开）</li>"
             "<li><b>Ctrl+T</b> — 切换浅色 / 深色主题（也可点左上角 🌙 / ☀️）</li>"
             "<li><b>F1</b> — 本帮助</li>"
             "</ul>")
         others = (
             "<ul>"
+            "<li><b>三栏折叠</b>：最左侧的「目/数/参」开关条可折叠目录树、数据、"
+            "参数栏——折叠后画布变宽（三栏全折可到 1300px 左右，看大图/出图很实用）；"
+            "栏宽与折叠状态会记住</li>"
+            "<li><b>找样品</b>：数据栏顶部搜索框按文件名过滤，"
+            "「全选」只勾当前筛选出来的结果，「全不选」再点一次即可</li>"
             "<li>把文件夹直接拖到窗口上也可以加载；目录树单击展开、"
             "<b>双击</b>加载该文件夹</li>"
             "<li>导出格式由「导出格式」下拉框决定（PNG / PDF / SVG 或其组合）；"
@@ -504,15 +639,37 @@ class UiMixin:
         self.file_list_label = file_list_label  # 文案随模式切换（见 gui_data.on_spectrum_type_changed）
         root_layout.addWidget(file_list_label)
 
+        # 搜索框（v4.26）：一次加载几十个样品后，列表靠滚动找文件太慢
+        self.file_search_edit = QLineEdit()
+        self.file_search_edit.setPlaceholderText("搜索文件名…")
+        self.file_search_edit.setClearButtonEnabled(True)
+        self.file_search_edit.setToolTip(
+            "按文件名过滤下面的列表（不区分大小写）\n"
+            "只影响显示，不会取消已勾选的样品")
+        self.file_search_edit.textChanged.connect(self.on_file_search_changed)
+        root_layout.addWidget(self.file_search_edit)
+
         self.file_list = QListWidget()
         self.file_list.setMinimumHeight(140)
         self.file_list.itemClicked.connect(self.on_file_selected)
         self.file_list.itemChanged.connect(self.on_item_checked)
         root_layout.addWidget(self.file_list)
 
+        # 全选 / 全不选 + 计数（v4.26）：按钮文字随状态切换，省一行宽度
+        sel_row = QHBoxLayout()
+        sel_row.setSpacing(6)
+        self.file_select_btn = QPushButton("全选")
+        self.file_select_btn.setProperty("variant", "secondary")
+        self.file_select_btn.setCursor(Qt.PointingHandCursor)
+        self.file_select_btn.setToolTip(
+            "勾选列表里的全部样品；有搜索词时只勾筛选出来的结果\n"
+            "全部勾选后按钮变为「全不选」")
+        self.file_select_btn.clicked.connect(self.toggle_select_all_visible)
+        sel_row.addWidget(self.file_select_btn, 0)
         self.file_count_label = QLabel("已加载 0 个文件")
         self.file_count_label.setProperty("role", "hint")
-        root_layout.addWidget(self.file_count_label)
+        sel_row.addWidget(self.file_count_label, 1)
+        root_layout.addLayout(sel_row)
 
         reload_btn = QPushButton("重新加载数据")
         reload_btn.clicked.connect(self.reload_data)
@@ -1149,18 +1306,40 @@ class UiMixin:
         self.integ_copy_btn = QPushButton("📋 复制结果")
         self.integ_copy_btn.setProperty("variant", "primary")
         self.integ_copy_btn.setCursor(Qt.PointingHandCursor)
+        self.integ_copy_btn.setToolTip("把整张表复制到剪贴板（制表符分隔，可直接粘进 Excel/Origin）")
         self.integ_copy_btn.clicked.connect(self._copy_integration_results)
         integ_ctrl.addWidget(self.integ_copy_btn)
+
+        # 导出 CSV（v4.26）：表格化之后顺手支持落地成文件
+        self.integ_csv_btn = QPushButton("⤓ CSV")
+        self.integ_csv_btn.setProperty("variant", "secondary")
+        self.integ_csv_btn.setCursor(Qt.PointingHandCursor)
+        self.integ_csv_btn.setToolTip("把积分结果导出为 CSV 文件（UTF-8 BOM，Excel 直接打开不乱码）")
+        self.integ_csv_btn.clicked.connect(self._export_integration_csv)
+        integ_ctrl.addWidget(self.integ_csv_btn)
         integ_layout.addLayout(integ_ctrl)
 
-        self.integ_output = QPlainTextEdit()
-        self.integ_output.setReadOnly(True)
-        self.integ_output.setPlaceholderText(
-            "加载数据后，每个样品的积分结果显示在这里\n"
-            "（格式：样品名 积分 450nm-550nm 123455；梯形积分，用原始强度，不受归一化影响）")
-        self.integ_output.setMinimumHeight(110)
-        self.integ_output.setMaximumHeight(210)
-        integ_layout.addWidget(self.integ_output)
+        # 结果表（v4.26）：原来是等宽文本的 QPlainTextEdit，像调试输出、不能排序、
+        # 也没法只复制某几行。改成 QTableWidget——可排序、可框选、可复制局部。
+        self.integ_table = QTableWidget(0, 3)
+        self.integ_table.setHorizontalHeaderLabels(["样品", "区间 (nm)", "积分值"])
+        self.integ_table.verticalHeader().setVisible(False)
+        self.integ_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.integ_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.integ_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.integ_table.setAlternatingRowColors(True)
+        self.integ_table.setSortingEnabled(True)      # 点表头排序
+        self.integ_table.setWordWrap(False)
+        hdr = self.integ_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)     # 样品名最宽
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.integ_table.setMinimumHeight(110)
+        self.integ_table.setMaximumHeight(240)
+        self.integ_table.setToolTip(
+            "梯形积分，用原始强度（不受归一化影响）；\n"
+            "点表头可排序，框选后 Ctrl+C 复制选中行")
+        integ_layout.addWidget(self.integ_table)
 
         self.integ_group = integ_group
         layout.addWidget(integ_group)
@@ -1618,6 +1797,27 @@ class UiMixin:
             QPushButton[variant="fit"]:hover {{ border-left: 3px solid {VIOLET}; }}
             QPushButton[variant="export"]:hover {{ border-left: 3px solid {ORANGE}; }}
 
+            /* 栏开关条按钮（v4.26）：窄竖条，勾选态 = 该栏展开 */
+            QPushButton[variant="rail"] {{
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                color: {MUTED};
+                padding: 0;
+                font-size: 12px;
+            }}
+            QPushButton[variant="rail"]:hover {{
+                background-color: {HOVER_BG};
+                border-color: {BORDER};
+                color: {TEXT};
+            }}
+            QPushButton[variant="rail"]:checked {{
+                background-color: {SELECT_BG};
+                border-color: {HANDLE_HOVER};
+                color: {SELECT_FG};
+                font-weight: bold;
+            }}
+
             /* ===== 列表 / 目录树 ===== */
             QListWidget, QTreeView {{
                 background-color: {CARD};
@@ -1638,6 +1838,31 @@ class UiMixin:
             QListWidget::item:selected, QTreeView::item:selected {{
                 background-color: {SELECT_BG};
                 color: {SELECT_FG};
+            }}
+
+            /* ===== 结果表格（v4.26：积分结果改表格）===== */
+            QTableView {{
+                background-color: {CARD};
+                alternate-background-color: {ALT_ROW};
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+                gridline-color: {BORDER};
+                color: {TEXT};
+                font-size: 13px;
+                outline: 0;
+            }}
+            QTableView::item:selected {{
+                background-color: {SELECT_BG};
+                color: {SELECT_FG};
+            }}
+            QHeaderView::section {{
+                background-color: {ALT_ROW};
+                color: {TEXT_SOFT};
+                border: none;
+                border-bottom: 1px solid {BORDER};
+                padding: 5px 8px;
+                font-size: 12px;
+                font-weight: bold;
             }}
 
             /* ===== 输入控件 ===== */

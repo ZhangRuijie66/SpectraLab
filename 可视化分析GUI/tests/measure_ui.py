@@ -61,6 +61,28 @@ if sb is not None:
     print(f'  参数栏滚动条: 可见={bar.isVisible()} '
           f'范围={bar.minimum()}..{bar.maximum()} 页步={bar.pageStep()}', flush=True)
 
+print('--- 三栏折叠对画布宽度的影响（v4.26；窗口按默认 1368x783 量）---', flush=True)
+w.resize(1368, 783)
+for _ in range(5):
+    app.processEvents()
+w._apply_col_sizes()
+for _ in range(5):
+    app.processEvents()
+labels = ('目录树', '数据', '参数')
+print(f'  {"折叠的栏":<18} {"画布宽":>7}  {"左三栏宽":>16}', flush=True)
+for level in range(4):
+    for i in range(3):
+        w.toggle_panel(i, collapsed=(i < level))
+    for _ in range(5):
+        app.processEvents()
+    sizes = w.splitter.sizes()
+    name = '、'.join(labels[:level]) if level else '（都不折叠）'
+    print(f'  {name:<18} {sizes[3]:>7d}  {str(sizes[:3]):>16}', flush=True)
+for i in range(3):                       # 复原
+    w.toggle_panel(i, collapsed=False)
+for _ in range(5):
+    app.processEvents()
+
 print('--- 帮助对话框实测尺寸（寿命模式正文最长）---', flush=True)
 from gui_config import APP_NAME, APP_VERSION  # noqa: E402
 html = (f"<h3>{APP_NAME} v{APP_VERSION}</h3>" + w._help_mode_section()

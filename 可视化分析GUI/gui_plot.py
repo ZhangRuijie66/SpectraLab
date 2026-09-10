@@ -3,6 +3,7 @@
 绘图混入：负责实时预览、合并图/单独图、发射光谱、颜色方案与导出。
 """
 
+import csv
 import logging
 import re
 import sys
@@ -14,7 +15,7 @@ from matplotlib.gridspec import GridSpec
 from scipy.signal import find_peaks
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QMessageBox, QFileDialog, QApplication, QProgressDialog,
+    QMessageBox, QFileDialog, QApplication, QProgressDialog, QTableWidgetItem,
 )
 
 from gui_components import PlotWorker
@@ -26,6 +27,21 @@ from curve_colors import CurveColors
 _parent = Path(__file__).resolve().parent.parent
 if str(_parent) not in sys.path:
     sys.path.insert(0, str(_parent))
+
+
+class NumericTableItem(QTableWidgetItem):
+    """按**数值**排序的表格项（v4.26 积分结果表用）。
+
+    `QTableWidgetItem` 默认比较 DisplayRole 的**字符串**：会把 9 排在 100 后面，
+    也不认科学计数法。积分值列必须按数值排，所以覆盖 `__lt__`；文本列仍走
+    默认的字符串比较（父类实现），因此同一张表里两种排序都对。
+    """
+
+    def __lt__(self, other):
+        try:
+            return float(self.text()) < float(other.text())
+        except (TypeError, ValueError):
+            return super().__lt__(other)
 
 
 class PlotMixin:
@@ -397,49 +413,130 @@ class PlotMixin:
                              self._integrate_band(wl, y, lo, hi)))
         return {'lo': lo, 'hi': hi, 'rows': rows}
 
-    def _integration_text(self, results):
-        """把积分结果格式化为数据输出区文本（每行：样品名 积分 lo nm-hi nm 值）。"""
-        if results is None:
-            return "积分波长范围无效（结束波长需大于起始波长）"
+    def _integration_rows(self, results):
+        """把积分结果整理成 [(样品, 区间, 积分值)]，跳过与积分区间无重叠的样品。"""
+        if not results:
+            return []
         lo, hi = results['lo'], results['hi']
-        lines = []
-        skipped = 0
+        rows = []
         for name, value in results['rows']:
             if value is None or not np.isfinite(value):
-                skipped += 1
                 continue
-            lines.append(f"{name} 积分 {lo:g}nm-{hi:g}nm {value:.6g}")
-        if not lines:
-            return "所选积分范围与数据波长无重叠，未得到积分值"
-        if skipped:
-            lines.append(f"（{skipped} 个样品与积分范围无重叠，未列出）")
-        return "\n".join(lines)
+            rows.append((str(name), f"{lo:g}–{hi:g}", f"{value:.6g}"))
+        return rows
 
     def _update_integration_output(self):
-        """把最近一次积分结果写入绘图区下方的数据输出区（主线程调用）。"""
-        output = getattr(self, 'integ_output', None)
-        if output is None:
-            return
+        """把最近一次积分结果写进绘图区下方的**结果表**（主线程调用，v4.26）。
+
+        原来是写入 QPlainTextEdit：等宽文本像调试输出、不能排序、只能整块复制。
+        现在填 QTableWidget（样品 / 区间 / 积分值）。
+        """
+        table = getattr(self, 'integ_table', None)
         results = getattr(self, '_last_integration_results', None)
-        output.setPlainText(self._integration_text(results))
+        if table is None:
+            return
+        rows = self._integration_rows(results)
+        # 填充期间必须关掉排序：开着排序时逐行 setItem 会让行号乱跳、内容错位
+        table.setSortingEnabled(False)
+        try:
+            table.clearContents()
+            table.setRowCount(len(rows))
+            for r, (name, band, val) in enumerate(rows):
+                name_item = QTableWidgetItem(name)
+                name_item.setToolTip(name)
+                table.setItem(r, 0, name_item)
+                table.setItem(r, 1, QTableWidgetItem(band))
+                val_item = NumericTableItem(val)      # 数值排序
+                val_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(r, 2, val_item)
+        finally:
+            table.setSortingEnabled(True)
         count_label = getattr(self, 'integ_count_label', None)
         if count_label is not None:
-            if results:
-                n_valid = sum(1 for _, v in results['rows']
-                              if v is not None and np.isfinite(v))
-                count_label.setText(
-                    f"共 {n_valid} 个样品 · {results['lo']:g}–{results['hi']:g} nm")
+            if results is None:
+                # 原来这两句提示是写进文本框正文的，改表格后放进计数标签；
+                # 注意区分「没加载数据」（未计算）和「范围填反了」（无效范围）
+                if getattr(self, 'data_cache', None):
+                    count_label.setText("积分范围无效（结束需大于起始）")
+                else:
+                    count_label.setText("未计算")
+            elif not rows:
+                count_label.setText(f"{results['lo']:g}–{results['hi']:g} nm 无数据重叠")
             else:
-                count_label.setText("未计算")
+                skipped = len(results['rows']) - len(rows)
+                text = (f"共 {len(rows)} 个样品 · "
+                        f"{results['lo']:g}–{results['hi']:g} nm")
+                if skipped:
+                    text += f"（{skipped} 个无重叠未列出）"
+                count_label.setText(text)
+
+    def _integration_tsv(self):
+        """结果表的制表符文本（可直接粘进 Excel / Origin）。"""
+        table = getattr(self, 'integ_table', None)
+        if table is None:
+            return ""
+        lines = []
+        heads = [table.horizontalHeaderItem(c).text()
+                 if table.horizontalHeaderItem(c) is not None else ""
+                 for c in range(table.columnCount())]
+        lines.append("\t".join(heads))
+        for r in range(table.rowCount()):
+            cells = []
+            for c in range(table.columnCount()):
+                item = table.item(r, c)
+                cells.append(item.text() if item is not None else "")
+            lines.append("\t".join(cells))
+        return "\n".join(lines)
 
     def _copy_integration_results(self):
-        """复制数据输出区的积分结果到剪贴板（可直接粘贴进 Excel/Origin）"""
-        text = self.integ_output.toPlainText().strip()
+        """复制积分结果表到剪贴板（制表符分隔，可直接粘贴进 Excel/Origin）"""
+        table = getattr(self, 'integ_table', None)
+        if table is None or table.rowCount() == 0:
+            QMessageBox.warning(self, "提示", "暂无可复制的积分结果，请先加载数据")
+            return
+        text = self._integration_tsv().strip()
         if not text:
             QMessageBox.warning(self, "提示", "暂无可复制的积分结果，请先加载数据")
             return
         QApplication.clipboard().setText(text)
-        self.status_bar.showMessage("积分结果已复制到剪贴板")
+        self.status_bar.showMessage(
+            f"已复制 {table.rowCount()} 行积分结果到剪贴板（可直接粘进 Excel）")
+
+    def _export_integration_csv(self, save_dir=None):
+        """把积分结果导出为 CSV（v4.26）。
+
+        `save_dir=None`（按钮点击）时弹目录选择框；测试可传目录直接落地。
+        编码用 utf-8-sig：Excel 双击打开中文不乱码。
+        """
+        table = getattr(self, 'integ_table', None)
+        results = getattr(self, '_last_integration_results', None)
+        if table is None or not results or table.rowCount() == 0:
+            QMessageBox.warning(self, "提示", "暂无可导出的积分结果，请先加载数据")
+            return None
+        if save_dir is None:
+            save_dir = QFileDialog.getExistingDirectory(
+                self, "选择积分结果导出目录",
+                self._dialog_start_dir(), QFileDialog.ShowDirsOnly)
+        if not save_dir:
+            return None
+        try:
+            out_dir = Path(save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / (f"积分结果_{results['lo']:g}-{results['hi']:g}nm.csv")
+            with open(out, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(["样品", "起始波长 (nm)", "结束波长 (nm)", "积分值"])
+                for r in range(table.rowCount()):
+                    name = table.item(r, 0).text() if table.item(r, 0) else ""
+                    val = table.item(r, 2).text() if table.item(r, 2) else ""
+                    writer.writerow([name, f"{results['lo']:g}",
+                                     f"{results['hi']:g}", val])
+            self.status_bar.showMessage(f"积分结果已导出: {out}")
+            return str(out)
+        except Exception as e:
+            log_exception("导出积分结果 CSV 失败", e)
+            QMessageBox.critical(self, "错误", f"导出积分结果失败：{e}")
+            return None
 
     # ---- 单图目标与标题（供绘图与导出共用，保证导出文件名=标题） ----
 

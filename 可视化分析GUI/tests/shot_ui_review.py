@@ -107,6 +107,23 @@ try:
 except Exception as e:
     print('info tab failed', e, flush=True)
 
+# ---------- 三栏折叠（v4.26 新增：折两栏后画布 ≥1000px） ----------
+w.tab_widget.setCurrentIndex(0)          # 回到画布页
+w.toggle_theme(False)
+pump(20)
+for i in (0, 1):                         # 折叠目录树 + 数据栏
+    w.toggle_panel(i, collapsed=True)
+pump(20)
+print('collapsed: sizes =', w.splitter.sizes(), flush=True)
+shot(w, 'light_collapsed')
+w.toggle_theme(True)
+pump(20)
+shot(w, 'dark_collapsed')
+w.toggle_theme(False)
+for i in (0, 1):                         # 复原（后面的截图仍要完整三栏）
+    w.toggle_panel(i, collapsed=False)
+pump(20)
+
 # ---------- 帮助窗口（v4.24 新增：非模态可滚动窗口，深浅两套） ----------
 for theme, dark in (('light', False), ('dark', True)):
     w.toggle_theme(dark)
