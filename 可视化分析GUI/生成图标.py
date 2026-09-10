@@ -443,6 +443,108 @@ def _report(name, mask):
             f"opaque={opaque_n / 2304.0 * 100.0:4.1f}%")
 
 
+# --------------------------------------------------------------------------
+# 空状态插画（v4.31）
+# --------------------------------------------------------------------------
+# 插画和图标不是一回事：面积大、线更细、构图是"一张图"而不是一个字形，
+# 所以单独一套参数与单独的绘制函数，输出到同一个 icons\ 目录。
+#
+# 尺寸怎么定的：界面上按 ILLUS_W x ILLUS_H 逻辑像素显示，交付的是
+# OUT 倍图，代码里给 QPixmap 标 devicePixelRatio=OUT——用户的屏幕是
+# 200% 缩放，只有这样才能原生清晰（直接交付 1 倍图会被系统放大到发虚）。
+ILLUS_W, ILLUS_H = 200, 120     # 逻辑显示尺寸
+ILLUS_AA = 6                    # 绘制时的超采样倍数（96 画布那套是 4）
+ILLUS_OUT = 2                   # 交付倍数 -> 400x240
+ILLUS_LW = 2.0                  # 线条粗细（逻辑像素）
+
+
+def _ill(draw):
+    """逻辑坐标 -> 超采样画布坐标。"""
+    return draw
+
+
+def _ill_line(d, pts, w=ILLUS_LW):
+    """折线：逐段画直线 + 每个顶点补一个圆点（圆头圆角，无需 joint 参数）。"""
+    s = ILLUS_AA
+    r = w * s / 2.0
+    for (x0, y0), (x1, y1) in zip(pts[:-1], pts[1:]):
+        d.line([(x0 * s, y0 * s), (x1 * s, y1 * s)], fill=FILL,
+               width=int(round(w * s)))
+    for x, y in pts:
+        d.ellipse([x * s - r, y * s - r, x * s + r, y * s + r], fill=FILL)
+
+
+def _ill_dot(d, x, y, r=2.2):
+    s = ILLUS_AA
+    d.ellipse([(x - r) * s, (y - r) * s, (x + r) * s, (y + r) * s], fill=FILL)
+
+
+def _ill_rrect(d, x0, y0, x1, y1, rad, w=ILLUS_LW):
+    s = ILLUS_AA
+    d.rounded_rectangle([x0 * s, y0 * s, x1 * s, y1 * s],
+                        radius=rad * s, outline=FILL,
+                        width=int(round(w * s)))
+
+
+def _ill_dash(d, x0, x1, y, dash=5.0, gap=4.0, w=1.4):
+    """水平虚线（坐标轴网格的暗示）。"""
+    x = x0
+    while x < x1:
+        _ill_line(d, [(x, y), (min(x + dash, x1), y)], w)
+        x += dash + gap
+
+
+def illus_empty(d):
+    """空状态插画：一张"光谱卡片"——坐标轴 + 吸收边曲线 + 数据点 + 网格虚线。
+
+    构图刻意和四个模式图标同一套视觉语言（坐标轴 + 曲线），但线更细、
+    留白更多，所以放大到 200x120 也不会显得笨重。
+    """
+    s = ILLUS_AA
+    # 1) 卡片外框（图"嵌在卡片里"的暗示，和界面上的卡片样式呼应）
+    _ill_rrect(d, 6, 8, ILLUS_W - 6, ILLUS_H - 8, 7, 1.6)
+
+    # 2) 坐标轴（L 形）+ 箭头
+    ax_x0, ax_y0 = 26, 22           # 轴交点（左上）
+    ax_x1, ax_y1 = 178, 100         # 轴末端（右下）
+    _ill_line(d, [(ax_x0, ax_y0), (ax_x0, ax_y1), (ax_x1, ax_y1)], 2.0)
+    _ill_dot(d, ax_x1 + 3.5, ax_y1, 1.6)      # x 轴箭头
+    _ill_dot(d, ax_x0, ax_y0 - 3.5, 1.6)      # y 轴箭头
+
+    # 3) 网格虚线（两条水平参考线）
+    _ill_dash(d, ax_x0 + 4, ax_x1 - 6, ax_y1 - 24)
+    _ill_dash(d, ax_x0 + 4, ax_x1 - 6, ax_y1 - 48)
+
+    # 4) 吸收边曲线（短平台 -> 下落 -> 拖尾），和数据形态一致
+    curve = [(32, 34), (46, 35), (58, 37), (66, 44), (72, 58),
+             (80, 74), (92, 86), (108, 93), (128, 96), (150, 97), (172, 97)]
+    _ill_line(d, curve, 2.4)
+
+    # 5) 曲线上的取样点（"这是实验数据"的暗示）
+    for px_, py_ in (curve[1], curve[3], curve[5], curve[7], curve[9]):
+        _ill_dot(d, px_, py_ - 0.5, 2.4)
+
+
+ILLUSTRATIONS = {"illus_empty": illus_empty}
+
+
+def render_illus_mask(name):
+    """在超采样画布上绘制一张插画掩膜（逻辑尺寸 ILLUS_W x ILLUS_H）。"""
+    mask = Image.new("L", (ILLUS_W * ILLUS_AA, ILLUS_H * ILLUS_AA), CLEAR)
+    draw = ImageDraw.Draw(mask)
+    ILLUSTRATIONS[name](draw)
+    return mask
+
+
+def colorize_illus(mask, rgb):
+    """掩膜 -> 交付尺寸（ILLUS_W*OUT x ILLUS_H*OUT）的 RGBA。"""
+    size = (ILLUS_W * ILLUS_OUT, ILLUS_H * ILLUS_OUT)
+    m = mask.resize(size, Image.LANCZOS)
+    img = Image.merge("RGBA", (*Image.new("RGB", size, rgb).split(), m))
+    img.paste((0, 0, 0, 0), (0, 0), m.point(lambda v: 255 if v == 0 else 0))
+    return img
+
+
 def main():
     out_dir = Path(__file__).resolve().parent / "icons"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -472,8 +574,28 @@ def main():
     for line in reports:
         print(line)
 
+    # ---- 空状态插画（v4.31）：单独一套尺寸与命名 ----
+    illus_written = []
+    for iname in ILLUSTRATIONS:
+        imask = render_illus_mask(iname)
+        if imask.getbbox() is None:
+            warnings.append(f"{iname}: 插画掩膜为空")
+        for theme, hex_color in THEMES:
+            fname = f"{iname}_{theme}.png"
+            colorize_illus(imask, _rgb(hex_color)).save(out_dir / fname)
+            illus_written.append(fname)
+    small = imask.resize((60, 36), Image.LANCZOS)
+    hist = small.histogram()
+    print(f"\n illustration : {ILLUS_W}x{ILLUS_H} logical, {ILLUS_AA}x supersampled, "
+          f"delivered {ILLUS_W * ILLUS_OUT}x{ILLUS_H * ILLUS_OUT} "
+          f"(devicePixelRatio={ILLUS_OUT})")
+    print(f"   self-check  : 不透明占比 {sum(hist[32:]) / (60 * 36) * 100.0:.1f}%")
+
     print(f"\n generated {len(written)} PNG files in icons\\ :")
     for fname in written:
+        print(f"   icons\\{fname}")
+    print(f"\n generated {len(illus_written)} illustration file(s):")
+    for fname in illus_written:
         print(f"   icons\\{fname}")
     if skipped:
         print("\n skipped (protected existing files): " + ", ".join(skipped))
@@ -482,7 +604,8 @@ def main():
 
     expected = len(ICON_NAMES) * len(THEMES) * len(SIZES)
     ok = len(written) == expected and not warnings
-    print(f"\n{len(written)}/{expected} files written -- "
+    print(f"\n{len(written)}/{expected} icon files + "
+          f"{len(illus_written)} illustration files written -- "
           + ("OK" if ok else "INCOMPLETE"))
     return 0 if ok else 1
 

@@ -1479,6 +1479,80 @@ def t_gui_empty_state():
         w._sync_empty_state()
 
 
+@check("GUI：空状态插画 + 三步上手指引随模式变、可收起（v4.31）")
+def t_gui_empty_guide():
+    from gui_icons import illustration_path, THEMES as ICON_THEMES
+    # 1) 三套主题都要有插画资源（2 倍图 400x240，按 dpr=2 显示成 200x120）
+    for theme in ICON_THEMES:
+        p = illustration_path('empty', theme)
+        assert p, f"{theme} 主题缺空状态插画"
+        from PyQt5.QtGui import QImage
+        img = QImage(p)
+        assert not img.isNull(), f"{theme} 主题插画读不出来：{p}"
+        assert (img.width(), img.height()) == (400, 240), \
+            f"{theme} 主题插画尺寸应为 400x240（2 倍图），实际 {img.width()}x{img.height()}"
+
+    app, w = _make_gui()
+    assert w.settings.isWritable() or True
+    w.settings.setValue("ui/onboarding_hidden", 0)
+    w.settings.sync()
+    w2 = _make_gui()[1]
+    w2.resize(1368, 783)
+    w2.show()
+    app.processEvents()
+
+    # 2) 插画按逻辑尺寸显示（dpr=2 → 200x120），不是 400x240 的实尺寸
+    pm = w2.empty_icon.pixmap()
+    assert not pm.isNull(), "空状态没有显示出插画"
+    assert abs(pm.devicePixelRatio() - 2.0) < 0.01, \
+        f"插画应按 2 倍图标注 dpr，实际 {pm.devicePixelRatio()}"
+    assert (round(pm.width() / pm.devicePixelRatio()),
+            round(pm.height() / pm.devicePixelRatio())) == (200, 120), \
+        f"插画逻辑尺寸应为 200x120，实际 {pm.width()}x{pm.height()}"
+
+    # 3) 三步指引：3 张卡片 + 序号 1/2/3 + 第 3 步按模式变
+    assert len(getattr(w2, 'empty_step_cards', [])) == 3, "应有 3 张三步指引卡片"
+    assert len(w2.empty_step_descs) == 3, "三步指引每步都要有说明文字"
+    w2.spectrum_type_combo.setCurrentIndex(0)
+    app.processEvents()
+    w2._sync_empty_state()
+    text_absorb = w2.empty_step_descs[2].text()
+    w2.spectrum_type_combo.setCurrentIndex(2)
+    app.processEvents()
+    w2._sync_empty_state()
+    text_life = w2.empty_step_descs[2].text()
+    assert 'F5' in text_absorb, f"光谱模式第 3 步应讲预览/导出：{text_absorb!r}"
+    assert '开始拟合' in text_life, f"寿命模式第 3 步应讲开始拟合：{text_life!r}"
+    assert text_absorb != text_life, "第 3 步文案必须随模式变化"
+    for d in w2.empty_step_descs:
+        assert d.text().strip(), "三步指引的说明不能为空"
+
+    # 4) 可收起、可再展开，且状态记进会话
+    w2.settings.setValue("ui/onboarding_hidden", 0)
+    w2._set_empty_guide_visible(True)
+    assert not w2.empty_steps.isHidden(), "默认应展开三步指引"
+    w2._toggle_empty_guide()
+    app.processEvents()
+    assert str(w2.settings.value("ui/onboarding_hidden")) in ("1", "True", "true"), \
+        "收起后应把偏好写进会话"
+    assert not w2.empty_steps.isVisible(), "收起后三步指引应隐藏"
+    assert w2.empty_guide_toggle.text() == "显示上手指引", \
+        f"收起后按钮文案应改成展开：{w2.empty_guide_toggle.text()!r}"
+    # 新窗口应沿用"已收起"。
+    # 注：w3 没 show() 过，只能用 isHidden()（显式 hide 才是 True）——
+    # 用 isVisible() 会恒为 False，两边断言都会变成空断言（v4.25 踩过）。
+    w3 = _make_gui()[1]
+    assert w3.empty_steps.isHidden(), "新窗口应沿用上次的收起状态"
+    assert w3.empty_guide_toggle.text() == "显示上手指引"
+    # 再展开并复原
+    w3._toggle_empty_guide()
+    app.processEvents()
+    assert not w3.empty_steps.isHidden(), "再点一次应重新展开"
+    assert w3.empty_guide_toggle.text() == "不再显示这三步"
+    w3.settings.setValue("ui/onboarding_hidden", 0)
+    w3.settings.sync()
+
+
 @check("GUI：信息页拟合摘要卡片 + 质量徽标三档（v4.27）")
 def t_gui_info_fit_card():
     app, w = _make_gui()

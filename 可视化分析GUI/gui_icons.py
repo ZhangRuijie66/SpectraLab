@@ -136,6 +136,34 @@ def icon_path(name, theme="light", size=48):
         return None
 
 
+# 空状态插画（v4.31）：不走 24 / 48 两档那套——它是"一张图"，
+# 交付 2 倍图（ILLUS 400x240），代码里按 devicePixelRatio=2 显示成 200x120 逻辑尺寸。
+# 单列在这里，是为了让 test_icons_smoke 的清单统计只覆盖真正的图标。
+ILLUSTRATIONS = ("illus_empty",)
+
+
+def illustration_path(name, theme="light"):
+    """返回空状态插画 PNG 的绝对路径；找不到返回 None（不抛异常）。
+
+    ``name`` 可以带也可以不带 ``illus_`` 前缀，``empty`` 等价于 ``illus_empty``。
+    """
+    theme = _norm_theme(theme)
+    n = str(name)
+    if not n.startswith("illus_"):
+        n = f"illus_{n}"
+    try:
+        rel = f"{ICON_DIR}/{n}_{theme}.png"
+        found = _resolve(rel)
+        if found:
+            return str(Path(found).resolve())
+        logging.warning("插画资源缺失：%s（name=%r theme=%s）", rel, name, theme)
+        return None
+    except Exception:
+        logging.warning("插画路径解析失败：name=%r theme=%r",
+                        name, theme, exc_info=True)
+        return None
+
+
 def icon(name, theme="light"):
     """返回带 48 / 24 两档尺寸的 QIcon；缺文件时返回空 QIcon（不抛异常）。
 

@@ -167,7 +167,7 @@ for theme in ('light', 'dark', 'contrast'):
 # ---------- 入口界面 ----------
 from gui_launcher import ModuleLauncher  # noqa: E402
 
-for theme in ('light', 'dark'):
+for theme in ('light', 'dark', 'contrast'):
     lau = ModuleLauncher(theme=theme)
     lau.show()
     pump(20)
@@ -175,5 +175,20 @@ for theme in ('light', 'dark'):
     lau.grab().save(p)
     print('saved', p, flush=True)
     lau.close()
+
+# ---------- 空状态引导页（v4.31：插画 + 三步上手指引，三套主题各一张） ----------
+try:
+    w.tab_widget.setCurrentIndex(0)
+    w.data_cache.clear()
+    w.settings.setValue('ui/onboarding_hidden', 0)      # 强制展开指引
+    w._sync_empty_state()
+    for theme in ('light', 'dark', 'contrast'):
+        w.set_theme(theme)
+        pump(20)
+        w._sync_empty_state()
+        pump(10)
+        shot(w, f'empty_{theme}')
+finally:
+    w.data_cache.clear()
 
 print('SHOTS DONE', flush=True)

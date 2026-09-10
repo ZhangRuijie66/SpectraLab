@@ -590,11 +590,107 @@ class UiMixin:
         except Exception as e:
             log_exception("装饰导航工具条失败", e)
 
+    # 三步上手指引（v4.31）：第 3 步的文案随模式变（见 _sync_empty_state）。
+    # 文案刻意压短——默认三栏布局下画布只有 ~460px 宽，三张卡片各占 ~140px，
+    # 写长了每张都要折成三行（实测）。
+    _EMPTY_STEPS = (
+        ("1", "选择数据文件夹",
+         "点下面的按钮，或把文件夹拖进来"),
+        ("2", "选类型 / 调参数",
+         "左栏顶部切类型，右侧「参数」栏调整"),
+        ("3", "预览并导出",
+         "按 F5 出图，再从「导出」菜单选格式"),
+    )
+    _EMPTY_STEP3_LIFETIME = "主按钮是「开始拟合」，单文件约 1–2 分钟"
+
+    def _empty_guide_visible(self):
+        """三步指引是否显示（用户点过「不再显示」就记在会话里）。"""
+        s = getattr(self, 'settings', None)
+        if s is None:
+            return True
+        try:
+            v = s.value("ui/onboarding_hidden", 0)
+        except Exception:
+            return True
+        return str(v).strip().lower() not in ("1", "true", "yes")
+
+    def _set_empty_guide_visible(self, show):
+        """显示 / 收起三步指引（并同步按钮文案）。"""
+        box = getattr(self, 'empty_steps', None)
+        if box is not None:
+            box.setVisible(bool(show))
+        btn = getattr(self, 'empty_guide_toggle', None)
+        if btn is not None:
+            btn.setText("不再显示这三步" if show else "显示上手指引")
+            btn.setToolTip(
+                "收起上面的三步上手指引；收起后这里变成「显示上手指引」，随时可以再展开"
+                if show else "重新展开三步上手指引")
+
+    def _toggle_empty_guide(self):
+        """「不再显示这三步」/「显示上手指引」按钮。"""
+        show = not self._empty_guide_visible()
+        self._set_empty_guide_visible(show)
+        s = getattr(self, 'settings', None)
+        if s is not None:
+            try:
+                s.setValue("ui/onboarding_hidden", 0 if show else 1)
+                s.sync()
+            except Exception:
+                pass
+        if hasattr(self, 'status_bar'):
+            self.status_bar.showMessage(
+                "已收起三步上手指引（随时可点「显示上手指引」展开）" if not show
+                else "已展开三步上手指引")
+
+    def _create_empty_steps(self, parent=None):
+        """三步上手指引：三张并排小卡片（序号徽标 + 标题 + 一句说明）。
+
+        空状态最容易犯的错是"只说一句『请选择数据文件夹』"——第一次用的人
+        仍然不知道后面两步要干什么。这里把「选数据 → 调参数 → 出图/导出」
+        整条主路径摆出来，并在第 3 步按当前模式给不同的说法。
+        """
+        box = QWidget(parent)
+        h = QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+        self.empty_step_cards = []
+        self.empty_step_descs = []
+        for num, title, desc in self._EMPTY_STEPS:
+            card = QWidget()
+            card.setProperty("role", "stepCard")
+            cv = QVBoxLayout(card)
+            cv.setContentsMargins(12, 10, 12, 10)
+            cv.setSpacing(6)
+
+            head = QHBoxLayout()
+            head.setSpacing(8)
+            no = QLabel(num)
+            no.setProperty("role", "stepNo")
+            no.setAlignment(Qt.AlignCenter)
+            no.setFixedSize(22, 22)
+            head.addWidget(no, 0)
+            t = QLabel(title)
+            t.setProperty("role", "stepTitle")
+            head.addWidget(t, 1)
+            cv.addLayout(head)
+
+            d = QLabel(desc)
+            d.setProperty("role", "hint")
+            d.setWordWrap(True)
+            cv.addWidget(d)
+            cv.addStretch(1)
+            h.addWidget(card, 1)
+            self.empty_step_cards.append(card)
+            self.empty_step_descs.append(d)
+        return box
+
     def _create_empty_state(self, parent=None):
-        """画布空状态引导页：大图标 + 一句引导 + 主按钮。
+        """画布空状态引导页：插画 + 一句引导 + 主按钮 + 三步上手指引。
 
         原来没数据时画布上只有一行小灰字，第一眼看不出下一步该干什么；
-        现在用一整页把「选择数据文件夹」这条主路径摆出来（拖拽和 Ctrl+O 也写在里面）。
+        v4.27 换成整页引导，v4.31 再补两件：一张"光谱卡片"插画（比图标有
+        信息量），以及把「选数据 → 调参数 → 出图」三步写成并排卡片——
+        这三步就是首次使用要走的全部路径，可以一键收起、不会再打扰。
         """
         box = QWidget(parent)
         v = QVBoxLayout(box)
@@ -630,6 +726,28 @@ class UiMixin:
         row.addWidget(self.empty_btn)
         row.addStretch(1)
         v.addLayout(row)
+
+        # ---- 三步上手指引 ----
+        v.addSpacing(6)
+        steps_wrap = QWidget()
+        sw = QVBoxLayout(steps_wrap)
+        sw.setContentsMargins(8, 0, 8, 0)
+        sw.setSpacing(6)
+        self.empty_steps = self._create_empty_steps(steps_wrap)
+        sw.addWidget(self.empty_steps)
+        toggle_row = QHBoxLayout()
+        toggle_row.addStretch(1)
+        self.empty_guide_toggle = QPushButton("不再显示这三步")
+        self.empty_guide_toggle.setProperty("variant", "ghost")
+        self.empty_guide_toggle.setCursor(Qt.PointingHandCursor)
+        self.empty_guide_toggle.clicked.connect(self._toggle_empty_guide)
+        toggle_row.addWidget(self.empty_guide_toggle)
+        toggle_row.addStretch(1)
+        sw.addLayout(toggle_row)
+        self.empty_steps_wrap = steps_wrap
+        v.addWidget(steps_wrap)
+        self._set_empty_guide_visible(self._empty_guide_visible())
+
         v.addStretch(1)
         self.empty_state = box
         return box
@@ -670,12 +788,25 @@ class UiMixin:
                 log_exception(f"设置按钮图标失败: {name}", e)
 
     def _set_empty_icon(self, label):
-        """给空状态页画大图标：优先用单色图标集，资源缺失时退回 emoji。
+        """给空状态页画图：优先插画，其次单色大图标，最后退回 emoji。
 
-        图标由 `生成图标.py` 生成（`icons\\folder_open_<theme>.png`），
-        `gui_icons` 找不到文件会返回空 QIcon，这里再退回 emoji，
-        所以无论打包漏没漏图标都不会出现空白或崩溃。
+        插画由 `生成图标.py` 生成（`icons\\illus_empty_<theme>.png`），交付的
+        是 2 倍图（400x240），这里标上 `devicePixelRatio=2` 按 200x120 逻辑
+        尺寸显示——用户的屏幕是 200% 缩放，直接塞 1 倍图会被系统放大到发虚。
+        `gui_icons` 找不到文件时逐级退回，所以打包漏了资源也不会空白或崩溃。
         """
+        try:
+            from gui_icons import illustration_path
+            path = illustration_path('empty', getattr(self, 'theme', 'light'))
+            if path:
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    pm.setDevicePixelRatio(2.0)
+                    label.setText("")
+                    label.setPixmap(pm)
+                    return
+        except Exception:
+            pass
         try:
             from gui_icons import icon_path
             path = icon_path('folder_open', getattr(self, 'theme', 'light'), 48)
@@ -709,6 +840,13 @@ class UiMixin:
                 tb.setVisible(not empty)
             if not empty:
                 return
+            # 第 3 步的说法随模式变（寿命模式的主操作是「开始拟合」而不是预览）
+            descs = getattr(self, 'empty_step_descs', None)
+            if descs is not None and len(descs) >= 3:
+                if getattr(self, 'spectrum_type', '') == 'lifetime':
+                    descs[2].setText(self._EMPTY_STEP3_LIFETIME)
+                else:
+                    descs[2].setText(self._EMPTY_STEPS[2][2])
             folder = getattr(self, 'current_folder', None)
             if folder:
                 self.empty_title.setText("该文件夹没有解析出可用数据")
@@ -2183,6 +2321,22 @@ class UiMixin:
             }}
             QLabel[role="emptyTitle"] {{
                 font-size: 16px; font-weight: bold; color: {TEXT_SOFT};
+            }}
+            /* 三步上手指引（v4.31）：三张并排小卡片 + 序号圆徽标 */
+            QWidget[role="stepCard"] {{
+                background-color: {CARD};
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+            }}
+            QLabel[role="stepNo"] {{
+                background-color: {ACCENT};
+                color: {CARD};
+                border-radius: 11px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            QLabel[role="stepTitle"] {{
+                font-size: 13px; font-weight: bold; color: {TEXT_SOFT};
             }}
             /* 徽标药丸（v4.27）：状态栏模式/样品数 + 拟合质量 ok/warn/bad */
             QLabel[role="badge"] {{
