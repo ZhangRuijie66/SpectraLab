@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # ============================================================
 #  Spectral Analysis Tool (QLS Lab) - macOS portable .app build
 #
@@ -88,6 +88,8 @@ python -m PyInstaller --noconfirm --clean --windowed --onedir \
   --hidden-import gui_config \
   --hidden-import gui_components \
   --hidden-import gui_log \
+  --hidden-import gui_help \
+  --hidden-import gui_icons \
   --hidden-import gui_ui \
   --hidden-import gui_data \
   --hidden-import gui_plot \

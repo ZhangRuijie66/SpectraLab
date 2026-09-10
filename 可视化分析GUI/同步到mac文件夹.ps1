@@ -60,10 +60,17 @@ $manifest = @(
     "app|gui_components.py",
     "app|gui_launcher.py",
     "app|gui_splash.py",
+    # v4.27 补齐：这三个运行时模块以前漏在清单外，mac 打包会 ImportError
+    # （gui_log 被 gui_data/gui_plot 模块级导入，gui_help 自 v4.24 起被 gui_ui 用，
+    #   gui_icons 自 v4.27 起被 gui_ui 用——清单漏了它们，同步检查却"全绿"）
+    "app|gui_log.py",
+    "app|gui_help.py",
+    "app|gui_icons.py",
     "app|app_icon.ico",
     "app|app_icon.png|optional",
     "app|splash.png",
     "app|生成splash图.py",
+    "app|生成图标.py",
     "app|requirements.txt",
     # ---- GUI 根目录下的目录（递归）----
     "appdir|icons",

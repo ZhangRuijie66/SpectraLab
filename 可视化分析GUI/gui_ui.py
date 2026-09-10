@@ -10,7 +10,7 @@ import logging
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from PyQt5.QtCore import Qt, QDir, QTimer
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtGui import QFont, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QComboBox, QDoubleSpinBox, QCheckBox, QGroupBox, QScrollArea,
@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QLineEdit, QFileSystemModel, QTreeView, QSlider, QSpinBox,
     QPlainTextEdit, QToolButton, QMenu, QAction, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QStackedWidget,
 )
 
 from gui_config import (
@@ -154,9 +155,30 @@ class UiMixin:
         font.setPointSize(12)  # 全局基础字体（各控件字号统一由 QSS 控制）
         self.setFont(font)
 
-        # 状态栏
+        # 状态栏（v4.27）：左侧状态文字 / 中段进度条 / 右侧「模式 + 样品数」徽标。
+        # 进度条原来固定在参数栏顶部，既占纵向空间、又和状态栏信息重复；
+        # 现在统一收到状态栏里（属性名保持 progress_bar，加载/拟合代码不用改）。
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(180)
+        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)          # 空闲时不占位
+        self.progress_bar.setToolTip("加载 / 拟合进度")
+        self.status_bar.addPermanentWidget(self.progress_bar)
+
+        self.status_mode_badge = QLabel("吸收光谱")
+        self.status_mode_badge.setProperty("role", "badge")
+        self.status_mode_badge.setToolTip("当前模块（左侧「光谱类型」下拉框切换）")
+        self.status_bar.addPermanentWidget(self.status_mode_badge)
+
+        self.status_sample_badge = QLabel("0 个样品")
+        self.status_sample_badge.setProperty("role", "badge")
+        self.status_sample_badge.setToolTip("已加载的数据文件数（数据栏列表）")
+        self.status_bar.addPermanentWidget(self.status_sample_badge)
+
         self.status_bar.showMessage("就绪")
 
         # 应用样式
@@ -167,6 +189,10 @@ class UiMixin:
 
         # 全局快捷键（D4）
         self._setup_shortcuts()
+
+        # 首次进入的空状态（还没加载任何数据）
+        self._sync_empty_state()
+        self._update_status_badges()
 
     def _setup_shortcuts(self):
         """全局快捷键（D4 / E5）。"""
@@ -242,6 +268,7 @@ class UiMixin:
         if idx not in (0, 1, 2) or not hasattr(self, 'splitter'):
             return
         panel = self._panel_widgets[idx]
+        prev_hidden = self._col_hidden[idx]
         if collapsed is None:
             want_hidden = panel.isVisible()
         else:
@@ -253,8 +280,11 @@ class UiMixin:
         panel.setVisible(not want_hidden)
         self._apply_col_sizes()
         self._sync_panel_toggle_btns()
-        self.status_bar.showMessage(
-            f"{self._panel_names[idx]}栏已" + ("折叠" if want_hidden else "展开"))
+        # 只在**用户点击（collapsed is None）或状态真的变了**时提示；
+        # 否则启动时恢复布局会把三栏各播报一遍，最后一句还留在状态栏上
+        if collapsed is None or prev_hidden != want_hidden:
+            self.status_bar.showMessage(
+                f"{self._panel_names[idx]}栏已" + ("折叠" if want_hidden else "展开"))
 
     def _apply_col_sizes(self):
         """按「记忆宽度 + 画布吃剩余」重算 splitter 各栏宽度。"""
@@ -302,8 +332,10 @@ class UiMixin:
             self._col_sizes_applied = True
             QTimer.singleShot(0, self._apply_col_sizes)
 
+    # v4.26 新增（版本标记写在注释里：docstring 属于字符串字面量，
+    # 会被 检查版本一致性.py 当成"硬编码版本号"，只能放注释）
     def _focus_file_search(self):
-        """Ctrl+F：聚焦数据栏的搜索框并选中已有内容（v4.26）。"""
+        """Ctrl+F：聚焦数据栏的搜索框并选中已有内容。"""
         edit = getattr(self, 'file_search_edit', None)
         if edit is None:
             return
@@ -312,6 +344,178 @@ class UiMixin:
             self.toggle_panel(1, collapsed=False)
         edit.setFocus()
         edit.selectAll()
+
+    # ---------- 状态栏徽标 / 空状态 / 工具条中文化（v4.27）----------
+
+    @staticmethod
+    def _repolish(widget):
+        """改过 QSS 属性（如 badgeState）后强制重新解析样式，否则颜色不会变。"""
+        try:
+            st = widget.style()
+            st.unpolish(widget)
+            st.polish(widget)
+            widget.update()
+        except Exception:
+            pass
+
+    def set_badge_state(self, widget, state):
+        """设置徽标状态（ok / warn / bad / none）并立即换色（v4.27）。"""
+        if widget is None:
+            return
+        widget.setProperty("badgeState", state)
+        self._repolish(widget)
+
+    def _update_status_badges(self):
+        """状态栏右侧两个徽标：当前模式 + 已加载样品数（v4.27）。"""
+        names = {0: "吸收光谱", 1: "发射光谱", 2: "荧光寿命", 3: "3D 扫描"}
+        badge = getattr(self, 'status_mode_badge', None)
+        if badge is not None:
+            try:
+                idx = int(self.spectrum_type_combo.currentIndex())
+                badge.setText(names.get(idx, "—"))
+            except Exception:
+                pass
+        sb = getattr(self, 'status_sample_badge', None)
+        if sb is not None:
+            try:
+                sb.setText(f"{self.file_list.count()} 个样品")
+            except Exception:
+                pass
+
+    # matplotlib 工具条按钮的中文说明（键是 NavigationToolbar2QT 内部的
+    # 回调名，比按显示文字匹配稳——不同 mpl 版本按钮文字会变）
+    _TOOLBAR_TIPS = {
+        'home': ('复位视图', '恢复到初始缩放/平移状态（快捷键 h）'),
+        'back': ('上一视图', '回到上一个视图（快捷键 ← 或 c）'),
+        'forward': ('下一视图', '前进到下一个视图（快捷键 → 或 v）'),
+        'pan': ('平移', '按住左键拖动画面（快捷键 p）'),
+        'zoom': ('框选缩放', '左键拖出矩形放大；右键拖出矩形缩小（快捷键 o）'),
+        'configure_subplots': ('调整边距', '打开边距参数对话框手工微调（快捷键 f）'),
+        'edit_parameters': ('曲线参数', '编辑坐标轴/曲线/图像参数（快捷键 Ctrl+E 是本程序的导出）'),
+        'save_figure': ('保存图片', '把当前画布另存为图片（程序自己的导出见「💾 导出 ▾」）'),
+    }
+
+    def _decorate_nav_toolbar(self, tb):
+        """给 matplotlib 导航工具条加中文 tooltip（v4.27）。
+
+        mpl 自带工具条只有英文 tooltip（Home / Pan / Zoom / Customize…），
+        且有个按钮连图标都没有（Customize）。这里只改文字与 tooltip：
+        **按钮顺序和分组分隔保持 mpl 原样**——`toolitems` 里本来就带了
+        None 分隔项（视图 | 缩放/参数 | 保存），自己再插一遍会出现双分隔线
+        （v4.27 开发中实测踩到）。
+        """
+        try:
+            acts = getattr(tb, '_actions', None) or {}
+            for key, (label, tip) in self._TOOLBAR_TIPS.items():
+                a = acts.get(key)
+                if a is None:
+                    continue
+                a.setText(label)
+                a.setToolTip(f"{label} —— {tip}")
+                a.setStatusTip(tip)
+            tb.setToolTip("matplotlib 缩放 / 平移 / 保存（鼠标悬停看中文说明）")
+            lab = getattr(tb, 'locLabel', None)
+            if lab is not None:
+                lab.setToolTip("当前鼠标位置的数据坐标")
+        except Exception as e:
+            log_exception("装饰导航工具条失败", e)
+
+    def _create_empty_state(self, parent=None):
+        """画布空状态引导页（v4.27）：大图标 + 一句引导 + 主按钮。
+
+        原来没数据时画布上只有一行小灰字，第一眼看不出下一步该干什么；
+        现在用一整页把「选择数据文件夹」这条主路径摆出来（拖拽和 Ctrl+O 也写在里面）。
+        """
+        box = QWidget(parent)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+        v.addStretch(1)
+
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setProperty("role", "emptyIcon")
+        self._set_empty_icon(icon)
+        v.addWidget(icon)
+        self.empty_icon = icon
+
+        self.empty_title = QLabel("还没有加载数据")
+        self.empty_title.setAlignment(Qt.AlignCenter)
+        self.empty_title.setProperty("role", "emptyTitle")
+        v.addWidget(self.empty_title)
+
+        self.empty_hint = QLabel("把数据文件夹拖到窗口上，或点下面的按钮选择")
+        self.empty_hint.setAlignment(Qt.AlignCenter)
+        self.empty_hint.setProperty("role", "hint")
+        self.empty_hint.setWordWrap(True)
+        v.addWidget(self.empty_hint)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.empty_btn = QPushButton("选择数据文件夹")
+        self.empty_btn.setProperty("variant", "primary")
+        self.empty_btn.setCursor(Qt.PointingHandCursor)
+        self.empty_btn.setToolTip("选择数据文件夹并加载其中全部数据文件（Ctrl+O）")
+        self.empty_btn.clicked.connect(self.select_folder)
+        row.addWidget(self.empty_btn)
+        row.addStretch(1)
+        v.addLayout(row)
+        v.addStretch(1)
+        self.empty_state = box
+        return box
+
+    def _set_empty_icon(self, label):
+        """给空状态页画大图标：优先用单色图标集，资源缺失时退回 emoji。
+
+        图标由 `生成图标.py` 生成（`icons\\folder_open_<theme>.png`），
+        `gui_icons` 找不到文件会返回空 QIcon，这里再退回 emoji，
+        所以无论打包漏没漏图标都不会出现空白或崩溃。
+        """
+        try:
+            from gui_icons import icon_path
+            path = icon_path('folder_open', getattr(self, 'theme', 'light'), 48)
+            if path:
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    label.setText("")
+                    label.setPixmap(pm.scaled(56, 56, Qt.KeepAspectRatio,
+                                              Qt.SmoothTransformation))
+                    return
+        except Exception:
+            pass
+        label.setPixmap(QPixmap())
+        label.setText("📁")
+
+    def _sync_empty_state(self):
+        """没有数据 → 显示空状态引导；有数据 → 显示画布（v4.27）。"""
+        stack = getattr(self, 'preview_stack', None)
+        if stack is None:
+            return
+        try:
+            empty = not getattr(self, 'data_cache', None)
+            idx = 1 if empty else 0
+            if stack.currentIndex() != idx:
+                stack.setCurrentIndex(idx)
+            # 空画布时那条 matplotlib 工具条没意义，一起收起来。
+            # 无条件 setVisible：窗口还没 show() 时 isVisible() 恒为 False，
+            # 用 isVisible() 做判断会导致初始状态漏设（v4.27 实测踩到）。
+            tb = getattr(self, 'toolbar', None)
+            if tb is not None:
+                tb.setVisible(not empty)
+            if not empty:
+                return
+            folder = getattr(self, 'current_folder', None)
+            if folder:
+                self.empty_title.setText("该文件夹没有解析出可用数据")
+                self.empty_hint.setText(
+                    f"{self._short_path(str(folder))}\n"
+                    "换一个文件夹，或按 F1 查看当前模式支持的数据格式")
+            else:
+                self.empty_title.setText("还没有加载数据")
+                self.empty_hint.setText(
+                    "把数据文件夹拖到窗口上，或点下面的按钮选择")
+        except Exception as e:
+            log_exception("切换空状态失败", e)
 
     def _help_mode_section(self):
         """按当前模式返回帮助正文里的一段 HTML（E3）。"""
@@ -696,11 +900,7 @@ class UiMixin:
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(10)
 
-        # 进度条（固定面板顶部：拟合/加载进行中时无需滚动即可见）
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setFixedHeight(10)
-        outer.addWidget(self.progress_bar)
+        # 进度条（v4.27 起移到状态栏里，见 setup_ui）——参数栏顶部不再占一行
 
         # 参数内容控件（放进下方滚动区）
         content = QWidget()
@@ -1204,8 +1404,13 @@ class UiMixin:
         self.canvas.on_after_fit = lambda: self._refit_canvas_margins(self.canvas)
         # matplotlib 缩放/平移/重置工具栏
         self.toolbar = NavigationToolbar(self.canvas, self)
+        self._decorate_nav_toolbar(self.toolbar)     # 中文 tooltip + 分组（v4.27）
         preview_layout.addWidget(self.toolbar)  # 固定工具条高度
-        preview_layout.addWidget(self.canvas, 1)  # 画布 stretch，吃满剩余空间
+        # 画布 / 空状态两页（v4.27）：没有数据时显示引导页而不是一张空图
+        self.preview_stack = QStackedWidget()
+        self.preview_stack.addWidget(self.canvas)                     # 0 = 画布
+        self.preview_stack.addWidget(self._create_empty_state(preview_tab))  # 1 = 空状态
+        preview_layout.addWidget(self.preview_stack, 1)  # stretch，吃满剩余空间
 
         self.tab_widget.addTab(preview_tab, "预览")
 
@@ -1218,6 +1423,7 @@ class UiMixin:
         self.lifetime_canvas.on_after_fit = lambda: self._refit_canvas_margins(
             self.lifetime_canvas)
         self.lifetime_toolbar = NavigationToolbar(self.lifetime_canvas, self)
+        self._decorate_nav_toolbar(self.lifetime_toolbar)
         dist_layout.addWidget(self.lifetime_toolbar)
         dist_layout.addWidget(self.lifetime_canvas, 1)
         # 覆盖 MplCanvas 的初始提示文字
@@ -1244,6 +1450,7 @@ class UiMixin:
         self.diag_canvas.on_after_fit = lambda: self._refit_canvas_margins(
             self.diag_canvas)
         self.diag_toolbar = NavigationToolbar(self.diag_canvas, self)
+        self._decorate_nav_toolbar(self.diag_toolbar)
         diag_layout.addWidget(self.diag_toolbar)
         diag_layout.addWidget(self.diag_canvas, 1)
         self.diag_canvas.clear_fig()
@@ -1259,14 +1466,74 @@ class UiMixin:
         self.diag_tab = diag_tab
         self._set_diag_tab_visible(False)
 
-        # 信息标签页
+        # 信息标签页（v4.27 卡片化）：文件信息 / 拟合摘要（分量表 + 质量徽标）。
+        # 原来是一整页纯文本 QLabel，字号一致、没有层级，一大片看不出重点；
+        # 现在拆成两张卡片放进滚动区：上面是文件元数据（原文案原样保留），
+        # 下面是拟合摘要——寿命拟合完成后才出现，带 ok/poor/failed 质量徽标。
         info_tab = QWidget()
-        info_layout = QVBoxLayout(info_tab)
+        info_outer = QVBoxLayout(info_tab)
+        info_outer.setContentsMargins(0, 0, 0, 0)
+        info_scroll = QScrollArea()
+        info_scroll.setWidgetResizable(True)
+        info_scroll.setFrameShape(QFrame.NoFrame)
+        info_body = QWidget()
+        info_layout = QVBoxLayout(info_body)
+        info_layout.setContentsMargins(10, 10, 10, 10)
+        info_layout.setSpacing(10)
+
+        file_card = QGroupBox("文件信息")
+        file_card_layout = QVBoxLayout(file_card)
         self.info_label = QLabel("选择文件后显示详细信息")
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(Qt.AlignTop)
+        # 允许框选复制（原来只能看，想抄一个数得手打）
+        self.info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.info_label.setProperty("role", "infoLabel")
-        info_layout.addWidget(self.info_label)
+        file_card_layout.addWidget(self.info_label)
+        info_layout.addWidget(file_card)
+
+        self.fit_card = QGroupBox("拟合摘要")
+        fit_card_layout = QVBoxLayout(self.fit_card)
+        fit_card_layout.setSpacing(6)
+        head_row = QHBoxLayout()
+        head_row.setSpacing(8)
+        self.fit_badge = QLabel("未拟合")
+        self.fit_badge.setProperty("role", "badge")
+        self.fit_badge.setProperty("badgeState", "none")
+        self.fit_badge.setToolTip(
+            "拟合质量：ok = χ²R 接近 1 且收敛；poor = 偏差较大/未收敛；"
+            "failed = χ²R 非有限")
+        head_row.addWidget(self.fit_badge, 0)
+        self.fit_quality_label = QLabel("")
+        self.fit_quality_label.setProperty("role", "hint")
+        self.fit_quality_label.setWordWrap(True)
+        head_row.addWidget(self.fit_quality_label, 1)
+        fit_card_layout.addLayout(head_row)
+
+        self.fit_table = QTableWidget(0, 3)
+        self.fit_table.setHorizontalHeaderLabels(
+            ["分量", "τ (ns)", "占比 (%)"])
+        self.fit_table.verticalHeader().setVisible(False)
+        self.fit_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.fit_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.fit_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.fit_table.setAlternatingRowColors(True)
+        self.fit_table.setSortingEnabled(True)
+        self.fit_table.setWordWrap(False)
+        fhdr = self.fit_table.horizontalHeader()
+        fhdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        fhdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        fhdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.fit_table.setMinimumHeight(90)
+        self.fit_table.setMaximumHeight(220)
+        self.fit_table.setToolTip(
+            "分离出的寿命分量；点表头可排序，框选后 Ctrl+C 复制")
+        fit_card_layout.addWidget(self.fit_table)
+        self.fit_card.setVisible(False)      # 没拟合过就不显示（含它占的空间）
+        info_layout.addWidget(self.fit_card)
+        info_layout.addStretch(1)
+        info_scroll.setWidget(info_body)
+        info_outer.addWidget(info_scroll)
         self.tab_widget.addTab(info_tab, "信息")
 
         layout.addWidget(self.tab_widget, 1)  # 填满垂直空间
@@ -1540,7 +1807,8 @@ class UiMixin:
          CYAN, CYAN_HOVER, CYAN_PRESSED,
          NEUTRAL, NEUTRAL_HOVER, NEUTRAL_PRESSED,
          HOVER_BG, SELECT_BG, SELECT_FG, DISABLED_BG, DISABLED_FG,
-         HANDLE, HANDLE_HOVER, ALT_ROW, INFO_BG, TOOLTIP_BG, TOOLTIP_FG) = (
+         HANDLE, HANDLE_HOVER, ALT_ROW, INFO_BG, TOOLTIP_BG, TOOLTIP_FG,
+         SUCCESS_BG, WARN_BG, DANGER, DANGER_BG) = (
             P['BG'], P['CARD'], P['BORDER'], P['INPUT_BORDER'], P['TEXT'],
             P['TEXT_SOFT'], P['MUTED'], P['ACCENT'], P['ACCENT_HOVER'],
             P['ACCENT_PRESSED'], P['SUCCESS'], P['SUCCESS_HOVER'],
@@ -1551,7 +1819,9 @@ class UiMixin:
             P['NEUTRAL_PRESSED'], P['HOVER_BG'], P['SELECT_BG'],
             P['SELECT_FG'], P['DISABLED_BG'], P['DISABLED_FG'],
             P['HANDLE'], P['HANDLE_HOVER'], P['ALT_ROW'], P['INFO_BG'],
-            P['TOOLTIP_BG'], P['TOOLTIP_FG'])
+            P['TOOLTIP_BG'], P['TOOLTIP_FG'],
+            P.get('SUCCESS_BG', P['CARD']), P.get('WARN_BG', P['CARD']),
+            P.get('DANGER', P['ORANGE']), P.get('DANGER_BG', P['CARD']))
         up_u, dn_u, ck_u, ch_u = self._load_style_icons()
         # 下拉弹窗的 item delegate 取色也要跟着主题走（否则深色下弹出一块白板）
         set_combo_palette(P)
@@ -1636,6 +1906,38 @@ class UiMixin:
             }}
             QLabel[role="hint"] {{
                 font-size: 11px; color: {MUTED};
+            }}
+            /* 空状态引导页（v4.27）：整页只留一个焦点 */
+            QLabel[role="emptyIcon"] {{
+                font-size: 46px;
+                color: {MUTED};
+            }}
+            QLabel[role="emptyTitle"] {{
+                font-size: 16px; font-weight: bold; color: {TEXT_SOFT};
+            }}
+            /* 徽标药丸（v4.27）：状态栏模式/样品数 + 拟合质量 ok/warn/bad */
+            QLabel[role="badge"] {{
+                background-color: {ALT_ROW};
+                color: {TEXT_SOFT};
+                border: 1px solid {BORDER};
+                border-radius: 9px;
+                padding: 1px 9px;
+                font-size: 11px;
+            }}
+            QLabel[role="badge"][badgeState="ok"] {{
+                background-color: {SUCCESS_BG};
+                color: {SUCCESS};
+                border: 1px solid {SUCCESS};
+            }}
+            QLabel[role="badge"][badgeState="warn"] {{
+                background-color: {WARN_BG};
+                color: {ORANGE};
+                border: 1px solid {ORANGE};
+            }}
+            QLabel[role="badge"][badgeState="bad"] {{
+                background-color: {DANGER_BG};
+                color: {DANGER};
+                border: 1px solid {DANGER};
             }}
 
             /* ===== 卡片式分组框 ===== */
@@ -2104,6 +2406,9 @@ class UiMixin:
                 m.update()
         except Exception as e:
             logging.warning("重新解析 QMenu 样式失败: %s", e)
+        # 空状态大图标是位图（图标集分深浅两套），换主题要重新取一遍
+        if getattr(self, 'empty_icon', None) is not None:
+            self._set_empty_icon(self.empty_icon)
 
     @staticmethod
     def _style_combo(combo):

@@ -83,6 +83,14 @@ class PlotWorker(QThread):
             result = self.func(*self.args, **self.kwargs)
             self.finished.emit(result)
         except Exception as e:
+            # v4.27：只 emit str(e) 会把堆栈丢掉，日志里只剩一句
+            # 「wrapped C/C++ object ... has been deleted」这种没法定位的信息。
+            # 这里把完整堆栈写进程序日志（错误框文案不变，仍是 str(e)）。
+            try:
+                from gui_log import log_exception
+                log_exception("后台绘图线程异常", e)
+            except Exception:
+                pass
             self.error.emit(str(e))
 
 

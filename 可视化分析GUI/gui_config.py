@@ -24,7 +24,7 @@ APP_ORG = "QLSLab"
 APP_NAME = "光谱可视化分析工具"
 
 # 版本号（窗口标题 / 应用版本信息）
-APP_VERSION = "4.26"
+APP_VERSION = "4.27"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-09-10"
 
@@ -105,6 +105,9 @@ THEMES = {
         "HANDLE": "#cbd5e1", "HANDLE_HOVER": "#94a3b8",
         "ALT_ROW": "#f8fafc", "INFO_BG": "#eff6ff",
         "TOOLTIP_BG": "#1e293b", "TOOLTIP_FG": "#ffffff",
+        # v4.27：徽标底色（拟合质量 ok / warn / bad 三档药丸标签）
+        "SUCCESS_BG": "#dcfce7", "WARN_BG": "#ffedd5",
+        "DANGER": "#dc2626", "DANGER_BG": "#fee2e2",
     },
     "dark": {
         "BG": "#0f172a", "CARD": "#1e293b", "BORDER": "#334155",
@@ -143,5 +146,8 @@ THEMES = {
         "HANDLE": "#475569", "HANDLE_HOVER": "#64748b",
         "ALT_ROW": "#172033", "INFO_BG": "#1e3a5f",
         "TOOLTIP_BG": "#334155", "TOOLTIP_FG": "#e2e8f0",
+        # v4.27：徽标底色（深色下用药丸底色而不是纯色，避免刺眼）
+        "SUCCESS_BG": "#064e3b", "WARN_BG": "#7c2d12",
+        "DANGER": "#f87171", "DANGER_BG": "#7f1d1d",
     },
 }

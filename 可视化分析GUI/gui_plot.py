@@ -451,6 +451,8 @@ class PlotMixin:
                 table.setItem(r, 2, val_item)
         finally:
             table.setSortingEnabled(True)
+        # 默认按样品名排（重新打开排序会沿用上次的排序指示器，行序不可控）
+        table.sortItems(0, Qt.AscendingOrder)
         count_label = getattr(self, 'integ_count_label', None)
         if count_label is not None:
             if results is None:
@@ -1827,6 +1829,81 @@ class PlotMixin:
         lines.append("")
         lines.append("点「导出图片」保存预览图；「导出当前拟合结果」出汇总表+报告")
         self.info_label.setText("\n".join(lines))
+        # v4.27：信息页的「拟合摘要」卡片（分量表 + 质量徽标）
+        self._update_info_fit_card(result)
+
+    # ---------- 信息页「拟合摘要」卡片（v4.27）----------
+
+    # 拟合质量 → 徽标状态（plot_lifetime 的 quality：ok / poor / failed）
+    _QUALITY_BADGE = {
+        'ok': ('ok', 'ok'),
+        'poor': ('poor', 'warn'),
+        'failed': ('failed', 'bad'),
+    }
+
+    def _update_info_fit_card(self, result=None):
+        """把拟合结果写进信息页的「拟合摘要」卡片（主线程调用，v4.27）。
+
+        卡片内容：质量徽标（ok/poor/failed）+ 一句话摘要 + 寿命分量表（τ / 占比）。
+        没有结果时整张卡片隐藏（包括它占的空间）。
+        """
+        card = getattr(self, 'fit_card', None)
+        if card is None:
+            return
+        if result is None:
+            result = getattr(self, '_last_lifetime_result', None)
+        if not result:
+            card.setVisible(False)
+            return
+        try:
+            info = result.get('info', {}) or {}
+            m = self._fit_quality_metrics(result)
+            quality = str(info.get('quality', 'ok') or 'ok')
+            label, state = self._QUALITY_BADGE.get(quality, (quality, 'warn'))
+            self.fit_badge.setText(f"拟合质量 {label}")
+            self.set_badge_state(self.fit_badge, state)
+
+            chi2r = m.get('chi2r', float('nan'))
+            bits = [f"χ²R = {chi2r:.3g}" if np.isfinite(chi2r) else "χ²R 非有限"]
+            bits.append(f"拟合点数 M = {m.get('npts', 0)}")
+            if 'dw' in m:
+                bits.append(f"Durbin–Watson = {m['dw']:.2f}")
+            notes = info.get('quality_notes') or []
+            if quality != 'ok' and notes:
+                bits.append("；".join(str(n) for n in notes))
+            self.fit_quality_label.setText(" · ".join(bits))
+
+            peaks = result.get('peak_result') or []
+            fixed = info.get('fixed_taus') or []
+            rows = [(f"τ{n}", tau, area * 100.0)
+                    for n, (tau, area, _f, _w) in enumerate(peaks, 1)]
+            for t in fixed:                      # 固定分量单独标注，避免与分离峰混看
+                rows.append((f"固定 τ = {t:.4g}", float(t), float('nan')))
+
+            table = getattr(self, 'fit_table', None)
+            if table is not None:
+                table.setSortingEnabled(False)
+                try:
+                    table.clearContents()
+                    table.setRowCount(len(rows))
+                    for r, (name, tau, share) in enumerate(rows):
+                        name_item = QTableWidgetItem(str(name))
+                        table.setItem(r, 0, name_item)
+                        tau_item = NumericTableItem(f"{tau:.4g}")
+                        tau_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        table.setItem(r, 1, tau_item)
+                        share_item = QTableWidgetItem(
+                            "—" if not np.isfinite(share) else f"{share:.2f}")
+                        share_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        table.setItem(r, 2, share_item)
+                finally:
+                    table.setSortingEnabled(True)
+                # 重新打开排序会按“当前排序指示器”自动排一遍，行序就不可控了；
+                # 这里显式按分量列排，保证默认是 τ1 / τ2 / … / 固定分量 的自然顺序
+                table.sortItems(0, Qt.AscendingOrder)
+            card.setVisible(True)
+        except Exception as e:
+            log_exception("填充拟合摘要卡片失败", e)
 
     # ---------- 荧光寿命拟合结果导出（表格 + 单文件报告） ----------
 
@@ -2203,6 +2280,9 @@ class PlotMixin:
             # 把积分结果写入绘图区下方的数据输出区
             self._update_integration_output()
             self.status_bar.showMessage("图表更新完成")
+        # v4.27：画布/空状态切换 + 状态栏徽标（有数据了就把引导页收起来）
+        self._sync_empty_state()
+        self._update_status_badges()
 
     def _on_plot_error(self, error_msg):
         """绘图错误回调"""

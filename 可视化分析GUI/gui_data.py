@@ -714,6 +714,11 @@ class DataMixin:
             self._lifetime_fit_cache.clear()
         self.file_list.clear()
         self._update_file_count_label()   # v4.26：列表清空后计数归零
+        # v4.27：切模式后状态栏徽标跟着走；拟合摘要卡片只属于寿命模式
+        self._update_status_badges()
+        if hasattr(self, 'fit_card') and not is_lifetime:
+            self.fit_card.setVisible(False)
+        self._sync_empty_state()
         if hasattr(self, 'current_folder'):
             self.load_data_from_folder(str(self.current_folder))
         else:
@@ -819,6 +824,8 @@ class DataMixin:
             self._sync_file_item_tooltips()
             # v4.26：换文件夹后列表全变了，重新套用搜索过滤 + 刷新计数
             self._apply_file_filter()
+            self._update_status_badges()     # v4.27：状态栏样品数徽标
+            self._sync_empty_state()         # v4.27：有数据了就收起空状态引导页
             self.current_folder = folder
             # 记入最近文件夹（D5）：只在真正加载到 ≥1 个文件时记（D2），
             # 否则浏览过的空目录也会挤进列表
@@ -1436,6 +1443,7 @@ class DataMixin:
             else:
                 label.setText(f"已加载 {total} 个文件")
                 label.setToolTip("")
+            self._update_status_badges()     # v4.27：状态栏样品数徽标同步
         except Exception:
             pass
 

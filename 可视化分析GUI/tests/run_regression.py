@@ -1200,6 +1200,134 @@ def t_gui_integration_table():
     assert len(lines) == 3, f"CSV 应为表头 + 2 行，实际 {len(lines)}"
 
 
+# ---------------------------------------------------------------- v4.27 新增
+@check("GUI：matplotlib 工具条中文 tooltip + 三组分隔不重复（v4.27）")
+def t_gui_nav_toolbar():
+    from PyQt5.QtWidgets import QToolBar
+    app, w = _make_gui()
+    tb = w.toolbar
+    assert isinstance(tb, QToolBar), "预览画布应有 matplotlib 导航工具条"
+    actions = tb.actions()
+    texts = [a.text() for a in actions if not a.isSeparator()]
+    for label in ('复位视图', '上一视图', '下一视图', '平移', '框选缩放',
+                  '保存图片'):
+        assert label in texts, f"工具条按钮「{label}」缺中文标题：{texts}"
+    # mpl 自己带两条分隔（视图 | 缩放/参数 | 保存），不能再插第二条
+    n_sep = sum(1 for a in actions if a.isSeparator())
+    assert n_sep == 2, f"工具条应恰好 2 条分组分隔线，实际 {n_sep}"
+    for a in actions:
+        if a.isSeparator() or not a.text():
+            continue
+        assert a.toolTip(), f"按钮「{a.text()}」没有 tooltip"
+        assert any('\u4e00' <= ch <= '\u9fff' for ch in a.text()), \
+            f"按钮「{a.text()}」标题仍是英文"
+    # 三个画布的工具条都要处理过
+    for name in ('lifetime_toolbar', 'diag_toolbar'):
+        other = getattr(w, name, None)
+        if other is None:
+            continue
+        tips = [a.toolTip() for a in other.actions() if not a.isSeparator()]
+        assert any('复位视图' in t for t in tips), f"{name} 没走中文化处理"
+
+
+@check("GUI：空状态引导页与画布切换、工具条随空状态隐藏（v4.27）")
+def t_gui_empty_state():
+    app, w = _make_gui()
+    assert hasattr(w, 'preview_stack'), "预览页应是 画布/空状态 两页的堆叠"
+    w.resize(1368, 783)
+    w.show()
+    app.processEvents()
+    w.data_cache.clear()
+    w._sync_empty_state()
+    app.processEvents()
+    assert w.preview_stack.currentIndex() == 1, "没有数据时应显示空状态页"
+    assert w.empty_title.text(), "空状态应有标题文案"
+    assert w.empty_btn.text() == "选择数据文件夹", \
+        f"空状态主按钮文案异常：{w.empty_btn.text()!r}"
+    assert not w.toolbar.isVisible(), "空状态时那条 matplotlib 工具条应收起"
+    # 有数据 → 回到画布页
+    w.data_cache['__probe__'] = {'data': {}}
+    try:
+        w._sync_empty_state()
+        app.processEvents()
+        assert w.preview_stack.currentIndex() == 0, "有数据时应显示画布"
+        assert w.toolbar.isVisible(), "有数据时工具条应重新出现"
+    finally:
+        w.data_cache.clear()
+        w._sync_empty_state()
+
+
+@check("GUI：信息页拟合摘要卡片 + 质量徽标三档（v4.27）")
+def t_gui_info_fit_card():
+    app, w = _make_gui()
+    assert hasattr(w, 'fit_card'), "信息页应有「拟合摘要」卡片"
+    # 注：用 isHidden() 而不是 isVisible()——测试里窗口没 show()，
+    # 子控件的 isVisible() 恒为 False（v4.25 踩过同一个坑）
+    assert w.fit_card.isHidden(), "没拟合过时卡片应隐藏"
+    base = {
+        'name': 'probe.csv', 'time': [0.0, 1.0, 2.0], 'decay': [3.0, 2.0, 1.0],
+        'peak_result': [(4.0, 0.7, 1.0, 1.0), (1.2, 0.3, 1.0, 1.0)],
+        'info': {'chi_sqr': 1.05, 'quality': 'ok', 'residuals': [0.1, -0.1, 0.05],
+                 'y_fitted': [3.0, 2.0, 1.0], 'fit_start': 0, 'fit_end': 3,
+                 'fixed_taus': [0.5], 'fixed_amplitudes': [10.0]},
+    }
+    w._last_lifetime_result = base
+    w._update_info_fit_card()
+    assert not w.fit_card.isHidden(), "有结果时卡片应显示"
+    assert w.fit_badge.text().startswith("拟合质量"), \
+        f"徽标文案异常：{w.fit_badge.text()!r}"
+    assert w.fit_badge.property('badgeState') == 'ok', \
+        f"quality=ok 应映射到 ok 徽标，实际 {w.fit_badge.property('badgeState')!r}"
+    # 2 个分离峰 + 1 个固定分量
+    assert w.fit_table.rowCount() == 3, \
+        f"分量表应有 3 行（2 峰 + 1 固定），实际 {w.fit_table.rowCount()}"
+    names = [w.fit_table.item(r, 0).text() for r in range(3)]
+    assert names[0] == 'τ1' and names[1] == 'τ2', f"分量名异常：{names}"
+    assert '固定' in names[2], f"固定分量应单独标注：{names[2]}"
+    assert 'χ²R' in w.fit_quality_label.text(), "摘要行应含 χ²R"
+
+    # 三档徽标映射
+    for quality, state in (('poor', 'warn'), ('failed', 'bad')):
+        probe = dict(base)
+        probe['info'] = dict(base['info'], quality=quality)
+        w._last_lifetime_result = probe
+        w._update_info_fit_card()
+        assert w.fit_badge.property('badgeState') == state, \
+            f"quality={quality} 应映射到 {state}"
+    # 结果清空 → 卡片重新隐藏
+    w._last_lifetime_result = None
+    w._update_info_fit_card()
+    assert w.fit_card.isHidden(), "没有结果时卡片应重新隐藏"
+
+
+@check("GUI：状态栏进度条 + 模式/样品数徽标（v4.27）")
+def t_gui_status_bar():
+    from PyQt5.QtCore import Qt as _Qt
+    from PyQt5.QtWidgets import QProgressBar, QListWidgetItem
+    app, w = _make_gui()
+    assert isinstance(w.progress_bar, QProgressBar)
+    # 进度条从参数栏搬到了状态栏（v4.27）
+    assert w.param_panel.findChild(QProgressBar) is None, \
+        "参数栏里不应再有进度条（已移到状态栏）"
+    assert w.progress_bar.parent() is w.status_bar, \
+        "进度条应为状态栏的常驻部件"
+    assert w.progress_bar.isHidden(), "空闲时进度条应隐藏"
+    assert w.status_mode_badge.text() == "吸收光谱"
+    w.spectrum_type_combo.setCurrentIndex(2)
+    assert w.status_mode_badge.text() == "荧光寿命", \
+        f"模式徽标未跟随切换：{w.status_mode_badge.text()!r}"
+    w.spectrum_type_combo.setCurrentIndex(0)
+    w.file_list.clear()
+    for n in ('a.csv', 'b.csv', 'c.csv'):
+        it = QListWidgetItem(n)
+        it.setFlags(it.flags() | _Qt.ItemIsUserCheckable)
+        it.setCheckState(_Qt.Checked)
+        w.file_list.addItem(it)
+    w._update_status_badges()
+    assert w.status_sample_badge.text() == "3 个样品", \
+        f"样品数徽标异常：{w.status_sample_badge.text()!r}"
+
+
 def main():
     strict = '--strict' in sys.argv
 
