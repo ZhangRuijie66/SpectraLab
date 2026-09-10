@@ -27,6 +27,10 @@ _parent = Path(__file__).resolve().parent.parent
 if str(_parent) not in sys.path:
     sys.path.insert(0, str(_parent))
 
+# 停靠布局状态的版本号（v4.29）。QMainWindow.saveState/restoreState 的 version
+# 参数：以后若增删/重命名 dock，只要把版本号 +1，旧设置就会被安全忽略。
+_DOCK_STATE_VERSION = 1
+
 
 class DataMixin:
     """数据加载、工作区/文件夹选择、信息展示与说明.xlsx 图例增强。"""
@@ -200,6 +204,10 @@ class DataMixin:
                                [1 if h else 0 for h in self._col_hidden])
                     s.setValue("ui/panel_widths",
                                [int(w) for w in self._col_widths])
+                # 停靠布局（v4.29）：浮动 / 拖动换位 / 叠成标签页的状态整包存下来。
+                # 版本号随 saveState 一起写，将来改了 dock 结构不会读回坏数据。
+                if hasattr(self, '_panel_docks'):
+                    s.setValue("ui/dock_state", self.saveState(_DOCK_STATE_VERSION))
             except Exception:
                 pass
             # 白名单控件循环保存（E1）
@@ -308,10 +316,29 @@ class DataMixin:
             log_exception("恢复会话失败", e)
 
     def _restore_panel_state(self, s):
-        """恢复三栏折叠状态与宽度（v4.26）。任何异常都退回默认布局。"""
+        """恢复三栏停靠布局、收起状态与宽度（v4.26 建立 / v4.29 Dock 版）。
+
+        顺序：先读整包停靠状态（浮动 / 换位 / 叠标签），再用
+
+            ui/panel_hidden + ui/panel_widths
+
+        覆盖显隐与宽度——这两个键是"每栏最终该多宽/是否显示"的权威记录，
+        坏值一律忽略，任何异常都退回默认布局。
+        """
         if not hasattr(self, 'toggle_panel'):
             return
         try:
+            # 1) 整包停靠状态（v4.29）：失败就当没存过，不影响下面的恢复
+            state = s.value("ui/dock_state", None)
+            if state is not None and hasattr(self, '_panel_docks'):
+                try:
+                    if self.restoreState(state, _DOCK_STATE_VERSION):
+                        for i, dock in enumerate(self._panel_docks):
+                            self._col_hidden[i] = not dock.isVisible()
+                except Exception as e:
+                    logging.warning("恢复停靠布局失败（忽略，用默认）: %s", e)
+
+            # 2) 各栏宽度
             widths = s.value("ui/panel_widths", None)
             if widths is not None:
                 vals = widths if isinstance(widths, (list, tuple)) else [widths]
@@ -323,6 +350,7 @@ class DataMixin:
                     # 只接受合理值：太小/太大一律忽略（防止坏设置把界面搞乱）
                     if 80 <= w <= 1200:
                         self._col_widths[i] = w
+            # 3) 收起 / 展开
             hidden = s.value("ui/panel_hidden", None)
             if hidden is not None:
                 vals = hidden if isinstance(hidden, (list, tuple)) else [hidden]

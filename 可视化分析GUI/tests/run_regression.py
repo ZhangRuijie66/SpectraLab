@@ -40,6 +40,43 @@ def check(name):
     return deco
 
 
+# ------------------------------------------------- 会话设置的"借还"机制
+# 一批检查项依赖"上次会话"的状态（栏宽/收起、寿命默认值、上次模式、上次主题），
+# 而它们中途失败或整个进程被强杀时，自己的 finally 恢复逻辑不一定会跑到——残留值
+# 会让**下一次**回归跑出完全不同的结果（v4.29 排查时连续踩到：last_mode=2 让
+# 「状态栏徽标」失败、theme=dark 让「主题图标切换」失败、ui/panel_widths=
+# [5,99999,285] 让栏宽检查失败）。
+# 所以在 main() 里统一先把这些键摘下来，跑完原样放回：无论中途发生什么，
+# 下一次都是从干净起点开跑，用户真实设置也不会被测试改掉。
+_SESSION_KEY_PREFIXES = ("ui/", "defaults/", "param/", "help_dialog/")
+_SESSION_KEY_EXACT = ("last_mode", "last_folder", "theme", "workspace",
+                      "recent_folders")
+
+
+def _session_settings_lend():
+    """摘下回归测试敏感的会话设置，返回 (QSettings, 备份字典)。"""
+    from PyQt5.QtCore import QSettings
+    from gui_config import APP_ORG, APP_NAME
+    s = QSettings(APP_ORG, APP_NAME)
+    keys = [k for k in s.allKeys()
+            if k.startswith(_SESSION_KEY_PREFIXES) or k in _SESSION_KEY_EXACT]
+    saved = {k: s.value(k) for k in keys}
+    for k in keys:
+        s.remove(k)
+    s.sync()
+    return s, saved
+
+
+def _session_settings_return(s, saved):
+    """把会话设置原样放回（测试结束/异常都走这里）。"""
+    try:
+        for k, v in saved.items():
+            s.setValue(k, v)
+        s.sync()
+    except Exception as e:                                   # pragma: no cover
+        print(f"  [WARN] 会话设置回填失败：{e}")
+
+
 # ---------------------------------------------------------------- 数据路径
 TEST_DIR = os.path.join(GUI_DIR, 'test')
 LIFETIME_CSV = os.path.join(TEST_DIR, 'Fig9_FoldedRNA.csv')
@@ -1038,47 +1075,69 @@ def t_gui_type_scale_density():
     groups = [g for g in w.param_panel.findChildren(QGroupBox) if not g.isHidden()]
     total = sum(g.sizeHint().height() for g in groups)
     assert groups, "参数区应至少有一个分组框"
-    # 同一探针实测：v4.24 = 1230+575+294 = 2099px（要滚 2.5 屏），v4.25 = 1100+494+126 = 1720px
-    assert total < 1750, f"参数区内容总高 {total}px 偏大（字阶/间距回涨了？）"
-    assert total > 800, f"参数区内容总高 {total}px 异常偏小，可能控件丢了"
+    # 同一探针实测：v4.24 = 1230+575+294 = 2099px（要滚 2.5 屏），v4.25 = 1100+494+126 = 1720px。
+    # v4.29 起「绘图参数」外层分组框由 dock 的标题栏取代，探针里不再计入它
+    # （旧值还把嵌套的「寿命拟合」重复算了一遍），寿命模式实测 494+124 = 618px。
+    assert total < 900, f"参数区内容总高 {total}px 偏大（字阶/间距回涨了？）"
+    assert total > 450, f"参数区内容总高 {total}px 异常偏小，可能控件丢了"
+    # 栏标题交给 dock 标题栏：参数栏里不该再有一层「绘图参数」卡片
+    assert not any(g.title() == "绘图参数" for g in groups), \
+        "「绘图参数」外层分组框应已并入 dock 标题栏"
+    assert w.param_dock.windowTitle() == "参数", \
+        f"参数栏 dock 标题应为「参数」，实际 {w.param_dock.windowTitle()!r}"
 
 
 # ---------------------------------------------------------------- v4.26 新增
-@check("GUI：三栏可折叠 + 折叠后画布变宽 + 宽度记忆（v4.26）")
+# v4.29：三栏由 QSplitter 子控件改为 QDockWidget，探针同步改成量 dock / 画布宽度
+@check("GUI：三栏可收起 + 收起后画布变宽 + 宽度记忆（v4.26 / v4.29 Dock）")
 def t_gui_panel_collapse():
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QDockWidget
     app, w = _make_gui()
     w.resize(1368, 783)                  # 默认窗口宽度，量出来的数才有意义
     w.show()
     app.processEvents()
+    w.reset_dock_layout()                # 忽略上次会话存的停靠/浮动状态，量基准
     w._apply_col_sizes()
     app.processEvents()
 
     btns = getattr(w, 'panel_toggle_btns', [])
     assert len(btns) == 3, f"栏开关条应有 3 个按钮，实际 {len(btns)}"
     assert all(b.isChecked() for b in btns), "初始应三栏都展开"
-    # 开关条必须在 splitter **之外**：栏折叠后栏内控件全都不显示，
-    # 折叠按钮如果放在栏里就等于"折起来就再也打不开"
-    assert w.splitter.indexOf(btns[0]) == -1, "开关条按钮不应位于 splitter 内"
+    # 三栏必须是停靠面板（可拖动 / 拖出浮动 / 按 × 关闭）
+    assert all(isinstance(d, QDockWidget) for d in w._panel_docks), \
+        "三栏应为 QDockWidget"
+    assert all(d.objectName() for d in w._panel_docks), \
+        "每个 dock 都要有 objectName（saveState/restoreState 靠它识别）"
+    assert w.dockWidgetArea(w.tree_dock) == Qt.LeftDockWidgetArea and \
+        w.dockWidgetArea(w.file_dock) == Qt.LeftDockWidgetArea and \
+        w.dockWidgetArea(w.param_dock) == Qt.RightDockWidgetArea, \
+        "默认布局应为「左侧 目录树+数据 / 右侧 参数」"
+    # 开关条必须在所有 dock **之外**：栏关掉后栏内控件全都不显示，
+    # 开关按钮如果放在栏里就等于"关了就再也打不开"
+    assert all(not w.panel_rail.isAncestorOf(p)
+               for p in (w.tree_panel, w.file_panel, w.param_panel)), \
+        "开关条不应位于任何栏内"
 
-    base = w.splitter.sizes()[3]
+    base = w.canvas_panel.width()
     w.toggle_panel(0)
     app.processEvents()
-    assert w.tree_panel.isHidden(), "折叠后目录树栏应隐藏"
-    assert not btns[0].isChecked(), "折叠后开关条按钮应取消勾选"
-    one = w.splitter.sizes()[3]
-    assert one > base, f"折叠目录树后画布应变宽：{base} → {one}"
+    assert not w.tree_dock.isVisible(), "收起后目录树栏应隐藏"
+    assert not btns[0].isChecked(), "收起后开关条按钮应取消勾选"
+    one = w.canvas_panel.width()
+    assert one > base, f"收起目录树后画布应变宽：{base} → {one}"
     w.toggle_panel(1)
     app.processEvents()
-    two = w.splitter.sizes()[3]
-    assert two > one, f"再折叠数据栏后画布应更宽：{one} → {two}"
-    assert two >= 1000, f"折叠目录树+数据后画布应 ≥1000px，实际 {two}"
+    two = w.canvas_panel.width()
+    assert two > one, f"再收起数据栏后画布应更宽：{one} → {two}"
+    assert two >= 950, f"收起目录树+数据后画布应 ≥950px，实际 {two}"
     w.toggle_panel(0)
     w.toggle_panel(1)                    # 都展开回来
     app.processEvents()
-    assert not w.tree_panel.isHidden() and not w.file_panel.isHidden()
+    assert w.tree_dock.isVisible() and w.file_dock.isVisible()
     assert all(b.isChecked() for b in btns), "展开后勾选态应恢复"
-    assert w.splitter.sizes()[3] == base, \
-        f"展开后画布宽度应回到 {base}，实际 {w.splitter.sizes()[3]}"
+    assert w.canvas_panel.width() == base, \
+        f"展开后画布宽度应回到 {base}，实际 {w.canvas_panel.width()}"
 
     if not w.settings.isWritable():
         raise Skip("QSettings 不可写，注册表被限制")
@@ -1092,7 +1151,7 @@ def t_gui_panel_collapse():
         assert w2._col_hidden == [False, True, False], \
             f"折叠状态未恢复：{w2._col_hidden}"
         assert w2._col_widths == [240, 210, 320], f"宽度未恢复：{w2._col_widths}"
-        assert w2.file_panel.isHidden(), "数据栏应保持上次的折叠状态"
+        assert not w2.file_dock.isVisible(), "数据栏应保持上次的收起状态"
         assert not w2.panel_toggle_btns[1].isChecked(), "开关条状态应同步"
         # 坏设置（越界宽度）必须被忽略，否则界面会被搞乱
         s.setValue("ui/panel_widths", [5, 99999, 285])
@@ -1107,6 +1166,96 @@ def t_gui_panel_collapse():
             else:
                 s.setValue(k, v)
         s.sync()
+
+
+@check("GUI：布局预设 + 浮动恢复 + dock 状态持久化（v4.29）")
+def t_gui_dock_layout_presets():
+    from PyQt5.QtCore import Qt
+    app, w = _make_gui()
+    w.resize(1368, 783)
+    w.show()
+    app.processEvents()
+    w.reset_dock_layout()
+
+    # 三套预设的显隐组合
+    for key, expect in (("fit", (0, 0, 0)), ("plot", (0, 0, 1)), ("canvas", (1, 1, 1))):
+        w.apply_layout_preset(key)
+        app.processEvents()
+        got = tuple(1 if h else 0 for h in w._col_hidden)
+        assert got == expect, f"预设 {key} 显隐错误：{got} != {expect}"
+        vis = tuple(1 if d.isVisible() else 0 for d in w._panel_docks)
+        assert vis == tuple(1 - x for x in expect), \
+            f"预设 {key} 的 dock 可见性与状态不一致：{vis}"
+
+    # 只看图：画布应吃掉几乎整个宽度
+    wide = w.canvas_panel.width()
+    assert wide >= 1000, f"「只看图」预设下画布应 ≥1000px，实际 {wide}"
+
+    # 拖出浮动 → 恢复默认布局后必须重新停靠回原位
+    w.apply_layout_preset("fit")
+    app.processEvents()
+    w.param_dock.setFloating(True)
+    app.processEvents()
+    assert w.param_dock.isFloating(), "参数栏应能拖出成浮动窗口"
+    w.reset_dock_layout()
+    app.processEvents()
+    assert not w.param_dock.isFloating(), "恢复默认布局后参数栏应重新停靠"
+    assert w.dockWidgetArea(w.param_dock) == Qt.RightDockWidgetArea, \
+        "参数栏应回到右侧"
+    assert all(d.isVisible() for d in w._panel_docks), "恢复默认布局后三栏应全展开"
+
+    # 布局菜单里的三个显隐项要跟 dock 实际状态同步
+    w.toggle_panel(2)
+    app.processEvents()
+    acts = getattr(w, 'act_show_panels', [])
+    assert len(acts) == 3, f"布局菜单应有 3 个显隐项，实际 {len(acts)}"
+    assert not acts[2].isChecked(), "收起参数栏后菜单勾选应取消"
+    w.toggle_panel(2)
+    app.processEvents()
+    assert acts[2].isChecked(), "展开后菜单勾选应恢复"
+
+    # Ctrl+1/2/3 快捷键
+    seqs = [sc.key().toString() for sc in getattr(w, '_shortcuts', [])]
+    for k in ("Ctrl+1", "Ctrl+2", "Ctrl+3"):
+        assert k in seqs, f"缺少布局预设快捷键 {k}：{seqs}"
+
+
+@check("GUI：主窗口反复建/销毁不泄漏、不在析构期崩（v4.29）")
+def t_gui_window_lifecycle():
+    """v4.29 排查硬崩溃时立的哨兵。
+
+    当时给 QDockWidget 接了 `visibilityChanged` 的 lambda：闭包引用 self、
+    与 dock 形成引用环，窗口对象于是不再即时析构，而是被 GC 延后到任意时刻
+    销毁；"仍处于显示状态"的窗口在析构时 dock 会发 Hide 信号，PyQt 在析构期
+    派发它直接 abort（退出码 0xC0000409、没有任何 traceback）。
+    这里两道防线：
+      1. 删掉窗口并 gc.collect() 后控件数要掉下来；
+      2. 反复建/销毁（不 close，走"显示状态下被析构"这条路径）——析构期有
+         地雷的话进程会当场 abort。
+    """
+    import gc
+    app, w = _make_gui()
+    w.show()
+    app.processEvents()
+    base = len(app.allWidgets())
+    assert base > 200, f"主窗口控件数异常偏少：{base}"
+    # PyQt 里 connect(self.方法) 天然会形成引用环（窗口要等 GC 才回收，这是
+    # 既有行为，不是本次引入的），所以这里显式 gc.collect() 逼出析构——
+    # 重要是"显示状态下被析构"这条路径要能安全走完。
+    del w
+    gc.collect()
+    app.processEvents()
+    left = len(app.allWidgets())
+    assert left < base // 4, f"GC 后主窗口控件仍未释放：{base} → {left}"
+    for _ in range(3):
+        _app, t = _make_gui()
+        t.show()
+        app.processEvents()
+        del t
+        gc.collect()
+        app.processEvents()
+    assert len(app.allWidgets()) < base // 2, \
+        f"反复建/销毁后控件数没有回落：{base} → {len(app.allWidgets())}"
 
 
 @check("GUI：文件列表搜索过滤 + 全选只作用于筛选结果（v4.26）")
@@ -1433,20 +1582,24 @@ def main():
         print("  模式: --strict（跳过计为失败）")
     print("=" * 72)
     passed = failed = skipped = 0
-    for name, fn in RESULTS:
-        try:
-            fn()
-        except Skip as e:
-            skipped += 1
-            print(f"[SKIP] {name}（{e}）")
-        except Exception as e:
-            failed += 1
-            print(f"[FAIL] {name}")
-            print(f"       {type(e).__name__}: {e}")
-            traceback.print_exc(limit=3)
-        else:
-            passed += 1
-            print(f"[PASS] {name}")
+    s_lend, s_saved = _session_settings_lend()
+    try:
+        for name, fn in RESULTS:
+            try:
+                fn()
+            except Skip as e:
+                skipped += 1
+                print(f"[SKIP] {name}（{e}）")
+            except Exception as e:
+                failed += 1
+                print(f"[FAIL] {name}")
+                print(f"       {type(e).__name__}: {e}")
+                traceback.print_exc(limit=3)
+            else:
+                passed += 1
+                print(f"[PASS] {name}")
+    finally:
+        _session_settings_return(s_lend, s_saved)
     print("-" * 72)
     print(f"  共 {len(RESULTS)} 项：通过 {passed}，跳过 {skipped}，失败 {failed}")
     if strict and skipped:

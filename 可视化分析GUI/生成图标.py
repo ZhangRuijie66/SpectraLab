@@ -65,6 +65,8 @@ ICON_NAMES = (
     "select_all", "fit",
     # v4.28：入口界面的四个模块卡片各要一个图标（原来用 📊 📈 ⏱ 🧊 四个 emoji）
     "mode_absorb", "mode_emit", "mode_lifetime", "mode_3d",
+    # v4.29：停靠面板标题栏（关闭 / 浮动）
+    "close", "float",
 )
 
 FILL = 255   # 掩膜上的"上色"
@@ -322,6 +324,26 @@ def icon_mode_3d(d):
     _poly(d, [(48, 60), (48, 84)])                                 # 竖直轴
 
 
+def icon_close(d):
+    """关闭（收起该栏）：一个叉。
+
+    v4.29：QDockWidget 标题栏右侧的 × 走 QSS 的 titlebar-close-icon，
+    不指定 image 时由系统样式画，深色主题下几乎看不见。
+    """
+    _poly(d, [(24, 24), (72, 72)])
+    _poly(d, [(72, 24), (24, 72)])
+
+
+def icon_float(d):
+    """浮动 / 停靠：两个错位的方框（经典的「脱离 / 还原」图形）。
+
+    v4.29：QDockWidget 标题栏的浮动按钮（titlebar-normal-icon）。
+    """
+    _rrect(d, 12, 12, 62, 62, 6)      # 后方框（左上）
+    _rrect(d, 34, 34, 84, 84, 6)      # 前方框（右下）
+
+
+
 ICONS = {
     "home": icon_home,
     "moon": icon_moon,
@@ -345,6 +367,9 @@ ICONS = {
     "mode_emit": icon_mode_emit,
     "mode_lifetime": icon_mode_lifetime,
     "mode_3d": icon_mode_3d,
+    # v4.29：停靠面板标题栏的两个按钮
+    "close": icon_close,
+    "float": icon_float,
 }
 
 

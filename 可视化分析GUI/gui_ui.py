@@ -9,7 +9,7 @@ import logging
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import Qt, QDir, QTimer, QSize
+from PyQt5.QtCore import Qt, QDir, QTimer, QSize, QEvent
 from PyQt5.QtGui import QFont, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QLineEdit, QFileSystemModel, QTreeView, QSlider, QSpinBox,
     QPlainTextEdit, QToolButton, QMenu, QAction, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QStackedWidget,
+    QStackedWidget, QDockWidget, QToolBar,
 )
 
 from gui_config import (
@@ -95,22 +95,14 @@ class UiMixin:
             geom.moveCenter(screen.availableGeometry().center())
             self.move(geom.topLeft())
 
-        # 创建主部件和布局
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        # 四栏并列布局：目录树 | 数据 | 参数 | 图片
-        main_layout = QHBoxLayout(main_widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
-
-        # 四栏：目录树、数据、参数、画布(图片)
+        # 四个面板：目录树 / 数据 / 参数 / 画布
         self.tree_panel = self.create_tree_panel()
         self.file_panel = self.create_file_panel()
         self.param_panel = self.create_param_panel()
         self.canvas_panel = self.create_canvas_panel()
 
-        # ---- 三栏折叠状态与宽度记忆（v4.26）----
-        # 索引与下面 splitter 的前三个子控件一一对应：0=目录树 1=数据 2=参数
+        # ---- 三栏折叠状态与宽度记忆（v4.26 建立；v4.29 起由 QDockWidget 承载）----
+        # 索引与下面三个 dock 一一对应：0=目录树 1=数据 2=参数
         self._panel_widgets = (self.tree_panel, self.file_panel, self.param_panel)
         self._panel_names = ("目录树", "数据", "参数")
         self._panel_labels = ("目\n录", "数\n据", "参\n数")
@@ -119,35 +111,34 @@ class UiMixin:
         self._col_hidden = [False, False, False]
         self._col_sizes_applied = False
 
-        splitter = QSplitter(Qt.Horizontal)
-        self.splitter = splitter
-        splitter.addWidget(self.tree_panel)
-        splitter.addWidget(self.file_panel)
-        splitter.addWidget(self.param_panel)
-        splitter.addWidget(self.canvas_panel)
-        # 前三栏用最小宽度兜底，图片区 stretch 占满剩余
-        # 参数栏收窄到与左两栏接近（v4.22 修订：删掉小字说明、标签/组标题压缩、
-        # 波长范围与 k 范围改为上下排列后，内容最小宽度 384 → 254；
-        # 竖向滚动条另占约 15 px，故最小宽度取 275）
+        # 画布 = 中央部件；三栏 = 停靠面板（v4.29：可拖动 / 浮动 / 关闭 / 堆叠）
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(8, 8, 8, 8)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.canvas_panel)
+        self.central_wrapper = central
+        self.setCentralWidget(central)
+
+        # 前三栏最小宽度兜底（QDockWidget 会跟随内容最小宽度，不再挤压）
+        # 参数栏最小宽度 275：v4.22 修订后内容最小宽度 254，竖向滚动条另占约 15 px
         self.tree_panel.setMinimumWidth(self._col_min[0])
         self.file_panel.setMinimumWidth(self._col_min[1])
         self.param_panel.setMinimumWidth(self._col_min[2])
         self.canvas_panel.setMinimumWidth(400)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 0)
-        splitter.setStretchFactor(2, 0)
-        splitter.setStretchFactor(3, 1000)  # 图片占满所有剩余宽度
-        # 初始给图片区更大的默认宽度（前几栏按内容保留较窄宽度），
-        # 窗口放大时通过 stretchFactor(1000) 让图片区吃满剩余空间
-        splitter.setSizes(self._col_widths + [805])
-        # 用户拖动分隔条后记住各栏宽度（v4.26：下次启动沿用）
-        splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        self.tree_dock = self._make_dock(0, self._panel_names[0], self.tree_panel, "treeDock")
+        self.file_dock = self._make_dock(1, self._panel_names[1], self.file_panel, "fileDock")
+        self.param_dock = self._make_dock(2, self._panel_names[2], self.param_panel, "paramDock")
+        self._panel_docks = (self.tree_dock, self.file_dock, self.param_dock)
+        self.left_docks = (self.tree_dock, self.file_dock)
+        self._place_docks_default()
 
         # 栏开关条（v4.26）：始终可见的折叠/展开入口。
-        # 它**不在** splitter 里——面板折叠后其内部所有控件（含折叠按钮）都会
-        # 一起消失，入口必须留在栏外，否则折叠了就再也点不回来。
-        main_layout.addWidget(self._create_panel_rail())
-        main_layout.addWidget(splitter)
+        # 它**不在**任何 dock 里——栏关掉后其内部所有控件（含折叠按钮）都会
+        # 一起消失，入口必须留在栏外，否则关了就再也点不回来。
+        self.panel_rail = self._create_panel_rail()
+        self.addToolBar(Qt.LeftToolBarArea, self.panel_rail)
 
         # 设置全局字体大小（适配高分辨率屏幕）
         font = QFont()
@@ -208,6 +199,10 @@ class UiMixin:
             ("Ctrl+D", self._copy_integration_results),
             ("Ctrl+F", self._focus_file_search),
             ("Ctrl+T", lambda: self.toggle_theme()),  # E5：切换主题
+            # v4.29：布局预设（三栏停靠体系的快捷入口）
+            ("Ctrl+1", lambda: self.apply_layout_preset("fit")),
+            ("Ctrl+2", lambda: self.apply_layout_preset("plot")),
+            ("Ctrl+3", lambda: self.apply_layout_preset("canvas")),
             ("F1", self.show_help),
         ]
         self._shortcuts = []
@@ -229,21 +224,73 @@ class UiMixin:
         except Exception as e:
             logging.warning("打开日志文件夹失败: %s", e)
 
-    # ---------- 三栏折叠 + 宽度记忆（v4.26）----------
+    # ---------- 停靠面板（QDockWidget）+ 布局预设（v4.29）----------
+
+    # 三套布局预设：栏宽 + 各栏显隐（真正的几何由 resizeDocks / setVisible 下发）
+    _LAYOUT_PRESETS = {
+        "fit":    {"widths": (210, 220, 320), "hidden": (False, False, False)},
+        "plot":   {"widths": (190, 200, 285), "hidden": (False, False, True)},
+        "canvas": {"widths": (190, 200, 285), "hidden": (True, True, True)},
+    }
+    _LAYOUT_TITLES = {
+        "fit": "拟合工作台", "plot": "出图工作台", "canvas": "只看图",
+    }
+
+    def _make_dock(self, idx, title, widget, object_name):
+        """把一栏的内容包成 QDockWidget。
+
+        v4.29：三栏从 QSplitter 子控件改为停靠面板——可以拖动换位、拖出成
+        浮动窗口、叠成标签页、按 × 关闭（= 折叠），比原来只能拖分隔条灵活。
+        objectName 必须设：QMainWindow.saveState/restoreState 靠它识别面板。
+        """
+        dock = QDockWidget(title, self)
+        dock.setObjectName(object_name)
+        dock.setFeatures(QDockWidget.DockWidgetMovable
+                         | QDockWidget.DockWidgetFloatable
+                         | QDockWidget.DockWidgetClosable)
+        # 只允许左右停靠：停到上下会把列表/参数压成一条横带，反而不好用
+        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        # 面板本体是普通 QWidget，QSS 的背景/圆角要靠 WA_StyledBackground 才画得出来
+        widget.setAttribute(Qt.WA_StyledBackground, True)
+        widget.setProperty("role", "dockBody")
+        dock.setWidget(widget)
+        # ⚠️ 这里**不能**接 dock.visibilityChanged（v4.29 踩过的坑）：
+        #   那个 lambda 闭包引用 self，会和 dock 形成引用环，窗口对象于是不再
+        #   即时析构、被 GC 延后到任意时刻销毁；而"仍处于显示状态"的窗口在
+        #   析构时 dock 会发 Hide 信号——PyQt 在析构期派发这个信号直接 abort
+        #   （退出码 0xC0000409、没有任何 traceback，连开 3 个窗口必崩）。
+        #   改用事件过滤听 dock 自己的 Show/Hide：事件过滤路径在析构期安全，
+        #   也不会产生引用环。
+        dock.installEventFilter(self)      # 记录拖动后的栏宽 + 同步显隐状态
+        return dock
+
+    def _place_docks_default(self):
+        """默认停靠位置：左侧「目录树 | 数据」并排，右侧「参数」。"""
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.tree_dock)
+        self.splitDockWidget(self.tree_dock, self.file_dock, Qt.Horizontal)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.param_dock)
+
+    def _dock_index(self, obj):
+        """obj 是第几栏的 dock；不是 dock 就返回 None。"""
+        for i, d in enumerate(getattr(self, '_panel_docks', ())):
+            if obj is d:
+                return i
+        return None
 
     def _create_panel_rail(self):
-        """最左侧的「栏开关条」：三个竖排按钮，随时折叠/展开对应栏目。
+        """最左侧的「栏开关条」：三个竖排按钮 + 布局预设。
 
-        折叠用 setVisible(False) 实现（splitter 会跳过隐藏子控件，剩余栏自动
-        重排）；代价是栏内所有控件（含若放在栏内的折叠按钮）一起消失——所以
-        入口必须留在栏外，这条 rail 不参与 splitter，宽度固定 34px。
+        v4.29：栏本身改成 QDockWidget 后，Qt 自带拖动/浮动/关闭，但栏一关掉
+        它内部的控件就全没了——入口必须留在栏外，所以这条 rail 不放在任何
+        dock 里，而是作为左工具条区域最外侧的 QToolBar，位置永远固定。
         """
-        rail = QWidget()
-        rail.setObjectName("panelRail")
-        rail.setFixedWidth(34)
-        rv = QVBoxLayout(rail)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(6)
+        tb = QToolBar("栏开关条", self)
+        tb.setObjectName("panelRail")
+        tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setAllowedAreas(Qt.LeftToolBarArea)
+        tb.setOrientation(Qt.Vertical)
+        tb.setIconSize(QSize(16, 16))
 
         self.panel_toggle_btns = []
         for idx, label in enumerate(self._panel_labels):
@@ -253,77 +300,200 @@ class UiMixin:
             btn.setChecked(True)                 # 勾选 = 该栏展开
             btn.setFixedSize(30, 56)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setToolTip(f"{self._panel_names[idx]}栏：点击折叠 / 展开")
+            btn.setToolTip(f"{self._panel_names[idx]}栏：点击收起 / 展开")
             btn.clicked.connect(lambda _checked=False, i=idx: self.toggle_panel(i))
-            rv.addWidget(btn)
+            tb.addWidget(btn)
             self.panel_toggle_btns.append(btn)
-        rv.addStretch(1)
-        return rail
+
+        # 布局预设入口（v4.29）：三套预设 + 各栏显隐 + 恢复默认
+        self.layout_btn = QPushButton("布\n局")
+        self.layout_btn.setProperty("variant", "rail")
+        self.layout_btn.setFixedSize(30, 44)
+        self.layout_btn.setCursor(Qt.PointingHandCursor)
+        self.layout_btn.setToolTip(
+            "布局预设：拟合工作台 (Ctrl+1) / 出图工作台 (Ctrl+2) / 只看图 (Ctrl+3)\n"
+            "三栏可自由拖动、拖出浮动、叠放成标签页")
+        self.layout_btn.setMenu(self._create_layout_menu())
+        tb.addWidget(self.layout_btn)
+        return tb
+
+    def _create_layout_menu(self):
+        """「布局」下拉菜单：三套预设 + 各栏显隐 + 恢复默认布局。"""
+        menu = QMenu(self)
+        for key, text, tip in (
+            ("fit", "拟合工作台　(Ctrl+1)", "三栏全开、参数栏加宽——边调参数边看图"),
+            ("plot", "出图工作台　(Ctrl+2)", "收起参数栏，把宽度让给画布——专心出图"),
+            ("canvas", "只看图　(Ctrl+3)", "三栏全部收起——汇报/审图时画布最大化"),
+        ):
+            act = QAction(text, self)
+            act.setToolTip(tip)
+            act.triggered.connect(lambda _checked=False, k=key:
+                                  self.apply_layout_preset(k))
+            menu.addAction(act)
+        menu.addSeparator()
+
+        # 各栏显隐（勾选态由 _sync_panel_toggle_btns 与 dock 实际状态同步）
+        self.act_show_panels = []
+        for idx in range(3):
+            act = QAction(f"{self._panel_names[idx]}栏", self)
+            act.setCheckable(True)
+            act.setChecked(True)
+            act.setToolTip(f"显示 / 收起{self._panel_names[idx]}栏")
+            act.triggered.connect(lambda _checked=False, i=idx: self.toggle_panel(i))
+            menu.addAction(act)
+            self.act_show_panels.append(act)
+        menu.addSeparator()
+
+        act_reset = QAction("恢复默认布局", self)
+        act_reset.setToolTip("三栏归位（左侧目录树+数据、右侧参数）并全部展开，浮动/叠放一并复位")
+        act_reset.triggered.connect(lambda: self.reset_dock_layout())
+        menu.addAction(act_reset)
+        return menu
+
+    # v4.29（版本标记写在注释里：docstring 属于字符串字面量，
+    # 会被 检查版本一致性.py 当成"硬编码版本号"）
+    def apply_layout_preset(self, key):
+        """套用布局预设：先归位到默认停靠状态，再按预设设宽度与显隐。"""
+        spec = self._LAYOUT_PRESETS.get(key)
+        if spec is None or not hasattr(self, '_panel_docks'):
+            return
+        self.reset_dock_layout(quiet=True)
+        for i, w in enumerate(spec["widths"]):
+            self._col_widths[i] = int(w)
+        for i, hidden in enumerate(spec["hidden"]):
+            self.toggle_panel(i, collapsed=bool(hidden))
+        self._apply_col_sizes()
+        self._sync_panel_toggle_btns()
+        self.status_bar.showMessage(
+            f"已切换到「{self._LAYOUT_TITLES.get(key, key)}」布局")
+
+    def reset_dock_layout(self, quiet=False):
+        """把三栏从浮动/叠放状态恢复到默认停靠位置。"""
+        if not hasattr(self, '_panel_docks'):
+            return
+        try:
+            for dock in self._panel_docks:
+                if dock.isFloating():
+                    dock.setFloating(False)
+                if not dock.isVisible():
+                    dock.show()
+            self._place_docks_default()
+            for i in range(3):
+                self._col_hidden[i] = False
+            self._apply_col_sizes()
+            self._sync_panel_toggle_btns()
+            if not quiet:
+                self.status_bar.showMessage("已恢复默认布局（左：目录树+数据，右：参数）")
+        except Exception as e:
+            log_exception("恢复默认布局失败", e)
 
     def toggle_panel(self, idx, collapsed=None):
-        """折叠 / 展开第 idx 栏（0=目录树 1=数据 2=参数）。
+        """收起 / 展开第 idx 栏（0=目录树 1=数据 2=参数）。
 
         collapsed=None 表示切换点击；显式传 True/False 供会话恢复用。
+        v4.29：收起 = 隐藏对应的 QDockWidget（等价于按它标题栏的 ×）。
         """
-        if idx not in (0, 1, 2) or not hasattr(self, 'splitter'):
+        if idx not in (0, 1, 2) or not hasattr(self, '_panel_docks'):
             return
-        panel = self._panel_widgets[idx]
+        dock = self._panel_docks[idx]
         prev_hidden = self._col_hidden[idx]
         if collapsed is None:
-            want_hidden = panel.isVisible()
+            want_hidden = dock.isVisible()
         else:
             want_hidden = bool(collapsed)
-        if want_hidden and panel.isVisible() and panel.width() > 0:
-            # 折叠前记住实际宽度，展开时回到原样（最小值兜底）
-            self._col_widths[idx] = max(int(panel.width()), self._col_min[idx])
+        if want_hidden and dock.isVisible() and dock.width() > 0:
+            # 收起前记住实际宽度，展开时回到原样（最小值兜底）
+            self._col_widths[idx] = max(int(dock.width()), self._col_min[idx])
         self._col_hidden[idx] = want_hidden
-        panel.setVisible(not want_hidden)
+        dock.setVisible(not want_hidden)
         self._apply_col_sizes()
         self._sync_panel_toggle_btns()
         # 只在**用户点击（collapsed is None）或状态真的变了**时提示；
         # 否则启动时恢复布局会把三栏各播报一遍，最后一句还留在状态栏上
         if collapsed is None or prev_hidden != want_hidden:
             self.status_bar.showMessage(
-                f"{self._panel_names[idx]}栏已" + ("折叠" if want_hidden else "展开"))
+                f"{self._panel_names[idx]}栏已" + ("收起" if want_hidden else "展开"))
 
     def _apply_col_sizes(self):
-        """按「记忆宽度 + 画布吃剩余」重算 splitter 各栏宽度。"""
+        """按「记忆宽度 + 画布吃剩余」重算三栏宽度（v4.29：Dock 版）。
+
+        QMainWindow.resizeDocks 会把指定宽度分配给各 dock，剩下的全部留给
+        中央部件（画布）；隐藏的栏不参与，否则会把宽度白算进被跳过的那一栏。
+        浮动的 dock 已经是独立窗口，Qt 会忽略它，不影响结果。
+        """
         try:
-            sizes = []
-            used = 0
+            if not hasattr(self, '_panel_docks'):
+                return
+            docks, widths = [], []
             for i in range(3):
-                if self._col_hidden[i]:
-                    sizes.append(0)
-                else:
-                    sizes.append(int(self._col_widths[i]))
-                    used += int(self._col_widths[i])
-            avail = int(self.splitter.width())
-            # 隐藏栏宽度记 0（Qt 会跳过它），画布拿走剩下的全部
-            sizes.append(max(400, avail - used))
-            self.splitter.setSizes(sizes)
+                dock = self._panel_docks[i]
+                if self._col_hidden[i] or not dock.isVisible():
+                    continue
+                docks.append(dock)
+                widths.append(int(self._col_widths[i]))
+            if docks:
+                self.resizeDocks(docks, widths, Qt.Horizontal)
+                # 首次按记忆宽度下发之后，才允许 eventFilter 记录"用户拖动后的宽度"。
+                # 否则建窗阶段 dock 先按自身 sizeHint（约 276px）排一次版，
+                # 会被当成用户拖动结果写进 _col_widths，把记忆宽度覆盖掉。
+                self._dock_widths_live = True
         except Exception as e:
             log_exception("重算栏宽失败", e)
 
     def _sync_panel_toggle_btns(self):
-        """开关条按钮的勾选态与 tooltip 跟当前折叠状态同步。"""
+        """开关条按钮 / 布局菜单勾选项与当前折叠状态同步。"""
         for i, btn in enumerate(getattr(self, 'panel_toggle_btns', [])):
             expanded = not self._col_hidden[i]
             btn.blockSignals(True)
             btn.setChecked(expanded)
             btn.blockSignals(False)
             btn.setToolTip(f"{self._panel_names[i]}栏："
-                           + ("已展开 —— 点击折叠" if expanded else "已折叠 —— 点击展开"))
+                           + ("已展开 —— 点击收起" if expanded else "已收起 —— 点击展开"))
+        for i, act in enumerate(getattr(self, 'act_show_panels', [])):
+            act.blockSignals(True)
+            act.setChecked(not self._col_hidden[i])
+            act.blockSignals(False)
 
-    def _on_splitter_moved(self, pos, index):
-        """用户拖动分隔条后记住各栏宽度（会话结束时写进 QSettings）。"""
-        try:
-            sizes = self.splitter.sizes()
-            for i in range(3):
-                if (not self._col_hidden[i] and i < len(sizes)
-                        and sizes[i] >= self._col_min[i]):
-                    self._col_widths[i] = int(sizes[i])
-        except Exception:
-            pass
+    def eventFilter(self, obj, event):
+        """听三栏 dock 的事件：显隐同步 + 记录拖动后的栏宽（v4.29）。
+
+        QDockWidget 既没有"分隔条被拖动"信号，它的 visibilityChanged 也不能
+        接（见 _make_dock 里的说明：会形成引用环、在析构期被派发导致 abort），
+        所以两件事都放在事件过滤里做。
+
+        Resize（栏宽）的两个过滤条件缺一不可：
+          * ``_dock_widths_live``：首次按记忆宽度排好版之前不记录（否则建窗
+            阶段 dock 的 sizeHint 宽度会把记忆宽度冲掉）；
+          * 左键按下中：只有用户真的在拖分隔条时才记录，窗口缩放导致的
+            连带变窄不算（否则"窗口拖小一次"会永久把栏宽改小）。
+
+        Show/Hide（显隐）：用户按 dock 标题栏的 × 关闭、或把栏拖成浮动窗口
+        时，`_col_hidden` 要跟着变；dock 的 Show/Hide 只在**它自己**显隐时
+        发出，窗口最小化不会触发（Qt 不给子控件补发 Hide），所以不会把
+        "最小化"误记成"三栏全收起"。
+        """
+        etype = event.type()
+        if etype == QEvent.Resize:
+            if (getattr(self, '_dock_widths_live', False)
+                    and (QApplication.mouseButtons() & Qt.LeftButton)):
+                try:
+                    idx = self._dock_index(obj)
+                    if idx is not None:
+                        w = int(event.size().width())
+                        if (not self._col_hidden[idx]) and w >= self._col_min[idx]:
+                            self._col_widths[idx] = w
+                except Exception:
+                    # 析构期的事件：异常从事件过滤器逃出去会被 PyQt 直接 abort
+                    pass
+        elif etype in (QEvent.Show, QEvent.Hide):
+            try:
+                idx = self._dock_index(obj)
+                if idx is not None:
+                    self._col_hidden[idx] = (etype == QEvent.Hide)
+                    self._sync_panel_toggle_btns()
+            except Exception:
+                pass
+        return super().eventFilter(obj, event)
 
     def showEvent(self, event):
         """首次显示后按真实宽度应用一次栏宽（setSizes 需要真实宽度才准确）。"""
@@ -717,11 +887,12 @@ class UiMixin:
 
     def create_tree_panel(self):
         """创建目录树面板：直接浏览电脑目录并点击选取文件夹"""
+        # v4.29：本栏由 QDockWidget 承载，标题在 dock 标题栏上，这里不再套
+        # QGroupBox（否则"目录树"会在标题栏和卡片标题上各写一遍、还会双层描边）
         panel = QWidget()
-        file_group = QGroupBox("目录树")
-
-        root_layout = QVBoxLayout()
-
+        root_layout = QVBoxLayout(panel)
+        root_layout.setContentsMargins(10, 8, 10, 10)
+        root_layout.setSpacing(8)
         # ---- 顶部三个等宽图标按钮（v4.24）----
         # 原来三个按钮宽度各不相同（160/160/自适应）且只有「帮助」是白底下拉按钮，
         # 左边缘参差、三种视觉语言混在一起。现在统一成 ghost 图标按钮 + tooltip，
@@ -864,19 +1035,15 @@ class UiMixin:
         self.workspace_label.setText(f"工作区: {self._short_path(initial_root)}")
         self.workspace_label.setToolTip(f"工作区（目录树根目录）:\n{initial_root}")
 
-        file_group.setLayout(root_layout)
-        v = QVBoxLayout(panel)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(file_group)
         return panel
 
     def create_file_panel(self):
         """创建文件列表面板：已加载的数据文件（勾选以绘制合并图）"""
+        # v4.29：同 create_tree_panel，标题交给 dock 标题栏
         panel = QWidget()
-        file_group = QGroupBox("数据")
-
-        root_layout = QVBoxLayout()
-
+        root_layout = QVBoxLayout(panel)
+        root_layout.setContentsMargins(10, 8, 10, 10)
+        root_layout.setSpacing(8)
         # v4.24：标题缩短——原文案「已加载的文件（勾选以绘制合并图）:」在 210px
         # 栏里必被截断，说明移到 tooltip；各模式的完整提示仍由 gui_data 写入 tooltip
         file_list_label = QLabel("已加载文件")
@@ -923,23 +1090,21 @@ class UiMixin:
         reload_btn.setCursor(Qt.PointingHandCursor)
         root_layout.addWidget(reload_btn)
 
-        file_group.setLayout(root_layout)
-        v = QVBoxLayout(panel)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(file_group)
         return panel
 
     def create_param_panel(self):
         """创建绘图参数面板 + 操作按钮。
 
-        外层为普通 QWidget：进度条与「操作」按钮组固定在面板上/下方（滚动区之外，
+        外层为普通 QWidget：「操作」按钮组固定在面板下方（滚动区之外，
         任何时刻都可见）；绘图参数组内容较长，放进 QScrollArea 滚动查看。
+        v4.29：本栏由 QDockWidget 承载，不再套「绘图参数」QGroupBox——
+        各参数分组（发射光谱选项 / 寿命拟合 …）直接落在 dock 卡片上。
         """
-        # 外层控件（放入 splitter）
+        # 外层控件（放入 dock）
         panel = QWidget()
         outer = QVBoxLayout(panel)
-        # 边距归零：与目录树/数据两栏的分组框边缘对齐
-        outer.setContentsMargins(0, 0, 0, 0)
+        # 边距与目录树/数据两栏对齐
+        outer.setContentsMargins(10, 8, 10, 10)
         outer.setSpacing(10)
 
         # 进度条（v4.27 起移到状态栏里，见 setup_ui）——参数栏顶部不再占一行
@@ -950,9 +1115,11 @@ class UiMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # 绘图参数组
-        param_group = QGroupBox("绘图参数")
-        param_layout = QVBoxLayout()
+        # 绘图参数（v4.29：原「绘图参数」QGroupBox 由 dock 卡片取代）
+        param_group = QWidget()
+        param_layout = QVBoxLayout(param_group)
+        param_layout.setContentsMargins(0, 0, 0, 0)
+        param_layout.setSpacing(10)
 
         # 图表类型
         label = QLabel("图表类型:")
@@ -1332,7 +1499,6 @@ class UiMixin:
         self.subtract_group = subtract_group
         param_layout.addWidget(subtract_group)
 
-        param_group.setLayout(param_layout)
         layout.addWidget(param_group)
 
         # 参数内容放进可滚动区域（伸展吃满滚动区上方剩余空间）
@@ -1866,6 +2032,19 @@ class UiMixin:
             P.get('SUCCESS_BG', P['CARD']), P.get('WARN_BG', P['CARD']),
             P.get('DANGER', P['ORANGE']), P.get('DANGER_BG', P['CARD']))
         up_u, dn_u, ck_u, ch_u = self._load_style_icons()
+        # 停靠面板标题栏的 × / 浮动按钮（v4.29）：图标分深浅两套，缺文件就
+        # 省略对应行（QSS 里空 url 会让整条规则失效，宁可不写）。
+        try:
+            from gui_icons import icon_path as _icon_path
+            _theme = getattr(self, 'theme', 'light')
+            close_u = _icon_path("close", _theme, 24) or ""
+            float_u = _icon_path("float", _theme, 24) or ""
+        except Exception:
+            close_u, float_u = "", ""
+        close_img = (f"titlebar-close-icon: url({Path(close_u).as_posix()});"
+                     if close_u else "")
+        float_img = (f"titlebar-normal-icon: url({Path(float_u).as_posix()});"
+                     if float_u else "")
         # 下拉弹窗的 item delegate 取色也要跟着主题走（否则深色下弹出一块白板）
         set_combo_palette(P)
         # 图标文件缺失时省略对应 image 行（QSS 里空 url 会使整条规则失效）
@@ -2421,16 +2600,76 @@ class UiMixin:
                 color: {MUTED};
                 font-size: 12px;
             }}
-            QSplitter::handle {{
+            /* ===== 停靠面板（v4.29：三栏由 QDockWidget 承载）=====
+               标题栏 + 面板本体合成一张圆角卡片：标题栏画上半部分圆角，
+               dockBody 画下半部分，中间不描边，看上去就是原来那张卡片。
+               面板之间用 QMainWindow::separator 当拖动手柄（原来 splitter 的
+               分隔条样式已随之取消）。 */
+            QMainWindow::separator {{
                 background: transparent;
+                width: 6px;
+                height: 6px;
             }}
-            QSplitter::handle:horizontal {{ width: 5px; }}
-            QSplitter::handle:hover {{ background: {SELECT_BG}; border-radius: 2px; }}
+            QMainWindow::separator:hover {{
+                background: {SELECT_BG};
+            }}
+            QDockWidget {{
+                color: {TEXT_SOFT};
+                font-size: 13px;
+                {close_img}
+                {float_img}
+            }}
+            QDockWidget::title {{
+                background-color: {CARD};
+                border: 1px solid {BORDER};
+                border-bottom: none;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                padding: 4px 8px;
+                text-align: left;
+                font-weight: bold;
+                font-size: 13px;
+                color: {TEXT_SOFT};
+            }}
+            QDockWidget::close-button, QDockWidget::float-button {{
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                padding: 1px;
+                icon-size: 12px;
+            }}
+            QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
+                background-color: {HOVER_BG};
+            }}
+            QWidget[role="dockBody"] {{
+                background-color: {CARD};
+                border: 1px solid {BORDER};
+                border-top: none;
+                border-bottom-left-radius: 10px;
+                border-bottom-right-radius: 10px;
+            }}
+
+            /* ===== 栏开关条（左工具条区域，v4.29 由 QWidget 改 QToolBar）===== */
+            QToolBar#panelRail {{
+                background: transparent;
+                border: none;
+                padding: 0 2px;
+                spacing: 6px;
+            }}
+            QPushButton[variant="rail"]::menu-indicator {{
+                image: none;
+                width: 0;
+            }}
         """
-        # 同时应用到主窗口和 QApplication（后者可覆盖到下拉弹窗 popup）
+        # 同时应用到主窗口和 QApplication（后者可覆盖到下拉弹窗 popup）。
+        # v4.29：应用级样式表**内容没变就不要再设一遍**——QApplication.setStyleSheet
+        # 会让 Qt 重新解析整张表并对进程内**每一个**控件做 unpolish/polish；
+        # 反复设同一份内容纯属浪费，而且在"窗口对象还没被 GC 回收、又新建窗口"
+        # 的场景下（回归测试每项都建一次窗口）会在这一步撞上访问违例：
+        # 实测第 47~48 个窗口必崩在 app.setStyleSheet 这一行。
         self.setStyleSheet(qss)
         app = QApplication.instance()
-        if app is not None:
+        if app is not None and app.styleSheet() != qss:
             app.setStyleSheet(qss)
         # 弹出菜单（QMenu）是独立弹出窗口：它的样式规则只在**第一次显示**时解析，
         # 切换主题后再弹出时不会自动按新色板重算（实测仍是 #ffffff 浅色面板）。

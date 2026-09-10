@@ -68,8 +68,9 @@ ICONS_DIR = os.path.join(GUI_DIR, 'icons')
 THEMES = ('light', 'dark')
 THEME_RGB = {'light': (0x47, 0x55, 0x69), 'dark': (0xCB, 0xD5, 0xE1)}
 MIN_OPAQUE, MAX_OPAQUE = 2.0, 60.0
-# 图标名数量：v4.28 从 18 增加到 22（多了 4 个入口界面模块图标）
-EXPECTED_NAMES = 22
+# 图标名数量：v4.28 从 18 增加到 22（多了 4 个入口界面模块图标）；
+# v4.29 增加到 24（停靠面板标题栏的 close / float）
+EXPECTED_NAMES = 24
 EXPECTED = len(ICON_NAMES) * len(THEMES)
 
 FAILS = []

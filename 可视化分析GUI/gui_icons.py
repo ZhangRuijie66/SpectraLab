@@ -71,6 +71,8 @@ ICON_NAMES = (
     "select_all", "fit",
     # 入口界面四个模块卡片的图标（v4.28 起替代 📊 📈 ⏱ 🧊）
     "mode_absorb", "mode_emit", "mode_lifetime", "mode_3d",
+    # 停靠面板标题栏的按钮（v4.29：关闭 / 浮动）
+    "close", "float",
 )
 
 ICON_DIR = "icons"           # 相对 GUI 根目录（resource_path 的基准）

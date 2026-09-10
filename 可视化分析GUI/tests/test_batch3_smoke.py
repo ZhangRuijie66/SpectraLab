@@ -9,7 +9,7 @@
 
 覆盖点：
   1. 栏开关条：3 个按钮、勾选态与折叠状态同步；
-  2. 折叠/展开：画布宽度确实变大（splitter 重排），展开后回到原宽度；
+  2. 收起/展开：画布宽度确实变大（QDockWidget 重排，v4.29），展开后回到原宽度；
   3. 宽度记忆：写入 ui/panel_widths + ui/panel_hidden 后新建窗口能恢复；
   4. 文件搜索：过滤只影响显示，不动勾选状态；计数标签跟着变；
   5. 全选/全不选：按钮文字随状态切换，且**只作用于当前筛选结果**；
@@ -59,33 +59,34 @@ def main():
     assert [b.isChecked() for b in btns] == [True, True, True], "初始应三栏都展开"
     ok.append(f"栏开关条 3 个按钮，初始全展开（宽度 {[b.width() for b in btns]}）")
 
-    # ---------- 2. 折叠 / 展开改变画布宽度 ----------
+    # ---------- 2. 收起 / 展开改变画布宽度 ----------
+    # v4.29：三栏改成 QDockWidget，量的是画布与 dock 的实际宽度（原来量 splitter）
     w._apply_col_sizes()
     app.processEvents()
-    sizes0 = w.splitter.sizes()
-    canvas0 = sizes0[3]
-    tree_w = sizes0[0]
-    w.toggle_panel(0)                                   # 折叠目录树
+    canvas0 = w.canvas_panel.width()
+    tree_w = w.tree_dock.width()
+    w.toggle_panel(0)                                   # 收起目录树
     app.processEvents()
-    sizes1 = w.splitter.sizes()
-    assert w.tree_panel.isHidden(), "折叠后目录树栏应隐藏"
-    assert not btns[0].isChecked(), "折叠后开关条按钮应取消勾选"
-    assert sizes1[3] > canvas0, \
-        f"折叠目录树后画布应变宽：{canvas0} → {sizes1[3]}"
-    ok.append(f"折叠目录树：画布 {canvas0} → {sizes1[3]} px（+{sizes1[3] - canvas0}"
+    assert not w.tree_dock.isVisible(), "收起后目录树栏应隐藏"
+    assert not btns[0].isChecked(), "收起后开关条按钮应取消勾选"
+    canvas1 = w.canvas_panel.width()
+    assert canvas1 > canvas0, \
+        f"收起目录树后画布应变宽：{canvas0} → {canvas1}"
+    ok.append(f"收起目录树：画布 {canvas0} → {canvas1} px（+{canvas1 - canvas0}"
               f"，该栏原宽 {tree_w}）")
 
-    w.toggle_panel(1)                                   # 再折叠数据栏
+    w.toggle_panel(1)                                   # 再收起数据栏
     app.processEvents()
-    sizes2 = w.splitter.sizes()
-    ok.append(f"再折叠数据栏：画布 → {sizes2[3]} px")
+    canvas2 = w.canvas_panel.width()
+    ok.append(f"再收起数据栏：画布 → {canvas2} px")
     w.toggle_panel(0)
     w.toggle_panel(1)                                   # 都展开回来
     app.processEvents()
-    sizes3 = w.splitter.sizes()
-    assert not w.tree_panel.isHidden() and not w.file_panel.isHidden()
+    canvas3 = w.canvas_panel.width()
+    assert w.tree_dock.isVisible() and w.file_dock.isVisible()
     assert all(b.isChecked() for b in btns), "展开后勾选态应恢复"
-    ok.append(f"两栏展开回来：画布 {sizes3[3]} px，三栏宽度 {sizes3[:3]}")
+    ok.append(f"两栏展开回来：画布 {canvas3} px，三栏宽度 "
+              f"{[d.width() for d in w._panel_docks]}")
 
     # ---------- 3. 宽度记忆（写入 → 新窗口恢复）----------
     s = QSettings(APP_ORG, APP_NAME)
@@ -100,7 +101,7 @@ def main():
             f"折叠状态未恢复：{w2._col_hidden}"
         assert w2._col_widths == [240, 210, 320], \
             f"宽度未恢复：{w2._col_widths}"
-        assert w2.file_panel.isHidden(), "数据栏应保持上次的折叠状态"
+        assert not w2.file_dock.isVisible(), "数据栏应保持上次的收起状态"
         assert w2.panel_toggle_btns[1].isChecked() is False, "开关条状态应同步"
         ok.append("宽度记忆：写入 [240,210,320] + 折叠数据栏 → 新窗口原样恢复")
         w2.close()

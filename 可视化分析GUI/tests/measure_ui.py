@@ -61,7 +61,7 @@ if sb is not None:
     print(f'  参数栏滚动条: 可见={bar.isVisible()} '
           f'范围={bar.minimum()}..{bar.maximum()} 页步={bar.pageStep()}', flush=True)
 
-print('--- 三栏折叠对画布宽度的影响（v4.26；窗口按默认 1368x783 量）---', flush=True)
+print('--- 三栏收起对画布宽度的影响（v4.26 建立 / v4.29 改 Dock；窗口按默认 1368x783 量）---', flush=True)
 w.resize(1368, 783)
 for _ in range(5):
     app.processEvents()
@@ -69,15 +69,15 @@ w._apply_col_sizes()
 for _ in range(5):
     app.processEvents()
 labels = ('目录树', '数据', '参数')
-print(f'  {"折叠的栏":<18} {"画布宽":>7}  {"左三栏宽":>16}', flush=True)
+print(f'  {"收起的栏":<18} {"画布宽":>7}  {"三栏宽":>16}', flush=True)
 for level in range(4):
     for i in range(3):
         w.toggle_panel(i, collapsed=(i < level))
     for _ in range(5):
         app.processEvents()
-    sizes = w.splitter.sizes()
-    name = '、'.join(labels[:level]) if level else '（都不折叠）'
-    print(f'  {name:<18} {sizes[3]:>7d}  {str(sizes[:3]):>16}', flush=True)
+    docks = [d.width() for d in w._panel_docks]
+    name = '、'.join(labels[:level]) if level else '（都不收起）'
+    print(f'  {name:<18} {w.canvas_panel.width():>7d}  {str(docks):>16}', flush=True)
 for i in range(3):                       # 复原
     w.toggle_panel(i, collapsed=False)
 for _ in range(5):
