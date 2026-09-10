@@ -193,10 +193,14 @@ class UiMixin:
                 "<li><b>数据格式</b>：Horiba/DeltaHub 三列 CSV"
                 "（time / decay / IRF，表头 Labels/Type/Start/Stop/Step），"
                 "或多列 xlsx（时间 + 各样品列 + IRF，自动按列拆成多个数据集）</li>"
-                "<li><b>专属按钮</b>：「⏱ 开始拟合」（单文件 MEM/SESM 拟合）、"
-                "「📊 叠加寿命分布」（多进程批量拟合后叠加对比）、"
-                "「💾 存为默认值」（把当前拟合参数固定为下次启动的默认值）、"
-                "「💾 导出当前拟合结果」（PNG + 拟合结果 json）</li>"
+                "<li><b>主操作</b>：面板底部固定的「▶ 开始拟合」"
+                "（单文件 MEM/SESM 拟合，约 1–2 分钟/文件）</li>"
+                "<li><b>批量与导出</b>：「📊 叠加分布」（并行拟合全部文件后叠加对比）、"
+                "「💾 导出 ▾」菜单里的——导出当前拟合结果（PNG + 拟合结果 json）、"
+                "跨样品汇总图、导出 PDF 报告；<b>菜单里的批量动作会复用已拟合的结果</b>，"
+                "不会把同一批样品重复拟合</li>"
+                "<li><b>参数固化</b>：「💾 存为默认值」把当前拟合参数"
+                "固定为下次启动的默认值</li>"
                 "<li><b>参数</b>：拟合方法（MEM 最大熵 / SESM 平滑指数序列）、"
                 "速率网格点数、k 范围（τ = 1/k）、"
                 "「自动拟合 λ」（每次启动默认勾选，程序扫描最优熵权重）、"
@@ -569,7 +573,7 @@ class UiMixin:
         param_layout.addWidget(label)
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("留空使用默认标题")
-        self.title_edit.setStyleSheet("font-size: 15px; padding: 5px;")
+        self.title_edit.setStyleSheet("font-size: 13px; padding: 5px;")
         self.title_edit.textChanged.connect(self.on_title_changed)
         param_layout.addWidget(self.title_edit)
 
@@ -715,7 +719,7 @@ class UiMixin:
 
         # 存为默认值（v4.22 修订）：把当前拟合参数固定为每次启动的默认值
         self.lifetime_save_defaults_btn = QPushButton("💾 存为默认值")
-        self.lifetime_save_defaults_btn.setProperty("variant", "neutral")
+        self.lifetime_save_defaults_btn.setProperty("variant", "secondary")
         self.lifetime_save_defaults_btn.setCursor(Qt.PointingHandCursor)
         self.lifetime_save_defaults_btn.setToolTip(
             "把当前荧光寿命拟合参数存为默认值，下次启动自动套用：\n"
@@ -725,18 +729,15 @@ class UiMixin:
             self._save_lifetime_defaults)
         lifetime_options.addWidget(self.lifetime_save_defaults_btn)
 
-        # 组内最下方的拟合按钮（显式触发，等效于「实时预览」）
-        self.lifetime_fit_btn = QPushButton("⏱ 开始拟合")
-        self.lifetime_fit_btn.setProperty("variant", "success")
-        self.lifetime_fit_btn.setCursor(Qt.PointingHandCursor)
-        self.lifetime_fit_btn.clicked.connect(
-            lambda: self.update_plot(explicit=True))
-        lifetime_options.addWidget(self.lifetime_fit_btn)
+        # v4.25：「⏱ 开始拟合」从本组移到下方「操作」区的**主按钮**
+        # （面板底部固定可见、不用滚动；寿命模式下它的文字会变成「▶ 开始拟合」）。
+        # 这里不再放重复的拟合按钮，避免同一个动作有两个入口。
 
         # 并行拟合全部文件并叠加寿命分布对比（C1 + C8）
         self.lifetime_overlay_btn = QPushButton("📊 叠加分布")
-        self.lifetime_overlay_btn.setToolTip("并行拟合全部文件后叠加寿命分布对比")
-        self.lifetime_overlay_btn.setProperty("variant", "cyan")
+        self.lifetime_overlay_btn.setToolTip(
+            "并行拟合全部文件后叠加寿命分布对比（已拟合过的样品直接复用结果）")
+        self.lifetime_overlay_btn.setProperty("variant", "fit")
         self.lifetime_overlay_btn.setCursor(Qt.PointingHandCursor)
         self.lifetime_overlay_btn.clicked.connect(self._run_overlay_lifetime)
         lifetime_options.addWidget(self.lifetime_overlay_btn)
@@ -943,57 +944,80 @@ class UiMixin:
         outer.addWidget(scroll, 1)
 
         # 操作按钮组：固定在面板底部（滚动区之外，任何时刻都可见，无需滚动）
+        # v4.25 按钮体系收口（设计方案 §5.1）：
+        #   * 每屏只留 **1 个**实心主色按钮 = 本模式下真正的主操作
+        #     （光谱/3D 模式 = 实时预览；寿命模式 = 开始拟合，文字随模式切换）
+        #   * 其余动作改次级按钮（卡片底 + 描边），语义色不再整块填充
+        #   * 原来 5 个实心彩色按钮（导出图片/导出全部/导出拟合结果/汇总图/PDF）
+        #     合并进「💾 导出 ▾」一个下拉菜单
         action_group = QGroupBox("操作")
         action_layout = QVBoxLayout()
+        action_layout.setSpacing(8)
 
-        self.preview_btn = QPushButton("📊 实时预览")
-        self.preview_btn.setProperty("variant", "violet")
+        self.preview_btn = QPushButton("▶ 实时预览")
+        self.preview_btn.setProperty("variant", "primary")
         self.preview_btn.setCursor(Qt.PointingHandCursor)
+        self.preview_btn.setToolTip(
+            "按当前参数重新绘图（F5）\n"
+            "⚠️ 荧光寿命模式下本按钮 = 开始拟合（约 1–2 分钟/文件）")
         # 显式触发（explicit=True）：荧光寿命模式下只有该按钮才真正启动拟合
         self.preview_btn.clicked.connect(lambda: self.update_plot(explicit=True))
         action_layout.addWidget(self.preview_btn)
 
-        self.export_btn = QPushButton("💾 导出图片")
-        self.export_btn.setProperty("variant", "orange")
-        self.export_btn.setCursor(Qt.PointingHandCursor)
-        self.export_btn.clicked.connect(self.export_plot)
-        action_layout.addWidget(self.export_btn)
+        # 导出：5 个动作合并成一个菜单（v4.25，原本是 5 个彩色实心按钮排成一列）
+        self.export_menu_btn = QPushButton("💾 导出 ▾")
+        self.export_menu_btn.setProperty("variant", "export")
+        self.export_menu_btn.setCursor(Qt.PointingHandCursor)
+        self.export_menu_btn.setToolTip(
+            "导出当前图 / 全部图片 / 拟合结果 / 跨样品汇总图 / PDF 报告")
+        export_menu = QMenu(self.export_menu_btn)
+        export_menu.setToolTipsVisible(True)
 
-        self.export_all_btn = QPushButton("📁 导出全部图片")
-        self.export_all_btn.setProperty("variant", "cyan")
-        self.export_all_btn.setCursor(Qt.PointingHandCursor)
-        self.export_all_btn.clicked.connect(self.export_all_plots)
-        action_layout.addWidget(self.export_all_btn)
+        self.act_export_current = QAction("导出当前图　(Ctrl+E)", self.export_menu_btn)
+        self.act_export_current.setToolTip("把当前画布上的图存成 PNG/PDF/SVG（按「导出格式」）")
+        self.act_export_current.triggered.connect(self.export_plot)
+        export_menu.addAction(self.act_export_current)
 
-        # 荧光寿命模式专属：导出拟合结果（汇总表 + 单文件报告）
-        self.export_current_fit_btn = QPushButton("💾 导出当前拟合结果")
-        self.export_current_fit_btn.setProperty("variant", "orange")
-        self.export_current_fit_btn.setCursor(Qt.PointingHandCursor)
-        self.export_current_fit_btn.clicked.connect(
-            self._export_lifetime_fit_results)
-        self.export_current_fit_btn.setVisible(False)
-        action_layout.addWidget(self.export_current_fit_btn)
+        self.act_export_all = QAction("导出全部图片　(Ctrl+Shift+E)", self.export_menu_btn)
+        self.act_export_all.setToolTip("把当前文件夹每个文件各存一张图到导出目录")
+        self.act_export_all.triggered.connect(self.export_all_plots)
+        export_menu.addAction(self.act_export_all)
 
-        # 荧光寿命模式专属：跨样品汇总图（τ / α / χ²R vs 样品）
-        self.summary_plot_btn = QPushButton("📈 跨样品汇总图")
-        self.summary_plot_btn.setProperty("variant", "violet")
-        self.summary_plot_btn.setCursor(Qt.PointingHandCursor)
-        self.summary_plot_btn.setToolTip(
+        # 分隔线也要跟着一起隐藏，否则非寿命模式下菜单底部会留一条空线。
+        # 注意：创建时就得隐藏——程序启动若停在非寿命模式（索引 0），
+        # currentIndexChanged 不会触发，on_spectrum_type_changed 就不会跑，
+        # 这一条会一直露在菜单底部（v4.25 回归测试抓到）。
+        self.act_export_sep = export_menu.addSeparator()
+        self.act_export_sep.setVisible(False)
+
+        # 以下三条只在荧光寿命模式显示（gui_data.on_spectrum_type_changed 控制）
+        self.act_export_fit = QAction(
+            "导出当前拟合结果（PNG + json）", self.export_menu_btn)
+        self.act_export_fit.setToolTip("当前样品的拟合图 + 拟合结果 json（含 τ、占比、χ²R）")
+        self.act_export_fit.triggered.connect(self._export_lifetime_fit_results)
+        self.act_export_fit.setVisible(False)
+        export_menu.addAction(self.act_export_fit)
+
+        self.act_summary_plot = QAction(
+            "跨样品汇总图（τ / α / χ²R）", self.export_menu_btn)
+        self.act_summary_plot.setToolTip(
             "并行拟合当前文件夹全部文件后，画「τ / 占比 / χ²R 随样品变化」的三联图\n"
-            "适合滴定序列（如 FRET A0→A24）")
-        self.summary_plot_btn.clicked.connect(self._run_summary_plot)
-        self.summary_plot_btn.setVisible(False)
-        action_layout.addWidget(self.summary_plot_btn)
+            "适合滴定序列（如 FRET A0→A24）；已拟合过的样品直接复用结果")
+        self.act_summary_plot.triggered.connect(self._run_summary_plot)
+        self.act_summary_plot.setVisible(False)
+        export_menu.addAction(self.act_summary_plot)
 
-        # 荧光寿命模式专属：多页 PDF 报告
-        self.pdf_report_btn = QPushButton("📄 导出 PDF 报告")
-        self.pdf_report_btn.setProperty("variant", "violet")
-        self.pdf_report_btn.setCursor(Qt.PointingHandCursor)
-        self.pdf_report_btn.setToolTip(
-            "汇总表 + χ²R 柱状图 + 每个样品一页（衰减拟合 + 寿命分布）")
-        self.pdf_report_btn.clicked.connect(self._run_pdf_report)
-        self.pdf_report_btn.setVisible(False)
-        action_layout.addWidget(self.pdf_report_btn)
+        self.act_pdf_report = QAction("导出 PDF 报告（每样品一页）", self.export_menu_btn)
+        self.act_pdf_report.setToolTip(
+            "汇总表 + χ²R 柱状图 + 每个样品一页（衰减拟合 + 寿命分布）；\n"
+            "已拟合过的样品直接复用结果")
+        self.act_pdf_report.triggered.connect(self._run_pdf_report)
+        self.act_pdf_report.setVisible(False)
+        export_menu.addAction(self.act_pdf_report)
+
+        self.export_menu = export_menu
+        self.export_menu_btn.setMenu(export_menu)
+        action_layout.addWidget(self.export_menu_btn)
 
         action_group.setLayout(action_layout)
         outer.addWidget(action_group)
@@ -1372,9 +1396,9 @@ class UiMixin:
             QMenu::item {{
                 background: transparent;
                 color: {TEXT};
-                padding: 7px 26px 7px 14px;
+                padding: 6px 26px 6px 14px;
                 border-radius: 6px;
-                font-size: 15px;
+                font-size: 13px;
             }}
             QMenu::item:selected {{
                 background-color: {SELECT_BG};
@@ -1408,7 +1432,7 @@ class UiMixin:
                 border: none;
                 padding: 6px 10px;
                 border-radius: 6px;
-                font-size: 14px;
+                font-size: 13px;
             }}
 
             /* ===== 弹出菜单（v4.23）=====
@@ -1418,18 +1442,21 @@ class UiMixin:
                规则本体抽成 menu_qss（见上方），这里引进来让全局样式表也覆盖到。 */
             {menu_qss}
 
-            /* ===== 文字角色（随主题变色，D3）===== */
+            /* ===== 文字角色（随主题变色，D3）=====
+               v4.25 字阶收口：控件正文 15–16px → 13px、标签 12px、辅助 11px。
+               同一探针实测（寿命模式、三组均未隐藏）：
+               v4.24 = 1230+575+294 = 2099px，v4.25 = 1100+494+126 = 1720px（−18%）。 */
             QLabel[role="sectionLabel"] {{
-                font-size: 14px; font-weight: bold; color: {TEXT_SOFT};
+                font-size: 12px; font-weight: bold; color: {TEXT_SOFT};
             }}
             QLabel[role="folderLabel"] {{
-                font-size: 12px; color: {TEXT_SOFT};
+                font-size: 11px; color: {TEXT_SOFT};
             }}
             QLabel[role="infoLabel"] {{
-                font-size: 15px; color: {TEXT_SOFT};
+                font-size: 13px; color: {TEXT_SOFT};
             }}
             QLabel[role="hint"] {{
-                font-size: 13px; color: {MUTED};
+                font-size: 11px; color: {MUTED};
             }}
 
             /* ===== 卡片式分组框 ===== */
@@ -1437,10 +1464,10 @@ class UiMixin:
                 background-color: {CARD};
                 border: 1px solid {BORDER};
                 border-radius: 10px;
-                margin-top: 16px;
-                padding: 14px 10px 10px 10px;
+                margin-top: 14px;
+                padding: 12px 10px 10px 10px;
                 font-weight: bold;
-                font-size: 16px;
+                font-size: 14px;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
@@ -1462,7 +1489,7 @@ class UiMixin:
             /* ===== 文字 ===== */
             QLabel {{
                 color: {TEXT};
-                font-size: 16px;
+                font-size: 13px;
                 background: transparent;
             }}
 
@@ -1472,8 +1499,14 @@ class UiMixin:
                 color: {TEXT};
                 border: 1px solid {INPUT_BORDER};
                 border-radius: 8px;
-                padding: 8px 14px;
-                font-size: 15px;
+                padding: 6px 12px;
+                font-size: 13px;
+            }}
+            /* 带菜单的按钮（「导出 ▾」）：隐藏 Qt 自带的箭头图标，
+               由按钮文字里的 ▾ 表示可展开（v4.25） */
+            QPushButton::menu-indicator {{
+                image: none;
+                width: 0px;
             }}
             QPushButton:hover {{
                 background-color: {HOVER_BG};
@@ -1542,7 +1575,7 @@ class UiMixin:
                 border: 1px solid transparent;
                 color: {TEXT_SOFT};
                 padding: 2px;
-                font-size: 16px;
+                font-size: 15px;
             }}
             QPushButton[variant="ghost"]:hover {{
                 background-color: {HOVER_BG};
@@ -1551,6 +1584,39 @@ class UiMixin:
             QPushButton[variant="ghost"]:pressed {{
                 background-color: {DISABLED_BG};
             }}
+            /* 次级按钮（v4.25）：卡片底 + 描边——大多数动作都属于这一档，
+               语义色彩不再整块填充，改为左侧 3px 竖条（下面是 fit / export）。 */
+            QPushButton[variant="secondary"] {{
+                background-color: {CARD};
+                color: {TEXT};
+                border: 1px solid {INPUT_BORDER};
+                border-radius: 8px;
+                padding: 6px 12px;
+                font-size: 13px;
+            }}
+            QPushButton[variant="secondary"]:hover {{
+                background-color: {HOVER_BG};
+                border-color: {HANDLE_HOVER};
+            }}
+            /* 拟合类动作：紫色语义条（原来整块紫底） */
+            QPushButton[variant="fit"],
+            QPushButton[variant="export"] {{
+                background-color: {CARD};
+                color: {TEXT};
+                border: 1px solid {INPUT_BORDER};
+                border-radius: 8px;
+                padding: 6px 12px;
+                font-size: 13px;
+            }}
+            QPushButton[variant="fit"] {{ border-left: 3px solid {VIOLET}; }}
+            QPushButton[variant="export"] {{ border-left: 3px solid {ORANGE}; }}
+            QPushButton[variant="fit"]:hover,
+            QPushButton[variant="export"]:hover {{
+                background-color: {HOVER_BG};
+                border-color: {HANDLE_HOVER};
+            }}
+            QPushButton[variant="fit"]:hover {{ border-left: 3px solid {VIOLET}; }}
+            QPushButton[variant="export"]:hover {{ border-left: 3px solid {ORANGE}; }}
 
             /* ===== 列表 / 目录树 ===== */
             QListWidget, QTreeView {{
@@ -1559,9 +1625,10 @@ class UiMixin:
                 border-radius: 8px;
                 padding: 4px;
                 outline: 0;
+                font-size: 13px;
             }}
             QListWidget::item, QTreeView::item {{
-                padding: 6px;
+                padding: 4px;
                 border-radius: 6px;
                 color: {TEXT};
             }}
@@ -1581,7 +1648,7 @@ class UiMixin:
                 border-radius: 6px;
                 padding: 4px 8px;
                 color: {TEXT};
-                font-size: 15px;
+                font-size: 13px;
             }}
             QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover,
             QPlainTextEdit:hover, QTextEdit:hover {{
@@ -1632,16 +1699,16 @@ class UiMixin:
             /* ===== 复选框 ===== */
             QCheckBox {{
                 color: {TEXT_SOFT};
-                font-size: 15px;
-                padding: 4px;
-                spacing: 8px;
+                font-size: 13px;
+                padding: 3px;
+                spacing: 7px;
                 background: transparent;
             }}
             QCheckBox::indicator {{
-                width: 17px;
-                height: 17px;
+                width: 15px;
+                height: 15px;
                 border: 2px solid {HANDLE_HOVER};
-                border-radius: 5px;
+                border-radius: 4px;
                 background-color: {CARD};
             }}
             QCheckBox::indicator:hover {{
@@ -1666,10 +1733,10 @@ class UiMixin:
             QTabBar::tab {{
                 background: transparent;
                 color: {MUTED};
-                padding: 10px 24px;
-                margin: 6px 4px 4px 0;
+                padding: 7px 18px;
+                margin: 4px 4px 4px 0;
                 border-radius: 8px;
-                font-size: 15px;
+                font-size: 13px;
             }}
             QTabBar::tab:selected {{
                 background-color: {ACCENT};
@@ -1778,11 +1845,11 @@ class UiMixin:
             QStatusBar {{
                 background-color: {ALT_ROW};
                 border-top: 1px solid {BORDER};
-                font-size: 14px;
+                font-size: 12px;
             }}
             QStatusBar QLabel {{
                 color: {MUTED};
-                font-size: 14px;
+                font-size: 12px;
             }}
             QSplitter::handle {{
                 background: transparent;

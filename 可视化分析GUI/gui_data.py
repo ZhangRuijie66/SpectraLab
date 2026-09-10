@@ -622,14 +622,25 @@ class DataMixin:
             self.lifetime_options_group.setVisible(is_lifetime)
         if hasattr(self, 'scan3d_options_group'):
             self.scan3d_options_group.setVisible(is_scan3d)
-        # 寿命专属的「导出拟合结果」按钮：仅寿命模式显示
-        if hasattr(self, 'export_current_fit_btn'):
-            self.export_current_fit_btn.setVisible(is_lifetime)
-        # 寿命专属的「跨样品汇总图」「导出 PDF 报告」按钮（v4.22）
-        for attr in ('summary_plot_btn', 'pdf_report_btn'):
-            btn = getattr(self, attr, None)
-            if btn is not None:
-                btn.setVisible(is_lifetime)
+        # 寿命专属的三条导出动作只在寿命模式显示（v4.25：按钮 → 「导出 ▾」菜单项）
+        for attr in ('act_export_sep', 'act_export_fit',
+                     'act_summary_plot', 'act_pdf_report'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.setVisible(is_lifetime)
+        # 主操作按钮的文字随模式切换（v4.25）：
+        # 光谱/3D 模式是"重新绘图"，寿命模式才是真正耗时 1–2 分钟的拟合
+        if hasattr(self, 'preview_btn'):
+            if is_lifetime:
+                self.preview_btn.setText("▶ 开始拟合")
+                self.preview_btn.setToolTip(
+                    "对当前选中文件做 MEM/SESM 寿命拟合（约 1–2 分钟，F5）\n"
+                    "已拟合过且参数未变的样品会直接读缓存，秒出")
+            else:
+                self.preview_btn.setText("▶ 实时预览")
+                self.preview_btn.setToolTip(
+                    "按当前参数重新绘图（F5）\n"
+                    "拖滑块/改下拉会 300ms 防抖自动重绘，本按钮用于立即刷新")
         if hasattr(self, 'subtract_group'):
             # 光谱减法只用于吸收/发射模式
             self.subtract_group.setVisible(is_spectrum)

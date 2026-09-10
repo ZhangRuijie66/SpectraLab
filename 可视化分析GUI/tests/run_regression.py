@@ -986,6 +986,63 @@ def t_gui_help_dialog():
     lau.close()
 
 
+@check("GUI：操作区按钮体系收口、导出合并为菜单（v4.25）")
+def t_gui_action_buttons():
+    from PyQt5.QtWidgets import QGroupBox, QPushButton
+    app, w = _make_gui()
+    # 1) 「操作」区只允许"实心主色"按钮出现一次（原来 6 个彩色实心按钮排成一列）
+    action_group = w.preview_btn.parentWidget()
+    assert isinstance(action_group, QGroupBox), "主按钮应位于「操作」分组里"
+    btns = action_group.findChildren(QPushButton)
+    variants = [b.property('variant') or 'default' for b in btns]
+    banned = {'violet', 'orange', 'cyan', 'success', 'neutral'}
+    bad = [v for v in variants if v in banned]
+    assert not bad, f"「操作」区不该再出现整块填充的语义色按钮: {bad}"
+    assert variants.count('primary') == 1, \
+        f"「操作」区应恰好 1 个主色按钮，实际 {variants}"
+    assert variants.count('export') == 1, "应有一个「导出 ▾」菜单按钮"
+    # 2) 导出菜单：5 个动作 + 1 条分隔线；寿命专属项随模式显隐
+    menu = w.export_menu
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    for key in ('导出当前图', '导出全部图片', '导出当前拟合结果',
+                '跨样品汇总图', '导出 PDF 报告'):
+        assert any(key in t for t in texts), f"导出菜单缺少「{key}」"
+    lifetime_acts = [w.act_export_fit, w.act_summary_plot,
+                     w.act_pdf_report, w.act_export_sep]
+    w.spectrum_type_combo.setCurrentIndex(0)          # 吸收模式
+    assert all(not a.isVisible() for a in lifetime_acts), \
+        "非寿命模式下三条寿命导出项（含分隔线）必须隐藏"
+    w.spectrum_type_combo.setCurrentIndex(2)          # 寿命模式
+    assert all(a.isVisible() for a in lifetime_acts), "寿命模式下应显示全部导出项"
+    # 3) 主按钮文字随模式切换
+    assert w.preview_btn.text() == "▶ 开始拟合", \
+        f"寿命模式主按钮应为开始拟合，实际 {w.preview_btn.text()!r}"
+    w.spectrum_type_combo.setCurrentIndex(1)
+    assert w.preview_btn.text() == "▶ 实时预览", \
+        f"光谱模式主按钮应为实时预览，实际 {w.preview_btn.text()!r}"
+    # 4) 不再有重复的拟合入口
+    assert not hasattr(w, 'lifetime_fit_btn'), \
+        "「开始拟合」应只剩操作区主按钮一个入口（原来寿命拟合组里还有一个）"
+
+
+@check("GUI：字阶收口后参数区不再需要滚 2.5 屏（v4.25）")
+def t_gui_type_scale_density():
+    from PyQt5.QtWidgets import QGroupBox
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)          # 寿命模式控件最多
+    app.processEvents()
+    qss = app.styleSheet()
+    assert 'QLabel {\n                color:' in qss or 'font-size: 13px' in qss, \
+        "全局样式表应使用 13px 正文（v4.25 字阶）"
+    # 注：用 isHidden() 而不是 isVisible()——测试里窗口没 show()，isVisible() 全为 False
+    groups = [g for g in w.param_panel.findChildren(QGroupBox) if not g.isHidden()]
+    total = sum(g.sizeHint().height() for g in groups)
+    assert groups, "参数区应至少有一个分组框"
+    # 同一探针实测：v4.24 = 1230+575+294 = 2099px（要滚 2.5 屏），v4.25 = 1100+494+126 = 1720px
+    assert total < 1750, f"参数区内容总高 {total}px 偏大（字阶/间距回涨了？）"
+    assert total > 800, f"参数区内容总高 {total}px 异常偏小，可能控件丢了"
+
+
 def main():
     strict = '--strict' in sys.argv
 
