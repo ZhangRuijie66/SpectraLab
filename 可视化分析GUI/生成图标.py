@@ -63,6 +63,8 @@ ICON_NAMES = (
     "home", "moon", "sun", "help", "folder_open", "play", "save", "export",
     "image", "images", "copy", "csv", "chart_bar", "pdf", "refresh", "search",
     "select_all", "fit",
+    # v4.28：入口界面的四个模块卡片各要一个图标（原来用 📊 📈 ⏱ 🧊 四个 emoji）
+    "mode_absorb", "mode_emit", "mode_lifetime", "mode_3d",
 )
 
 FILL = 255   # 掩膜上的"上色"
@@ -294,6 +296,32 @@ def icon_fit(d):
     _poly(d, [(48, 16), (48, 26)])                # 按钮连杆
 
 
+def icon_mode_absorb(d):
+    """吸收光谱（入口卡片）：坐标轴 + 一条短平台后下落的吸收边。"""
+    _poly(d, [(18, 16), (18, 80), (82, 80)])                     # 坐标轴（L 形）
+    _poly(d, [(24, 34), (38, 35), (50, 44), (60, 62), (76, 72)])  # 吸收曲线
+
+
+def icon_mode_emit(d):
+    """发射光谱（入口卡片）：坐标轴 + 一座发射峰。"""
+    _poly(d, [(18, 16), (18, 80), (82, 80)])
+    _poly(d, [(24, 68), (36, 65), (46, 38), (56, 29), (66, 50), (76, 70)])
+
+
+def icon_mode_lifetime(d):
+    """荧光寿命（入口卡片）：坐标轴 + 指数衰减曲线。"""
+    _poly(d, [(18, 16), (18, 80), (82, 80)])
+    _poly(d, [(24, 28), (34, 46), (45, 61), (58, 70), (76, 74)])
+
+
+def icon_mode_3d(d):
+    """3D 扫描（入口卡片）：菱形网格平面 + 竖直轴。"""
+    _poly(d, [(48, 16), (84, 38), (48, 60), (12, 38), (48, 16)])   # 平面外框
+    _poly(d, [(30, 27), (66, 49)])                                 # 网格线 1
+    _poly(d, [(66, 27), (30, 49)])                                 # 网格线 2
+    _poly(d, [(48, 60), (48, 84)])                                 # 竖直轴
+
+
 ICONS = {
     "home": icon_home,
     "moon": icon_moon,
@@ -313,6 +341,10 @@ ICONS = {
     "search": icon_search,
     "select_all": icon_select_all,
     "fit": icon_fit,
+    "mode_absorb": icon_mode_absorb,
+    "mode_emit": icon_mode_emit,
+    "mode_lifetime": icon_mode_lifetime,
+    "mode_3d": icon_mode_3d,
 }
 
 

@@ -13,6 +13,12 @@
 生成时被缩小导致文字发虚；现在直接按 760x422 生成（bootloader 不再缩放），
 并以 2x 超采样渲染再降采样，保证文字边缘平滑清晰。
 
+配色（v4.28）：这张图由 PyInstaller 的 bootloader 在 **Python 还没启动时**用
+Tk 画出来，它读不到任何程序设置，所以**无法跟随主题**——原来固定浅色，
+深色会话启动时先闪一块白卡片。现在改成**深色品牌图**（取 THEMES["dark"] 的
+深色色板），无论会话主题如何都先看到深色启动图；紧随其后的 Qt 启动画面
+（gui_splash.StartupSplash）会按上次会话的主题显示，那一个才是跟随主题的。
+
 用法:
     python 生成splash图.py
 """
@@ -20,20 +26,22 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
-from gui_config import APP_VERSION
+from gui_config import APP_VERSION, THEMES
 
 W, H = 760, 422                     # PyInstaller splash 的目标尺寸（不再被缩放）
 SS = 2                              # 超采样倍率（渲染在 W*SS x H*SS 上再缩回）
 CARD = (34, 47, 726, 370)           # 卡片矩形 (l, t, r, b)
-BAR_H = 6                           # 卡片顶部蓝色条高
+BAR_H = 6                           # 卡片顶部彩色条高
 ICON = (68, 98, 136, 166)           # 图标位置（68x68）
-C_BG = "#edf1f7"
-C_CARD = "#ffffff"
-C_BORDER = "#e2e8f0"
-C_BAR = "#2563EB"
-C_TITLE = "#1e293b"
-C_TEXT = "#334155"
-C_MUTED = "#94a3b8"
+# 深色品牌配色：直接取深色主题色板，避免这里另抄一套颜色
+_D = THEMES["dark"]
+C_BG = _D["MPL_FIG"]                # 比窗口底色更深一档，与程序里的"深色图纸"一致
+C_CARD = _D["CARD"]
+C_BORDER = _D["BORDER"]
+C_BAR = _D["ACCENT"]
+C_TITLE = _D["TEXT"]
+C_TEXT = _D["TEXT_SOFT"]
+C_MUTED = _D["MUTED"]
 
 
 def _font(size, bold=False):

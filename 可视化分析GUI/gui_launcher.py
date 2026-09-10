@@ -40,14 +40,17 @@ def saved_theme(default=DEFAULT_THEME):
 
 
 class ModuleCard(QFrame):
-    """入口界面的模块卡片：白色圆角卡片 + 左侧彩色竖条，悬停时整卡亮起。
+    """入口界面的模块卡片：圆角卡片 + 左侧彩色竖条，悬停时整卡亮起。
 
     相比整块纯色大按钮，卡片式设计信息层级更清晰（标题/描述分行、配色克制）。
+    v4.28：左侧图标从 emoji 换成单色图标集（`icons\\<name>_<theme>.png`），
+    跟随当前主题取浅色/深色两套描边色。
     """
 
     clicked = pyqtSignal()
 
-    def __init__(self, emoji, title, desc, color, parent=None, palette=None):
+    def __init__(self, icon_name, title, desc, color, parent=None,
+                 palette=None, theme="light"):
         super().__init__(parent)
         P = palette or THEMES[DEFAULT_THEME]
         card_bg = P['CARD']
@@ -75,9 +78,12 @@ class ModuleCard(QFrame):
         row.setContentsMargins(18, 10, 14, 10)
         row.setSpacing(14)
 
-        emoji_label = QLabel(emoji)
-        emoji_label.setStyleSheet(f"font-size: 26px; background: transparent; border: none;")
-        row.addWidget(emoji_label)
+        icon_label = QLabel()
+        icon_label.setFixedSize(28, 28)
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        self._icon_label = icon_label
+        self.set_mode_icon(icon_name, theme)
+        row.addWidget(icon_label)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(3)
@@ -99,6 +105,21 @@ class ModuleCard(QFrame):
             f"font-size: 26px; color: {COLOR_MUTED}; background: transparent; border: none;")
         row.addWidget(arrow)
 
+    def set_mode_icon(self, name, theme="light"):
+        """设置卡片图标（单色图标集，v4.28）。
+
+        图标集缺失时退回一个中性占位点——入口界面绝不能因为少一张图就崩。
+        """
+        try:
+            from gui_icons import icon
+            qi = icon(name, theme)
+            if not qi.isNull():
+                self._icon_label.setPixmap(qi.pixmap(26, 26))
+                return
+        except Exception as e:
+            logging.warning("入口卡片图标加载失败（%s）：%s", name, e)
+        self._icon_label.setText("·")
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
             self.clicked.emit()
@@ -115,15 +136,16 @@ class ModuleLauncher(QDialog):
     用户关闭对话框（Esc/右上角×）时 exec_() 返回 Rejected，程序应直接退出。
     """
 
-    # (模式标识, 图标, 按钮主标题, 一句话说明, 主色)
+    # (模式标识, 图标名, 按钮主标题, 一句话说明, 主色)
+    # 图标名对应 icons\<name>_<theme>.png（v4.28 起用单色图标集，原来是 emoji）
     MODES = [
-        ("absorption", "📊", "吸收光谱 (UV-Vis)",
+        ("absorption", "mode_absorb", "吸收光谱 (UV-Vis)",
          "紫外-可见吸收光谱绘图与峰标注", "#2563EB"),
-        ("emission", "📈", "发射光谱 (Emission)",
+        ("emission", "mode_emit", "发射光谱 (Emission)",
          "荧光发射光谱绘图、EX 标注与归一化", "#16A34A"),
-        ("lifetime", "⏱", "荧光寿命 (Lifetime)",
+        ("lifetime", "mode_lifetime", "荧光寿命 (Lifetime)",
          "最大熵寿命拟合（MEM/SESM）与分量分解", "#7C3AED"),
-        ("scan3d", "🧊", "3D 扫描 (EEM)",
+        ("scan3d", "mode_3d", "3D 扫描 (EEM)",
          "激发-发射矩阵曲面/等高线/Waterfall，自动去除周期梳状伪迹", "#0891B2"),
     ]
 
@@ -175,8 +197,9 @@ class ModuleLauncher(QDialog):
         layout.addWidget(line)
 
         # 模块卡片
-        for mode, emoji, name, desc, color in self.MODES:
-            card = ModuleCard(emoji, name, desc, color, palette=P)
+        for mode, icon_name, name, desc, color in self.MODES:
+            card = ModuleCard(icon_name, name, desc, color, palette=P,
+                              theme=self.theme)
             card.clicked.connect(lambda m=mode: self._choose(m))
             layout.addWidget(card)
 

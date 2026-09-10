@@ -293,8 +293,8 @@ class DataMixin:
             if theme in ("light", "dark"):
                 self.theme = theme
                 if hasattr(self, 'theme_btn'):
-                    # v4.24：顶部按钮改为纯图标，状态与说明放 tooltip
-                    self.theme_btn.setText("☀️" if theme == "dark" else "🌙")
+                    # v4.28：图标由 apply_style → _apply_ui_icons 按主题设置
+                    # （浅色界面显示月亮、深色界面显示太阳），这里只管 tooltip
                     self.theme_btn.setToolTip(
                         ("当前：深色主题 —— 点击切回浅色（Ctrl+T）"
                          if theme == "dark" else
@@ -669,12 +669,12 @@ class DataMixin:
         # 光谱/3D 模式是"重新绘图"，寿命模式才是真正耗时 1–2 分钟的拟合
         if hasattr(self, 'preview_btn'):
             if is_lifetime:
-                self.preview_btn.setText("▶ 开始拟合")
+                self.preview_btn.setText("开始拟合")
                 self.preview_btn.setToolTip(
                     "对当前选中文件做 MEM/SESM 寿命拟合（约 1–2 分钟，F5）\n"
                     "已拟合过且参数未变的样品会直接读缓存，秒出")
             else:
-                self.preview_btn.setText("▶ 实时预览")
+                self.preview_btn.setText("实时预览")
                 self.preview_btn.setToolTip(
                     "按当前参数重新绘图（F5）\n"
                     "拖滑块/改下拉会 300ms 防抖自动重绘，本按钮用于立即刷新")
@@ -1322,7 +1322,7 @@ class DataMixin:
             idx = np.where(irf >= half)[0]
             info_text += f"IRF 峰计数: {irf.max():.4g}\n"
             info_text += f"IRF FWHM: {time[idx[-1]] - time[idx[0]]:.4g} ns\n"
-        info_text += "\n点击「⏱ 开始拟合」按钮启动 MEM 拟合\n（结果将显示在预览图与本页）"
+        info_text += "\n点击「开始拟合」按钮启动 MEM 拟合\n（结果将显示在预览图与本页）"
         self.info_label.setText(info_text)
         if self.plot_type_combo.currentIndex() == 1:
             self.update_plot()

@@ -1,0 +1,10 @@
+v4.28 UI 第5批: 单色图标集替换全部 emoji + 深色启动画面 / 回归 49->51 项
+
+- 界面 emoji 全面换成单色图标集: 左上角(🏠→home)、主题(🌙/☀️→moon/sun 随主题)、帮助(❓→help)、工作区(📂→folder_open)、主操作(▶→play+纯文字)、导出(💾→export)、存为默认值(→save)、叠加分布(📊→chart_bar)、复制结果(📋→copy)、帮助窗口(📋/📂/✅→copy/folder_open+纯文字)
+- 新增 4 个入口界面模块图标(mode_absorb 吸收边 / mode_emit 发射峰 / mode_lifetime 指数衰减 / mode_3d 菱形网格+竖轴), 替代原 emoji; 图标总数 18->22, icons 下 PNG 72->88
+- 切主题时按钮图标重新取一遍(浅色/深色两套描边色); 资源缺失时 icon() 返回空 QIcon, 按钮只剩文字、不崩不出方块
+- 深色启动画面: bootloader 静态图(PyInstaller --splash, Python 启动前由 Tk 画, 无法跟随主题)改为深色品牌配色(取 THEMES["dark"]); Qt 启动画面(gui_splash.StartupSplash)新增 saved_theme(), 全部配色改取主题色板, 深浅会话各自显示对应配色
+- 修: 检查版本一致性.py 会把单行 docstring 里的 (v4.27) 当硬编码版本号(多行 docstring 首行反而扫不到), gui_ui.py 里 7 处 docstring 版本标记改到注释
+- 回归 51 项全通过(新增 2 项: 图标替换+无 emoji 残留、启动画面深浅两套+splash.png 像素亮度<0.45); 图标冒烟 ICON SMOKE PASSED; 帮助窗口冒烟 HELP DIALOG SMOKE PASSED
+- 版本一致性 11/11; splash 重生成(QLSVersion=4.28, 深色); mac 文件夹已同步; 便携版 exe 重打包 + 启动测试
+- 计算逻辑 / 拟合算法 / 拟合参数 / 绘图数值一律未动

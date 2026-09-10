@@ -68,6 +68,8 @@ ICONS_DIR = os.path.join(GUI_DIR, 'icons')
 THEMES = ('light', 'dark')
 THEME_RGB = {'light': (0x47, 0x55, 0x69), 'dark': (0xCB, 0xD5, 0xE1)}
 MIN_OPAQUE, MAX_OPAQUE = 2.0, 60.0
+# 图标名数量：v4.28 从 18 增加到 22（多了 4 个入口界面模块图标）
+EXPECTED_NAMES = 22
 EXPECTED = len(ICON_NAMES) * len(THEMES)
 
 FAILS = []
@@ -383,7 +385,8 @@ def main():
     print(f"QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM')}", flush=True)
     print(f"GUI_DIR={GUI_DIR}", flush=True)
     print(f"ICON_NAMES={len(ICON_NAMES)} icons: {', '.join(ICON_NAMES)}", flush=True)
-    check(len(ICON_NAMES) == 18, "ICON_NAMES has 18 names (unique)")
+    check(len(ICON_NAMES) == EXPECTED_NAMES,
+          f"ICON_NAMES has {EXPECTED_NAMES} names (unique)")
     check(len(set(ICON_NAMES)) == len(ICON_NAMES), "ICON_NAMES entries unique")
     check(not EARLY_HEAVY,
           f"importing gui_icons stays light (no numpy/scipy/matplotlib/"

@@ -69,6 +69,8 @@ ICON_NAMES = (
     "home", "moon", "sun", "help", "folder_open", "play", "save", "export",
     "image", "images", "copy", "csv", "chart_bar", "pdf", "refresh", "search",
     "select_all", "fit",
+    # 入口界面四个模块卡片的图标（v4.28 起替代 📊 📈 ⏱ 🧊）
+    "mode_absorb", "mode_emit", "mode_lifetime", "mode_3d",
 )
 
 ICON_DIR = "icons"           # 相对 GUI 根目录（resource_path 的基准）

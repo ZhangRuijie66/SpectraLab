@@ -1014,11 +1014,11 @@ def t_gui_action_buttons():
         "非寿命模式下三条寿命导出项（含分隔线）必须隐藏"
     w.spectrum_type_combo.setCurrentIndex(2)          # 寿命模式
     assert all(a.isVisible() for a in lifetime_acts), "寿命模式下应显示全部导出项"
-    # 3) 主按钮文字随模式切换
-    assert w.preview_btn.text() == "▶ 开始拟合", \
+    # 3) 主按钮文字随模式切换（v4.28 起图标换成单色图标集，文字不再带 ▶）
+    assert w.preview_btn.text() == "开始拟合", \
         f"寿命模式主按钮应为开始拟合，实际 {w.preview_btn.text()!r}"
     w.spectrum_type_combo.setCurrentIndex(1)
-    assert w.preview_btn.text() == "▶ 实时预览", \
+    assert w.preview_btn.text() == "实时预览", \
         f"光谱模式主按钮应为实时预览，实际 {w.preview_btn.text()!r}"
     # 4) 不再有重复的拟合入口
     assert not hasattr(w, 'lifetime_fit_btn'), \
@@ -1326,6 +1326,101 @@ def t_gui_status_bar():
     w._update_status_badges()
     assert w.status_sample_badge.text() == "3 个样品", \
         f"样品数徽标异常：{w.status_sample_badge.text()!r}"
+
+
+# ---------------------------------------------------------------- v4.28 新增
+# emoji 区段（图形符号 / 杂项符号 / 补充符号 + 变体选择符）
+_EMOJI_RANGES = ((0x1F300, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF),
+                 (0x23E9, 0x23FA), (0xFE0F, 0xFE0F))
+
+
+def _has_emoji(text):
+    """文本里是否含 emoji（用于确认界面已换成单色图标集）。"""
+    return [ch for ch in str(text)
+            if any(lo <= ord(ch) <= hi for lo, hi in _EMOJI_RANGES)]
+
+
+@check("GUI：按钮与入口卡片改用单色图标集、无 emoji 残留（v4.28）")
+def t_gui_icons_replaced():
+    from PyQt5.QtWidgets import QLabel as _QLabel, QPushButton as _QPB
+    from gui_icons import ICON_NAMES
+    from gui_launcher import ModuleCard, ModuleLauncher
+    app, w = _make_gui()
+    w.show()
+    app.processEvents()
+
+    buttons = [('home_btn', w.home_btn), ('theme_btn', w.theme_btn),
+               ('help_btn', w.help_btn), ('workspace_btn', w.workspace_btn),
+               ('preview_btn', w.preview_btn),
+               ('export_menu_btn', w.export_menu_btn),
+               ('lifetime_save_defaults_btn', w.lifetime_save_defaults_btn),
+               ('lifetime_overlay_btn', w.lifetime_overlay_btn),
+               ('integ_copy_btn', w.integ_copy_btn)]
+    for name, btn in buttons:
+        assert not btn.icon().isNull(), f"{name} 没有图标（图标集没加载上？）"
+        assert not _has_emoji(btn.text()), \
+            f"{name} 文本里还有 emoji：{btn.text()!r}"
+
+    # 主题按钮：浅色=月亮、深色=太阳，两套图标必须真的不同
+    key_light = w.theme_btn.icon().cacheKey()
+    w.toggle_theme(True)
+    app.processEvents()
+    key_dark = w.theme_btn.icon().cacheKey()
+    assert key_light != key_dark, "主题按钮图标没跟着主题切换"
+    for name, btn in buttons:
+        assert not btn.icon().isNull(), f"深色主题下 {name} 图标为空（深色图标缺失？）"
+    w.toggle_theme(False)
+    app.processEvents()
+
+    # 主窗口控件文字里不该再有 emoji
+    leftover = [lb.text()[:24] for lb in w.findChildren(_QLabel)
+                if _has_emoji(lb.text())]
+    leftover += [b.text()[:24] for b in w.findChildren(_QPB)
+                 if _has_emoji(b.text())]
+    assert not leftover, f"界面文字里仍有 emoji：{leftover}"
+
+    # 入口界面：四个模块卡片都有图标，图标名在图标集清单里
+    for entry in ModuleLauncher.MODES:
+        assert entry[1] in ICON_NAMES, f"入口卡片图标名不在图标集清单：{entry[1]}"
+    for theme in ('light', 'dark'):
+        lau = ModuleLauncher(theme=theme)
+        lau.show()
+        app.processEvents()
+        cards = lau.findChildren(ModuleCard)
+        assert len(cards) == len(ModuleLauncher.MODES), \
+            f"{theme}：模块卡片数应为 {len(ModuleLauncher.MODES)}，实际 {len(cards)}"
+        for c in cards:
+            assert not c._icon_label.pixmap().isNull(), f"{theme}：有卡片没图标"
+        lau.close()
+
+
+@check("启动画面：跟随上次会话主题 + bootloader 图为深色（v4.28）")
+def t_splash_theme():
+    from PyQt5.QtWidgets import QFrame
+    from gui_config import THEMES
+    from gui_splash import StartupSplash
+    app, w = _make_gui()
+    seen = {}
+    for theme in ('light', 'dark'):
+        s = StartupSplash(theme=theme)
+        card = s.findChild(QFrame)
+        assert card is not None, "启动画面应有卡片"
+        qss = card.styleSheet()
+        P = THEMES[theme]
+        assert P['CARD'] in qss, f"{theme}：启动画面卡片底色没取色板（{P['CARD']}）"
+        assert P['ACCENT'] in qss, f"{theme}：启动画面顶部条没取色板"
+        seen[theme] = qss
+        s.close()
+    assert seen['light'] != seen['dark'], "深浅两套启动画面样式必须不同"
+
+    # bootloader 那张静态图（PyInstaller --splash）在 Python 启动前就画好了，
+    # 读不到任何设置、无法跟随主题，所以固定用深色品牌图：
+    # 抽样卡片中心像素，亮度必须偏低（防止有人改回浅色）
+    from PIL import Image
+    img = Image.open(os.path.join(GUI_DIR, 'splash.png')).convert("RGB")
+    r, g, b = img.getpixel((380, 200))
+    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    assert lum < 0.45, f"bootloader 启动图应是深色底，实测亮度 {lum:.2f}（{r},{g},{b}）"
 
 
 def main():

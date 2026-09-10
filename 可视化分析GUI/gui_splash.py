@@ -3,7 +3,12 @@
 
 注意：本模块只允许依赖 PyQt5 与 gui_config——它存在的意义就是赶在
 matplotlib / numpy / scipy / pandas 等重量级库加载之前出现在屏幕上，
-在这里导入重量级库会让启动画面失去意义。
+在这里导入重量级库会让启动画面失去意义（也不要 import gui_launcher，
+那条链会拉进 QtWidgets 之外的一堆东西）。
+
+主题（v4.28）：启动画面出现在入口界面之前，此前只能硬用一套浅色配色，
+深色用户每次启动都会先看到一块白卡片。现在**自己读 QSettings 里保存的主题**
+（只用到 QtCore.QSettings + gui_config 的色板），浅色/深色会话各自显示对应配色。
 """
 
 import sys
@@ -15,7 +20,10 @@ from PyQt5.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget,
 )
 
-from gui_config import APP_NAME, APP_VERSION, APP_ICON_FILENAME, UI_FONT_FAMILY
+from gui_config import (
+    APP_NAME, APP_VERSION, APP_ICON_FILENAME, UI_FONT_FAMILY,
+    APP_ORG, THEMES, DEFAULT_THEME,
+)
 
 
 def _resource_path(name):
@@ -34,31 +42,48 @@ def _resource_path(name):
     return None
 
 
+def saved_theme(default=DEFAULT_THEME):
+    """读取上次会话保存的主题（与 gui_launcher.saved_theme 同义，但保持零重依赖）。
+
+    QSettings 读失败（注册表被限制、键不存在等）一律回退默认浅色，绝不抛异常——
+    启动画面挂了会直接导致程序打不开。
+    """
+    try:
+        from PyQt5.QtCore import QSettings
+        t = QSettings(APP_ORG, APP_NAME).value("theme", default, str)
+        return t if t in THEMES else default
+    except Exception:
+        return default
+
+
 class StartupSplash(QWidget):
     """无边框启动画面：标题 + 动态状态行 + 不确定进度条。
 
     用法:
-        splash = StartupSplash()
+        splash = StartupSplash()          # theme 留空 = 读上次会话的主题
         splash.show_centered()
-        splash.stage("正在加载 …")     # 每个阶段调用，立即重绘
-        splash.finish()                # 主界面就绪后关闭
+        splash.stage("正在加载 …")         # 每个阶段调用，立即重绘
+        splash.finish()                   # 主界面就绪后关闭
     """
 
-    def __init__(self):
+    def __init__(self, theme=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.theme = theme if theme in THEMES else saved_theme()
+        P = THEMES[self.theme]
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(500, 280)
 
         card = QFrame(self)
         card.setObjectName("splashCard")
         card.setGeometry(0, 0, self.width(), self.height())
-        card.setStyleSheet("""
-            QFrame#splashCard {
-                background-color: #ffffff;
-                border: 1px solid #e2e8f0;
-                border-top: 5px solid #2563EB;
+        # 配色全部来自 theme_palette（不再硬编码浅色）
+        card.setStyleSheet(f"""
+            QFrame#splashCard {{
+                background-color: {P['CARD']};
+                border: 1px solid {P['BORDER']};
+                border-top: 5px solid {P['ACCENT']};
                 border-radius: 14px;
-            }
+            }}
         """)
 
         lay = QVBoxLayout(card)
@@ -82,25 +107,28 @@ class StartupSplash(QWidget):
         f.setPointSize(15)
         f.setBold(True)
         title.setFont(f)
-        title.setStyleSheet("color: #1e293b; background: transparent;")
+        title.setStyleSheet(f"color: {P['TEXT']}; background: transparent;")
         head.addWidget(title)
         version = QLabel(f"v{APP_VERSION}")
         version.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #2563EB;"
-            "background-color: #dbeafe; border-radius: 10px; padding: 3px 10px;")
+            f"font-size: 13px; font-weight: bold; color: {P['SELECT_FG']};"
+            f"background-color: {P['SELECT_BG']}; border-radius: 10px;"
+            "padding: 3px 10px;")
         head.addStretch()
         head.addWidget(version)
         lay.addLayout(head)
 
         subtitle = QLabel("正在准备运行环境")
-        subtitle.setStyleSheet("font-size: 13px; color: #64748b; background: transparent;")
+        subtitle.setStyleSheet(
+            f"font-size: 13px; color: {P['MUTED']}; background: transparent;")
         lay.addWidget(subtitle)
 
         # 动态状态行（各阶段更新）
         self.status = QLabel("正在初始化…")
         self.status.setWordWrap(True)
         self.status.setStyleSheet(
-            "font-size: 15px; font-weight: bold; color: #2563EB; background: transparent;")
+            f"font-size: 15px; font-weight: bold; color: {P['ACCENT']};"
+            "background: transparent;")
         lay.addWidget(self.status)
 
         # 不确定进度条（细条）
@@ -108,22 +136,23 @@ class StartupSplash(QWidget):
         bar.setRange(0, 0)
         bar.setFixedHeight(8)
         bar.setTextVisible(False)
-        bar.setStyleSheet("""
-            QProgressBar {
-                background-color: #e2e8f0;
+        bar.setStyleSheet(f"""
+            QProgressBar {{
+                background-color: {P['DISABLED_BG']};
                 border: none;
                 border-radius: 4px;
                 max-height: 8px;
-            }
-            QProgressBar::chunk {
-                background-color: #2563EB;
+            }}
+            QProgressBar::chunk {{
+                background-color: {P['ACCENT']};
                 border-radius: 4px;
-            }
+            }}
         """)
         lay.addWidget(bar)
 
         hint = QLabel("首次启动需要解压资源并检查依赖（约 20–40 秒），\n启动画面消失前请勿重复双击。")
-        hint.setStyleSheet("font-size: 12px; color: #94a3b8; background: transparent;")
+        hint.setStyleSheet(
+            f"font-size: 12px; color: {P['MUTED']}; background: transparent;")
         lay.addWidget(hint)
         lay.addStretch()
 

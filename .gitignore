@@ -1,84 +1,24 @@
-# ============================================================
-#  QLS Lab 光谱画图程序 —— Git 忽略规则
-# ------------------------------------------------------------
-#  位置：画图\.gitignore（= 可视化分析GUI 的上一级）
-#  目标：首次提交 < 20 MB（实测约 1.1 MB，见文件末尾"体积预算"）
-#  注意：本文件只写规则，**不执行 git init**——首次 `git init` / `git add`
-#        由协调者统一执行，避免与并行会话冲突。
-#
-#  规则说明：带 `/` 的模式以本文件所在目录为锚点，所以跨层级用 `**/` 前缀，
-#            否则 `可视化分析GUI\_packaging\build\` 这种嵌套路径匹配不到。
-# ============================================================
-
-# ---- 1. 打包产物：单文件 exe（每个约 101.6 MiB，绝不入库）----
-**/便携版/*.exe
-*.exe
-
-# ---- 2. 压缩包快照（便携版.zip / mac打包文件夹.zip / test.zip …）----
-*.zip
-*.7z
-*.rar
-*.tar
-*.tar.gz
-
-# ---- 3. PyInstaller 中间产物（每次打包重建）----
-**/_packaging/build/
-**/_packaging/dist/
-**/_packaging/temptest/
-**/_packaging/testtemp/
-
-# ---- 4. 隔离区（F3 移出的历史产物，约 320 MiB）----
-**/_quarantine/
-
-# ---- 5. Python 缓存 ----
-__pycache__/
+﻿# Python
+**/__pycache__/
 *.pyc
-*.pyo
-*.pyd
-.pytest_cache/
+.venv/
+venv/
 
-# ---- 6. 绘图输出（都是脚本生成的图，可随时重跑）----
-#  注：可视化分析GUI\plots\_diag3d\ 里 v4.19/v4.20 的验收图
-#      （dark_axis_*.png / light_axis_emission.png / ui_*.png）也在此规则下。
-#      若确实想把它们纳入版本库，用 `git add -f <路径>` 强制添加。
-**/plots/**
+# 打包与产物
+**/_packaging/
+**/便携版/*.exe
+**/便携版.zip
+plots/
+**/plots/
 
-# ---- 6b. 诊断脚本的截图/取色产物（v4.23 起，可由脚本随时重跑）----
+# 临时/隔离
+_quarantine/
+*.tmp
+*.log
+
+# 测试产物（截图 / 诊断日志）
 **/tests/_diag/
 **/tests/_ui_review/
 
-# ---- 7. mac 同步副本（由 同步到mac文件夹.ps1 生成）----
-#  例外：build_mac.command 与 README_Mac.txt 是**手写**的（同步清单不含它们），
-#        必须留在版本库里，所以下面两行把它们重新包含进来。
-**/mac打包文件夹/**
-!可视化分析GUI/mac打包文件夹/build_mac.command
-!可视化分析GUI/mac打包文件夹/README_Mac.txt
-
-# ---- 8. 其它本地产物 ----
-*.lnk
-**/.dsh-tmp/
-*.log
-_packaging/build.log
-**/_packaging/build.log
-
-# ---- 9. 虚拟环境 / 编辑器 ----
-.venv/
-.venv_mac/
-venv/
-.vscode/
-.idea/
-*.swp
-Thumbs.db
-desktop.ini
-
-# ============================================================
-#  体积预算（2026-09-09 实测，按上面规则逐文件求和）
-#    * 首次提交实际入仓：**163 个文件 / 3.152 MiB**（PASS，上限 20 MiB）
-#      = 源码 .py + 文档 .md/.docx + 更新日志 + tests + test 样例数据
-#        + icons + app_icon.ico + splash.png 等
-#    * 被排除的大块头：便携版\光谱可视化分析工具.exe 101.65 MiB、
-#      _quarantine\ 320.18 MiB、便携版.zip 102.58 MiB、_packaging\build 中间产物 …
-#      （排除合计 182 个文件 / 453.16 MiB）
-#  ⇒ 远低于 20 MB 上限。
-#  提醒：`git init` 与首次 `git add` 由协调者执行；本文件不含任何 git 命令。
-# ============================================================
+# mac 副本（由 同步到mac文件夹.ps1 生成）
+**/mac打包文件夹/

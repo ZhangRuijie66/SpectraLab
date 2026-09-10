@@ -100,6 +100,22 @@ def _sections_key(sections):
         return tuple()
 
 
+def _icon_theme(palette):
+    """按背景色亮度判断该用哪套图标（浅色/深色图标描边色不同，v4.28）。
+
+    调用方只传色板、没有主题名，所以直接算背景色亮度：>0.5 视为浅色底。
+    解析失败一律按浅色处理。
+    """
+    try:
+        h = str((palette or {}).get('BG', '') or '').lstrip('#')
+        if len(h) >= 6:
+            r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+            return 'light' if (0.299 * r + 0.587 * g + 0.114 * b) > 0.5 else 'dark'
+    except Exception:
+        pass
+    return 'light'
+
+
 def _palette_key(palette):
     """色板指纹，用来判断「主题是否变了」（变了必须重刷样式表）。"""
     if not palette:
@@ -183,7 +199,7 @@ class HelpDialog(QDialog):
         self._copy_timer = QTimer(self)
         self._copy_timer.setSingleShot(True)
         self._copy_timer.timeout.connect(self._restore_copy_button)
-        self._copy_default_text = "📋 复制全部"
+        self._copy_default_text = "复制全部"
 
         self._build_ui()
         try:
@@ -270,7 +286,7 @@ class HelpDialog(QDialog):
         self.copy_btn.clicked.connect(self.copy_all_text)
         foot.addWidget(self.copy_btn)
 
-        self.log_btn = QPushButton("📂 打开日志文件夹")
+        self.log_btn = QPushButton("打开日志文件夹")
         self.log_btn.setCursor(Qt.PointingHandCursor)
         self.log_btn.setToolTip(self.log_text or "打开日志目录")
         self.log_btn.clicked.connect(self.open_log_folder)
@@ -282,6 +298,7 @@ class HelpDialog(QDialog):
         self.close_btn.clicked.connect(self.close)
         foot.addWidget(self.close_btn)
         root.addLayout(foot)
+        self._apply_icons()          # 按钮图标（v4.28：单色图标集，分深浅两套）
 
         # 窗口图标（缺失就算了，不影响显示）
         try:
@@ -517,6 +534,28 @@ class HelpDialog(QDialog):
                 pass
 
     # ------------------------------------------------------------ 主题重刷
+    def _apply_icons(self):
+        """给底部两个按钮设单色图标（v4.28）。
+
+        图标分浅色/深色两套（描边色不同），所以换主题时要重取；资源缺失时
+        `gui_icons.icon()` 返回空 QIcon，按钮就只剩文字，不会崩也不会出现方块。
+        """
+        try:
+            from gui_icons import icon as _icon
+        except Exception as e:
+            _logger.warning("帮助窗口加载图标集失败：%s", e)
+            return
+        theme = _icon_theme(self._P)
+        for btn, name in ((getattr(self, 'copy_btn', None), 'copy'),
+                          (getattr(self, 'log_btn', None), 'folder_open')):
+            if btn is None:
+                continue
+            try:
+                btn.setIcon(_icon(name, theme))
+                btn.setIconSize(QSize(15, 15))
+            except Exception as e:
+                _logger.warning("帮助窗口设置图标失败（%s）：%s", name, e)
+
     def apply_palette(self, palette):
         """换主题色板：重设样式表 + 重渲染正文（主题切换后复用同一窗口时调用）。
 
@@ -532,6 +571,7 @@ class HelpDialog(QDialog):
             self._palette_key = _palette_key(palette)
             self.setStyleSheet(self._build_qss())
             self._render_sections()
+            self._apply_icons()      # 图标分深浅两套，换主题要重取（v4.28）
             # 正文重渲染后搜索状态要重算（命中高亮 / 未命中描边都跟主题有关）
             self._on_search_changed(self.search_edit.text())
             return True
@@ -629,7 +669,7 @@ class HelpDialog(QDialog):
     def _flash_copy_button(self):
         """按钮文字短暂变成「已复制」再变回。"""
         try:
-            self.copy_btn.setText("✅ 已复制")
+            self.copy_btn.setText("已复制")
             self._copy_timer.start(1200)
         except Exception as e:
             _logger.warning("复制按钮反馈失败：%s", e)

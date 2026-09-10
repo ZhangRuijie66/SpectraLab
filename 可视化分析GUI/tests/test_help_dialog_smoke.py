@@ -61,7 +61,7 @@ SECTIONS = [
         <p>左侧「光谱类型」下拉框切换吸收 / 发射 / 荧光寿命 / 3D 扫描四种模式，
         切模式会清空缓存并重新加载当前文件夹里的可用数据。</p>
         <p>参数面板里的控件改动会触发实时预览（300 ms 防抖）；荧光寿命模式的
-        单次拟合需要 1–2 分钟，所以参数微调不会自动重拟合，只有点「⏱ 开始拟合」
+        单次拟合需要 1–2 分钟，所以参数微调不会自动重拟合，只有点「开始拟合」
         按钮才真正开始。</p>
         <p>画布下方的工具栏可以缩放、平移、保存图片；导出分辨率由「DPI」控件决定。</p>
     """),
@@ -97,7 +97,7 @@ SECTIONS = [
         <p><b>拟合不收敛？</b>试着减小最小峰高、放宽最小峰距，或者把 λ 从自动
         调成手动给一个较小的值。</p>
         <p><b>程序没反应？</b>未捕获异常会写进日志文件（本窗口底部有路径），
-        点「📂 打开日志文件夹」直接去看。</p>
+        点「打开日志文件夹」直接去看。</p>
     """),
     ("关于与日志", """
         <p>光谱可视化分析工具由 QLS Lab 开发，界面基于 PyQt5，绘图基于
@@ -105,7 +105,7 @@ SECTIONS = [
         <p>日志按天归档在 <code>%LOCALAPPDATA%\\QLSLab\\logs</code>：单文件
         上限 2 MB，保留 3 个历史文件；跨天启动时上一次的 gui.log 会自动改名
         成 gui-YYYY-MM-DD.log。</p>
-        <p>反馈问题时请附上日志文件与本窗口「📋 复制全部」得到的环境说明。</p>
+        <p>反馈问题时请附上日志文件与本窗口「复制全部」得到的环境说明。</p>
     """),
 ]
 
@@ -262,7 +262,7 @@ def run_theme(app, theme):
         print(f"  读取剪贴板异常：{e}", flush=True)
     print(f"  复制全部 → 返回 {copied}，剪贴板长度 {len(clip)}", flush=True)
     if copied:
-        assert dialog.copy_btn.text() == "✅ 已复制", f"{theme}: 复制按钮未反馈"
+        assert dialog.copy_btn.text() == "已复制", f"{theme}: 复制按钮未反馈"
         assert len(clip) > 300, f"{theme}: 剪贴板内容过短（{len(clip)}）"
         assert "荧光寿命" in clip, f"{theme}: 剪贴板内容不含正文"
 
@@ -281,11 +281,11 @@ def run_theme(app, theme):
 
     # ---- 断言 7：复制按钮文字 1.2 s 后自己变回来 ----
     deadline = time.time() + 3.0
-    while time.time() < deadline and dialog.copy_btn.text() != "📋 复制全部":
+    while time.time() < deadline and dialog.copy_btn.text() != "复制全部":
         app.processEvents()
         time.sleep(0.05)
     print(f"  1.2 s 后复制按钮文字 = {dialog.copy_btn.text()!r}", flush=True)
-    assert dialog.copy_btn.text() == "📋 复制全部", f"{theme}: 复制按钮文字没有还原"
+    assert dialog.copy_btn.text() == "复制全部", f"{theme}: 复制按钮文字没有还原"
 
     # ---- 深色主题必须真的是深色 ----
     if theme == 'dark':

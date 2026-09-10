@@ -9,7 +9,7 @@ import logging
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import Qt, QDir, QTimer
+from PyQt5.QtCore import Qt, QDir, QTimer, QSize
 from PyQt5.QtGui import QFont, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -359,14 +359,14 @@ class UiMixin:
             pass
 
     def set_badge_state(self, widget, state):
-        """设置徽标状态（ok / warn / bad / none）并立即换色（v4.27）。"""
+        """设置徽标状态（ok / warn / bad / none）并立即换色。"""
         if widget is None:
             return
         widget.setProperty("badgeState", state)
         self._repolish(widget)
 
     def _update_status_badges(self):
-        """状态栏右侧两个徽标：当前模式 + 已加载样品数（v4.27）。"""
+        """状态栏右侧两个徽标：当前模式 + 已加载样品数。"""
         names = {0: "吸收光谱", 1: "发射光谱", 2: "荧光寿命", 3: "3D 扫描"}
         badge = getattr(self, 'status_mode_badge', None)
         if badge is not None:
@@ -396,13 +396,13 @@ class UiMixin:
     }
 
     def _decorate_nav_toolbar(self, tb):
-        """给 matplotlib 导航工具条加中文 tooltip（v4.27）。
+        """给 matplotlib 导航工具条加中文 tooltip。
 
         mpl 自带工具条只有英文 tooltip（Home / Pan / Zoom / Customize…），
         且有个按钮连图标都没有（Customize）。这里只改文字与 tooltip：
         **按钮顺序和分组分隔保持 mpl 原样**——`toolitems` 里本来就带了
         None 分隔项（视图 | 缩放/参数 | 保存），自己再插一遍会出现双分隔线
-        （v4.27 开发中实测踩到）。
+        （开发中实测踩到）。
         """
         try:
             acts = getattr(tb, '_actions', None) or {}
@@ -421,7 +421,7 @@ class UiMixin:
             log_exception("装饰导航工具条失败", e)
 
     def _create_empty_state(self, parent=None):
-        """画布空状态引导页（v4.27）：大图标 + 一句引导 + 主按钮。
+        """画布空状态引导页：大图标 + 一句引导 + 主按钮。
 
         原来没数据时画布上只有一行小灰字，第一眼看不出下一步该干什么；
         现在用一整页把「选择数据文件夹」这条主路径摆出来（拖拽和 Ctrl+O 也写在里面）。
@@ -464,6 +464,41 @@ class UiMixin:
         self.empty_state = box
         return box
 
+    def _apply_ui_icons(self):
+        """把界面按钮上的 emoji 换成单色图标集。
+
+        图标分浅色/深色两套（描边色不同，浅色界面看不清楚深色图标），所以
+        切主题时必须重新取一遍。资源缺失时 `gui_icons.icon()` 返回**空 QIcon**，
+        按钮就只剩文字——不会崩、也不会出现"方块豆腐"。
+        """
+        # 文本按钮的图标尺寸小一点（跟着 13px 字号），纯图标按钮稍大
+        specs = [
+            (getattr(self, 'home_btn', None), 'home', 17),
+            (getattr(self, 'theme_btn', None),
+             'sun' if getattr(self, 'theme', 'light') == 'dark' else 'moon', 17),
+            (getattr(self, 'help_btn', None), 'help', 17),
+            (getattr(self, 'workspace_btn', None), 'folder_open', 14),
+            (getattr(self, 'preview_btn', None), 'play', 15),
+            (getattr(self, 'export_menu_btn', None), 'export', 15),
+            (getattr(self, 'lifetime_save_defaults_btn', None), 'save', 15),
+            (getattr(self, 'lifetime_overlay_btn', None), 'chart_bar', 15),
+            (getattr(self, 'integ_copy_btn', None), 'copy', 15),
+        ]
+        theme = 'dark' if getattr(self, 'theme', 'light') == 'dark' else 'light'
+        try:
+            from gui_icons import icon as _icon
+        except Exception as e:
+            log_exception("加载图标集失败（按钮将只显示文字）", e)
+            return
+        for btn, name, size in specs:
+            if btn is None:
+                continue
+            try:
+                btn.setIcon(_icon(name, theme))
+                btn.setIconSize(QSize(size, size))
+            except Exception as e:
+                log_exception(f"设置按钮图标失败: {name}", e)
+
     def _set_empty_icon(self, label):
         """给空状态页画大图标：优先用单色图标集，资源缺失时退回 emoji。
 
@@ -487,7 +522,7 @@ class UiMixin:
         label.setText("📁")
 
     def _sync_empty_state(self):
-        """没有数据 → 显示空状态引导；有数据 → 显示画布（v4.27）。"""
+        """没有数据 → 显示空状态引导；有数据 → 显示画布。"""
         stack = getattr(self, 'preview_stack', None)
         if stack is None:
             return
@@ -528,11 +563,11 @@ class UiMixin:
                 "或多列 xlsx（时间 + 各样品列 + IRF，自动按列拆成多个数据集）</li>"
                 "<li><b>主操作</b>：面板底部固定的「▶ 开始拟合」"
                 "（单文件 MEM/SESM 拟合，约 1–2 分钟/文件）</li>"
-                "<li><b>批量与导出</b>：「📊 叠加分布」（并行拟合全部文件后叠加对比）、"
-                "「💾 导出 ▾」菜单里的——导出当前拟合结果（PNG + 拟合结果 json）、"
+                "<li><b>批量与导出</b>：「叠加分布」按钮（并行拟合全部文件后叠加对比）、"
+                "「导出」菜单里的——导出当前拟合结果（PNG + 拟合结果 json）、"
                 "跨样品汇总图、导出 PDF 报告；<b>菜单里的批量动作会复用已拟合的结果</b>，"
                 "不会把同一批样品重复拟合</li>"
-                "<li><b>参数固化</b>：「💾 存为默认值」把当前拟合参数"
+                "<li><b>参数固化</b>：「存为默认值」把当前拟合参数"
                 "固定为下次启动的默认值</li>"
                 "<li><b>参数</b>：拟合方法（MEM 最大熵 / SESM 平滑指数序列）、"
                 "速率网格点数、k 范围（τ = 1/k）、"
@@ -587,7 +622,7 @@ class UiMixin:
             "<li><b>Ctrl+Shift+E</b> — 导出全部图片</li>"
             "<li><b>Ctrl+D</b> — 复制积分结果</li>"
             "<li><b>Ctrl+F</b> — 跳到文件搜索框（数据栏折叠时会自动展开）</li>"
-            "<li><b>Ctrl+T</b> — 切换浅色 / 深色主题（也可点左上角 🌙 / ☀️）</li>"
+            "<li><b>Ctrl+T</b> — 切换浅色 / 深色主题（也可点左上角的月亮/太阳图标）</li>"
             "<li><b>F1</b> — 本帮助</li>"
             "</ul>")
         others = (
@@ -602,7 +637,7 @@ class UiMixin:
             "<li>导出格式由「导出格式」下拉框决定（PNG / PDF / SVG 或其组合）；"
             "「导出用白底」勾选后导出图强制白底深字，"
             "深色主题下投稿/做 PPT 用得上</li>"
-            "<li>「🏠 返回模块选择」回到入口界面重新选模式；直接关窗则退出程序</li>"
+            "<li>「返回模块选择」（左上角房子图标）回到入口界面重新选模式；直接关窗则退出程序</li>"
             "<li>界面元素说明：鼠标悬停任意按钮/标签/下拉项都会显示 tooltip"
             "（被截断的文件名、完整路径也在这里看）</li>"
             "</ul>")
@@ -694,27 +729,32 @@ class UiMixin:
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
 
-        home_btn = QPushButton("🏠")
+        home_btn = QPushButton()
+        self.home_btn = home_btn
         home_btn.setProperty("variant", "ghost")
         home_btn.setFixedSize(36, 30)
+        home_btn.setIconSize(QSize(17, 17))
         home_btn.setCursor(Qt.PointingHandCursor)
         home_btn.setToolTip("返回模块选择（回到入口界面重新选模式）")
         home_btn.clicked.connect(self.return_to_launcher)
         top_row.addWidget(home_btn)
 
-        # 主题切换（D3）：浅色 / 深色
-        self.theme_btn = QPushButton("🌙")
+        # 主题切换（D3）：浅色 / 深色。图标由 _apply_ui_icons 按当前主题设置
+        # （浅色界面显示月亮=切到深色，深色界面显示太阳=切回浅色）
+        self.theme_btn = QPushButton()
         self.theme_btn.setProperty("variant", "ghost")
         self.theme_btn.setFixedSize(36, 30)
+        self.theme_btn.setIconSize(QSize(17, 17))
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.theme_btn.setToolTip("切换浅色 / 深色主题（Ctrl+T）")
         self.theme_btn.clicked.connect(lambda: self.toggle_theme())
         top_row.addWidget(self.theme_btn)
 
         # 帮助菜单（D6）：快捷键说明 + 打开日志文件夹
-        self.help_btn = QPushButton("❓")
+        self.help_btn = QPushButton()
         self.help_btn.setProperty("variant", "ghost")
         self.help_btn.setFixedSize(36, 30)
+        self.help_btn.setIconSize(QSize(17, 17))
         self.help_btn.setCursor(Qt.PointingHandCursor)
         self.help_btn.setToolTip("帮助：快捷键说明（F1）/ 打开日志文件夹")
         help_menu = QMenu(self.help_btn)
@@ -771,9 +811,11 @@ class UiMixin:
         self.workspace_label.setProperty("role", "hint")
         ws_row.addWidget(self.workspace_label, 1)
 
-        workspace_btn = QPushButton("📂")
+        workspace_btn = QPushButton()
+        self.workspace_btn = workspace_btn
         workspace_btn.setProperty("variant", "ghost")
         workspace_btn.setFixedSize(26, 22)
+        workspace_btn.setIconSize(QSize(14, 14))
         workspace_btn.setCursor(Qt.PointingHandCursor)
         workspace_btn.setToolTip("选择工作区（左侧目录树的根目录，会记住）")
         workspace_btn.clicked.connect(self.select_workspace)
@@ -1075,7 +1117,7 @@ class UiMixin:
         self.on_auto_lambda_toggled(True)                  # 同步禁用 λ 输入框
 
         # 存为默认值（v4.22 修订）：把当前拟合参数固定为每次启动的默认值
-        self.lifetime_save_defaults_btn = QPushButton("💾 存为默认值")
+        self.lifetime_save_defaults_btn = QPushButton("存为默认值")
         self.lifetime_save_defaults_btn.setProperty("variant", "secondary")
         self.lifetime_save_defaults_btn.setCursor(Qt.PointingHandCursor)
         self.lifetime_save_defaults_btn.setToolTip(
@@ -1091,7 +1133,7 @@ class UiMixin:
         # 这里不再放重复的拟合按钮，避免同一个动作有两个入口。
 
         # 并行拟合全部文件并叠加寿命分布对比（C1 + C8）
-        self.lifetime_overlay_btn = QPushButton("📊 叠加分布")
+        self.lifetime_overlay_btn = QPushButton("叠加分布")
         self.lifetime_overlay_btn.setToolTip(
             "并行拟合全部文件后叠加寿命分布对比（已拟合过的样品直接复用结果）")
         self.lifetime_overlay_btn.setProperty("variant", "fit")
@@ -1311,8 +1353,9 @@ class UiMixin:
         action_layout = QVBoxLayout()
         action_layout.setSpacing(8)
 
-        self.preview_btn = QPushButton("▶ 实时预览")
+        self.preview_btn = QPushButton("实时预览")
         self.preview_btn.setProperty("variant", "primary")
+        self.preview_btn.setIconSize(QSize(15, 15))
         self.preview_btn.setCursor(Qt.PointingHandCursor)
         self.preview_btn.setToolTip(
             "按当前参数重新绘图（F5）\n"
@@ -1322,7 +1365,7 @@ class UiMixin:
         action_layout.addWidget(self.preview_btn)
 
         # 导出：5 个动作合并成一个菜单（v4.25，原本是 5 个彩色实心按钮排成一列）
-        self.export_menu_btn = QPushButton("💾 导出 ▾")
+        self.export_menu_btn = QPushButton("导出")
         self.export_menu_btn.setProperty("variant", "export")
         self.export_menu_btn.setCursor(Qt.PointingHandCursor)
         self.export_menu_btn.setToolTip(
@@ -1570,7 +1613,7 @@ class UiMixin:
         self.integ_count_label.setProperty("role", "hint")
         integ_ctrl.addWidget(self.integ_count_label)
         integ_ctrl.addStretch()
-        self.integ_copy_btn = QPushButton("📋 复制结果")
+        self.integ_copy_btn = QPushButton("复制结果")
         self.integ_copy_btn.setProperty("variant", "primary")
         self.integ_copy_btn.setCursor(Qt.PointingHandCursor)
         self.integ_copy_btn.setToolTip("把整张表复制到剪贴板（制表符分隔，可直接粘进 Excel/Origin）")
@@ -1666,9 +1709,9 @@ class UiMixin:
         if dark is None:
             dark = getattr(self, 'theme', 'light') != 'dark'
         self.theme = 'dark' if dark else 'light'
-        # v4.24：顶部按钮改成纯图标（等宽），状态靠图标 + tooltip 表达
+        # v4.28：主题按钮改成单色图标（浅色界面=月亮、深色界面=太阳），
+        # 具体图标在 apply_style → _apply_ui_icons 里统一设置
         if hasattr(self, 'theme_btn'):
-            self.theme_btn.setText("☀️" if dark else "🌙")
             self.theme_btn.setToolTip(
                 ("当前：深色主题 —— 点击切回浅色（Ctrl+T）" if dark
                  else "当前：浅色主题 —— 点击切到深色（Ctrl+T）"))
@@ -2409,6 +2452,8 @@ class UiMixin:
         # 空状态大图标是位图（图标集分深浅两套），换主题要重新取一遍
         if getattr(self, 'empty_icon', None) is not None:
             self._set_empty_icon(self.empty_icon)
+        # 按钮上的单色图标同样分深浅两套（v4.28）
+        self._apply_ui_icons()
 
     @staticmethod
     def _style_combo(combo):
