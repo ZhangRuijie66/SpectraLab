@@ -51,7 +51,31 @@
 | 卡片标题 / 说明 | `TEXT_SOFT` / `MUTED` |
 | 插画描边 | 浅 `#475569` / 深 `#cbd5e1` / 高对比 `#000000` |
 
-## 四、本版改动的文件
+## 四、顺带补回：mac 打包脚本（事故遗留项）
+
+2026-09-10 那次目录事故里丢掉了一个文件：`mac打包文件夹\build_mac.command`（macOS 打包脚本）。
+它之所以找不回来，是因为**它同时掉在三张网之外**：
+
+- `mac打包文件夹\` 被 `.gitignore` 排除 → 不在 git 里；
+- 它不在 `同步到mac文件夹.ps1` 的 SYNC-MANIFEST 里 → 同步不会覆盖/校验它；
+- 只在 mac 副本里存在一份 → 事故后没有第二份。
+
+本版把它**重写**并调整了存放方式：
+
+| 项 | 做法 |
+|---|---|
+| 权威副本 | 放到 **GUI 根目录** `build_mac.command`（受 git 跟踪） |
+| 同步 | SYNC-MANIFEST 新增 `app\|build_mac.command`（28 → **29 条**），自动同步到 mac 副本并校验 SHA |
+| 换行符 | 新增 `.gitattributes`：`*.command` / `*.sh` 强制 **LF**——本仓库 `core.autocrlf=true`，CRLF 的 `#!/bin/bash` 在 macOS 上会直接报 `bad interpreter` |
+| 可执行位 | git 索引里记为 `100755`，macOS 上检出即可 `./build_mac.command` |
+
+脚本内容与 Windows 的 `打包便携版.ps1` 同一套参数，只有两处平台差异写明了：
+`--add-data` 用 `:` 分隔、图标要用 `.icns`（脚本内用 Pillow + `iconutil` 从 `.ico` 转，
+失败则不带图标继续打包）。首次运行自动建虚拟环境装依赖，之后重跑只做打包。
+
+至此 `检查版本一致性.py` 的 **11 项全部通过、0 警告**（此前一直挂着"mac 打包脚本缺失"这条告警）。
+
+## 五、本版改动的文件
 
 | 文件 | 改动 |
 |------|------|
@@ -61,10 +85,13 @@
 | `icons\illus_empty_*.png` | **新增 3 个**插画（浅 / 深 / 高对比） |
 | `tests/run_regression.py` | 新增 1 项 v4.31 守卫（插画资源与 2 倍图尺寸 / 逻辑尺寸 200×120 / 三步卡片齐全 / 第 3 步随模式变 / 收起与沿用偏好） |
 | `tests/shot_ui_review.py` | 新增 `empty_light` / `empty_dark` / `empty_contrast` 三张验收截图；入口界面截图补上高对比主题 |
+| `build_mac.command` | **新增**（GUI 根目录）：重写并归位的 macOS 打包脚本 |
+| `.gitattributes` | **新增**：`*.command` / `*.sh` 强制 LF |
+| `同步到mac文件夹.ps1` | SYNC-MANIFEST 新增 `app\|build_mac.command`（28 → 29 条） |
 | `gui_config.py` | 版本 4.30 → **4.31** |
 | `更新日志/CHANGELOG_v431.md` | **新增**：本文件 |
 
-## 五、方案 C 收口说明
+## 六、方案 C 收口说明
 
 《UI设计方案_讨论稿.md》里方案 C 的四项，现在的落地情况：
 
@@ -76,7 +103,7 @@
 | 帮助改独立窗口（目录 + 正文 + 搜索 + 复制） | v4.23 / v4.24（早已完成） |
 | 空状态插画 + 首次使用引导（3 步） | **v4.31** |
 
-## 六、备注
+## 七、备注
 
 - 插画是**位图**、跟主题走；改画法只需改 `生成图标.py` 里的 `illus_empty()`
   再跑一次 `python 生成图标.py`（脚本会打印自检：不透明占比、包围盒）。

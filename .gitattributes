@@ -1,0 +1,7 @@
+# 换行符策略（v4.31 补）
+#
+# shell 脚本必须是 LF：CRLF 的 #!/bin/bash 在 macOS/Linux 上会报
+#   ./build_mac.command: /bin/bash^M: bad interpreter
+# 本仓库 core.autocrlf=true，默认检出成 CRLF，所以这里对脚本类型强制 LF。
+*.command  text eol=lf
+*.sh       text eol=lf

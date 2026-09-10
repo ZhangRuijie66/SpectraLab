@@ -72,6 +72,10 @@ $manifest = @(
     "app|生成splash图.py",
     "app|生成图标.py",
     "app|requirements.txt",
+    # v4.31 补：mac 打包脚本的**权威副本在 GUI 根目录**，由本清单同步过去。
+    # （原来它只存在于 mac打包文件夹\ 里，而那个目录被 .gitignore 排除——
+    #   既不在 git、也不在清单，2026-09-10 那次目录事故后就再也找不回来了。）
+    "app|build_mac.command",
     # ---- GUI 根目录下的目录（递归）----
     "appdir|icons",
     "appdir|更新日志",
