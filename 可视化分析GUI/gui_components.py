@@ -102,6 +102,13 @@ _COMBO_COLORS = {
     'hover_bg': '#eff6ff', 'hover_fg': '#1e293b',
     'bg': '#ffffff', 'fg': '#1e293b',
 }
+# 画布占位提示文字的初始颜色。真实颜色由 gui_ui._apply_mpl_theme 按主题刷新，
+# 这里只取浅色主题的 MUTED 令牌（v4.30 收敛：原来写死 #64748b）
+try:
+    from gui_config import THEMES as _THEMES, DEFAULT_THEME as _DEFAULT_THEME
+    _PLACEHOLDER_COLOR = _THEMES[_DEFAULT_THEME]['MUTED']
+except Exception:                                   # pragma: no cover
+    _PLACEHOLDER_COLOR = '#64748b'
 
 
 def set_combo_palette(palette):
@@ -110,7 +117,9 @@ def set_combo_palette(palette):
         return
     _COMBO_COLORS.update({
         'selected_bg': palette.get('ACCENT', _COMBO_COLORS['selected_bg']),
-        'selected_fg': '#ffffff',
+        # 选中项文字取 CARD（v4.30 收敛）：浅色主题下即白色，高对比主题下
+        # 也是白字压在深蓝实心选中条上；跟着色板走才不会有"白字压浅底"的组合
+        'selected_fg': palette.get('CARD', _COMBO_COLORS['selected_fg']),
         'hover_bg': palette.get('HOVER_BG', _COMBO_COLORS['hover_bg']),
         'hover_fg': palette.get('TEXT', _COMBO_COLORS['hover_fg']),
         'bg': palette.get('CARD', _COMBO_COLORS['bg']),
@@ -269,7 +278,7 @@ class MplCanvas(FigureCanvas):
             self._placeholder = self.axes.text(
                 0.5, 0.5, "请选择数据文件夹加载光谱",
                 transform=self.axes.transAxes,
-                ha='center', va='center', fontsize=16, color='#64748b')
+                ha='center', va='center', fontsize=16, color=_PLACEHOLDER_COLOR)
             self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
         except Exception:
             pass

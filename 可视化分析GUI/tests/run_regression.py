@@ -1258,6 +1258,79 @@ def t_gui_window_lifecycle():
         f"反复建/销毁后控件数没有回落：{base} → {len(app.allWidgets())}"
 
 
+@check("主题：三套色板键一致 + 高对比达标 + 循环切换（v4.30）")
+def t_theme_three_sets():
+    import gui_config as cfg
+    THEMES, ORDER, LABELS = cfg.THEMES, cfg.THEME_ORDER, cfg.THEME_LABELS
+
+    # 1) 三套色板的键必须完全一致——apply_style 是按固定键名解包的，
+    #    少一个键就直接 KeyError（加主题时最容易漏的就是这里）
+    base = set(THEMES[cfg.DEFAULT_THEME])
+    for name in ORDER:
+        assert name in THEMES, f"THEME_ORDER 里的 {name} 不在 THEMES 里"
+        missing = sorted(base - set(THEMES[name]))
+        extra = sorted(set(THEMES[name]) - base)
+        assert not missing and not extra, \
+            f"{name} 色板键与 {cfg.DEFAULT_THEME} 不一致：缺 {missing} 多 {extra}"
+    assert len(ORDER) == 3 and len(set(ORDER)) == 3, f"主题顺序表异常：{ORDER}"
+    assert set(LABELS) == set(ORDER), "每套主题都要有界面显示名（THEME_LABELS）"
+
+    # 2) 高对比主题：文字与语义色对卡片底色的对比度 ≥ 7:1（WCAG AAA）
+    def _lum(hexc):
+        c = hexc.lstrip('#')
+        ch = [int(c[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        ch = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+              for v in ch]
+        return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+    def _ratio(a, b):
+        la, lb = _lum(a), _lum(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    P = THEMES['contrast']
+    for key in ('TEXT', 'TEXT_SOFT', 'MUTED', 'ACCENT', 'SUCCESS', 'VIOLET',
+                'ORANGE', 'CYAN', 'DANGER'):
+        r = _ratio(P[key], P['CARD'])
+        assert r >= 7.0, \
+            f"高对比主题 {key}={P[key]} 对卡片底色只有 {r:.2f}:1（要求 ≥7:1）"
+    assert _ratio(P['SELECT_FG'], P['SELECT_BG']) >= 7.0, \
+        "高对比主题选中态文字对比度不足"
+    assert _ratio(P['TOOLTIP_FG'], P['TOOLTIP_BG']) >= 7.0, \
+        "高对比主题 tooltip 对比度不足"
+    assert P['BORDER'] == '#000000' and P['TEXT'] == '#000000', \
+        "高对比主题应是纯黑描边 + 纯黑文字（打印友好）"
+    # 另两套也不能比原来更差（防止误改）
+    assert _ratio(THEMES['dark']['TEXT'], THEMES['dark']['CARD']) >= 7.0, \
+        "深色主题正文对比度回退了"
+
+    # 3) 图标集要有第三套（描边纯黑），否则高对比主题会静默用浅色那套
+    from gui_icons import icon_path, THEMES as ICON_THEMES
+    for name in ORDER:
+        assert name in ICON_THEMES, f"图标集没有 {name} 这一套：{ICON_THEMES}"
+        assert icon_path('contrast', name, 48), f"{name} 主题缺 contrast 图标"
+        assert icon_path('close', name, 24), f"{name} 主题缺 close 图标"
+
+    # 4) 主题按钮三态循环，每态图标都取得到
+    app, w = _make_gui()
+    seen = []
+    for _ in range(3):
+        seen.append(w.theme)
+        assert not w.theme_btn.icon().isNull(), f"{w.theme} 主题下主题按钮没图标"
+        assert w.theme_btn.toolTip(), "主题按钮缺 tooltip"
+        w.cycle_theme()
+        app.processEvents()
+    assert seen == list(ORDER), f"主题循环顺序不对：{seen}"
+    assert w.theme == ORDER[0], "循环三轮后应回到起始主题"
+    assert '已切换到' in w.status_bar.currentMessage(), "切主题应在状态栏给出提示"
+
+    # 5) 入口界面模块卡片主色必须来自设计令牌（原来写死四个字面量）
+    from gui_launcher import ModuleLauncher
+    tokens = {cfg.ACCENT, cfg.SUCCESS, cfg.VIOLET, cfg.CYAN}
+    for mode in ModuleLauncher.MODES:
+        assert mode[4] in tokens, f"模块卡片主色 {mode[4]!r} 不是设计令牌"
+
+
 @check("GUI：文件列表搜索过滤 + 全选只作用于筛选结果（v4.26）")
 def t_gui_file_search_select():
     from PyQt5.QtCore import Qt as _Qt

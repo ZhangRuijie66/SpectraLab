@@ -13,6 +13,7 @@ from gui_config import (
     APP_NAME, APP_VERSION, APP_ICON_FILENAME, RELEASE_DATE,
     DEFAULT_THEME, THEMES,
     COLOR_BG, COLOR_BORDER, COLOR_TEXT, COLOR_TEXT_SOFT, COLOR_MUTED,
+    ACCENT, SUCCESS, VIOLET, CYAN,
 )
 from gui_components import resource_path
 
@@ -138,15 +139,17 @@ class ModuleLauncher(QDialog):
 
     # (模式标识, 图标名, 按钮主标题, 一句话说明, 主色)
     # 图标名对应 icons\<name>_<theme>.png（v4.28 起用单色图标集，原来是 emoji）
+    # 主色直接取设计令牌（v4.30 收敛：原来这里写死 #2563EB/#16A34A/#7C3AED/#0891B2，
+    # 和 gui_config 里的 ACCENT/SUCCESS/VIOLET/CYAN 是同一组值、改一处会漏另一处）
     MODES = [
         ("absorption", "mode_absorb", "吸收光谱 (UV-Vis)",
-         "紫外-可见吸收光谱绘图与峰标注", "#2563EB"),
+         "紫外-可见吸收光谱绘图与峰标注", ACCENT),
         ("emission", "mode_emit", "发射光谱 (Emission)",
-         "荧光发射光谱绘图、EX 标注与归一化", "#16A34A"),
+         "荧光发射光谱绘图、EX 标注与归一化", SUCCESS),
         ("lifetime", "mode_lifetime", "荧光寿命 (Lifetime)",
-         "最大熵寿命拟合（MEM/SESM）与分量分解", "#7C3AED"),
+         "最大熵寿命拟合（MEM/SESM）与分量分解", VIOLET),
         ("scan3d", "mode_3d", "3D 扫描 (EEM)",
-         "激发-发射矩阵曲面/等高线/Waterfall，自动去除周期梳状伪迹", "#0891B2"),
+         "激发-发射矩阵曲面/等高线/Waterfall，自动去除周期梳状伪迹", CYAN),
     ]
 
     def __init__(self, parent=None, theme=None):

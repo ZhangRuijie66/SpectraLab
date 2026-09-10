@@ -73,10 +73,14 @@ ICON_NAMES = (
     "mode_absorb", "mode_emit", "mode_lifetime", "mode_3d",
     # 停靠面板标题栏的按钮（v4.29：关闭 / 浮动）
     "close", "float",
+    # 主题按钮切到「高对比（打印友好）」时显示（v4.30）
+    "contrast",
 )
 
 ICON_DIR = "icons"           # 相对 GUI 根目录（resource_path 的基准）
-THEMES = ("light", "dark")
+# 图标分套（描边色不同）：浅色界面 / 深色界面 / 高对比打印友好（纯黑描边）。
+# 加主题时这里要同步，否则 icon_path 会静默回退到 light 那套。
+THEMES = ("light", "dark", "contrast")
 DEFAULT_THEME = "light"
 MAIN_SIZE = 48               # 主图尺寸（无后缀）
 SMALL_SIZE = 24              # 小尺寸（@24 后缀）
@@ -87,7 +91,7 @@ _CACHE = {}
 
 
 def _norm_theme(theme):
-    """主题名规范化：只认 light / dark，其它一律回退 light。"""
+    """主题名规范化：只认 THEMES 里的名字，其它一律回退 light。"""
     try:
         t = str(theme).strip().lower()
     except Exception:

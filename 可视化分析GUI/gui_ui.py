@@ -644,8 +644,7 @@ class UiMixin:
         # 文本按钮的图标尺寸小一点（跟着 13px 字号），纯图标按钮稍大
         specs = [
             (getattr(self, 'home_btn', None), 'home', 17),
-            (getattr(self, 'theme_btn', None),
-             'sun' if getattr(self, 'theme', 'light') == 'dark' else 'moon', 17),
+            (getattr(self, 'theme_btn', None), self._theme_btn_icon_name(), 17),
             (getattr(self, 'help_btn', None), 'help', 17),
             (getattr(self, 'workspace_btn', None), 'folder_open', 14),
             (getattr(self, 'preview_btn', None), 'play', 15),
@@ -654,7 +653,8 @@ class UiMixin:
             (getattr(self, 'lifetime_overlay_btn', None), 'chart_bar', 15),
             (getattr(self, 'integ_copy_btn', None), 'copy', 15),
         ]
-        theme = 'dark' if getattr(self, 'theme', 'light') == 'dark' else 'light'
+        # 三套主题各有一套图标（描边色不同），直接传主题名，由 gui_icons 归一化
+        theme = getattr(self, 'theme', 'light')
         try:
             from gui_icons import icon as _icon
         except Exception as e:
@@ -917,8 +917,8 @@ class UiMixin:
         self.theme_btn.setFixedSize(36, 30)
         self.theme_btn.setIconSize(QSize(17, 17))
         self.theme_btn.setCursor(Qt.PointingHandCursor)
-        self.theme_btn.setToolTip("切换浅色 / 深色主题（Ctrl+T）")
-        self.theme_btn.clicked.connect(lambda: self.toggle_theme())
+        self.theme_btn.setToolTip("切换主题：浅色 / 深色 / 高对比打印友好（Ctrl+T）")
+        self.theme_btn.clicked.connect(lambda: self.cycle_theme())
         top_row.addWidget(self.theme_btn)
 
         # 帮助菜单（D6）：快捷键说明 + 打开日志文件夹
@@ -1870,17 +1870,20 @@ class UiMixin:
         return THEMES.get(getattr(self, 'theme', DEFAULT_THEME),
                           THEMES[DEFAULT_THEME])
 
-    def toggle_theme(self, dark=None):
-        """切换浅色 / 深色主题（D3）。"""
-        if dark is None:
-            dark = getattr(self, 'theme', 'light') != 'dark'
-        self.theme = 'dark' if dark else 'light'
-        # v4.28：主题按钮改成单色图标（浅色界面=月亮、深色界面=太阳），
-        # 具体图标在 apply_style → _apply_ui_icons 里统一设置
-        if hasattr(self, 'theme_btn'):
-            self.theme_btn.setToolTip(
-                ("当前：深色主题 —— 点击切回浅色（Ctrl+T）" if dark
-                 else "当前：浅色主题 —— 点击切到深色（Ctrl+T）"))
+    def set_theme(self, name):
+        """直接切到指定主题（三套：light / dark / contrast），v4.30。
+
+        原来是 `toggle_theme(dark)` 两态开关，加第三套后统一走这里；
+        `toggle_theme` 保留为薄封装（回归测试与老代码仍可用）。
+        """
+        from gui_config import THEMES, THEME_LABELS, THEME_ORDER
+        if name not in THEMES:
+            name = 'light'
+        self.theme = name
+        # 主题按钮改成单色图标（v4.28 起）。三态循环时图标显示的是
+        # **点一下会切到的那套主题**：浅色→月亮、深色→高对比、高对比→太阳。
+        # 具体图标在 apply_style → _apply_ui_icons 里统一设置。
+        self._update_theme_btn_tip()
         self.apply_style()
         self._apply_mpl_theme()
         # 重绘一次让颜色跟上主题。注意：
@@ -1900,8 +1903,52 @@ class UiMixin:
         except Exception:
             pass
         if hasattr(self, 'status_bar'):
-            self.status_bar.showMessage(
-                f"已切换到{'深色' if dark else '浅色'}主题")
+            label = THEME_LABELS.get(name, name)
+            nxt = THEME_LABELS.get(self._next_theme(), '')
+            self.status_bar.showMessage(f"已切换到「{label}」主题（再点一次切到「{nxt}」）")
+
+    def _next_theme(self):
+        """点一下主题按钮会切到哪套（按 THEME_ORDER 循环）。"""
+        from gui_config import THEME_ORDER
+        cur = getattr(self, 'theme', 'light')
+        try:
+            i = THEME_ORDER.index(cur)
+        except ValueError:
+            return THEME_ORDER[0]
+        return THEME_ORDER[(i + 1) % len(THEME_ORDER)]
+
+    def _theme_btn_icon_name(self):
+        """主题按钮该显示哪个图标——显示**下一套**主题的象征物。
+
+        浅色（下一套是深色）→ 月亮；深色（下一套是高对比）→ 对比度圆；
+        高对比（下一套是浅色）→ 太阳。
+        """
+        return {'light': 'moon', 'dark': 'contrast', 'contrast': 'sun'}.get(
+            getattr(self, 'theme', 'light'), 'moon')
+
+    def _update_theme_btn_tip(self):
+        """刷新主题按钮的 tooltip（三套循环，说明当前与下一套）。"""
+        from gui_config import THEME_LABELS
+        btn = getattr(self, 'theme_btn', None)
+        if btn is None:
+            return
+        cur = THEME_LABELS.get(getattr(self, 'theme', 'light'), '')
+        nxt = THEME_LABELS.get(self._next_theme(), '')
+        btn.setToolTip(f"当前：{cur}主题 —— 点击切到「{nxt}」（Ctrl+T）")
+
+    def cycle_theme(self):
+        """主题按钮 / Ctrl+T：三套主题循环切换。"""
+        self.set_theme(self._next_theme())
+
+    def toggle_theme(self, dark=None):
+        """切到浅色 / 深色（兼容入口）。
+
+        dark=None 表示"互换浅色与深色"——现在界面上的主题按钮走
+        `cycle_theme()` 三态循环，这个方法留给快捷键以外的老调用与回归测试。
+        """
+        if dark is None:
+            dark = getattr(self, 'theme', 'light') != 'dark'
+        self.set_theme('dark' if dark else 'light')
 
     def _apply_mpl_theme(self):
         """把主题配色应用到 matplotlib 全局参数与现有画布（D3）。"""

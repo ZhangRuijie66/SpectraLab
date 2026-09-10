@@ -65,12 +65,13 @@ EARLY_HEAVY = sorted(
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_diag')
 ICONS_DIR = os.path.join(GUI_DIR, 'icons')
-THEMES = ('light', 'dark')
-THEME_RGB = {'light': (0x47, 0x55, 0x69), 'dark': (0xCB, 0xD5, 0xE1)}
-MIN_OPAQUE, MAX_OPAQUE = 2.0, 60.0
+THEMES = ('light', 'dark', 'contrast')
+THEME_RGB = {'light': (0x47, 0x55, 0x69), 'dark': (0xCB, 0xD5, 0xE1),
+             'contrast': (0x00, 0x00, 0x00)}
+MIN_OPAQUE, MAX_OPAQUE = 2.0, 70.0
 # 图标名数量：v4.28 从 18 增加到 22（多了 4 个入口界面模块图标）；
-# v4.29 增加到 24（停靠面板标题栏的 close / float）
-EXPECTED_NAMES = 24
+# v4.29 增加到 24（停靠面板标题栏的 close / float）；v4.30 增加到 25（contrast）
+EXPECTED_NAMES = 25
 EXPECTED = len(ICON_NAMES) * len(THEMES)
 
 FAILS = []
@@ -338,9 +339,12 @@ def write_preview(path, size):
     cols, rows = 6, 3
     cell_w = 96 if size == 48 else 62
     cell_h = 96 if size == 48 else 62
-    bg = {'light': (248, 250, 252), 'dark': (30, 41, 59)}
-    fg = {'light': (100, 116, 139), 'dark': (148, 163, 184)}
-    grid = {'light': (226, 232, 240), 'dark': (51, 65, 85)}
+    bg = {'light': (248, 250, 252), 'dark': (30, 41, 59),
+          'contrast': (255, 255, 255)}
+    fg = {'light': (100, 116, 139), 'dark': (148, 163, 184),
+          'contrast': (0, 0, 0)}
+    grid = {'light': (226, 232, 240), 'dark': (51, 65, 85),
+            'contrast': (0, 0, 0)}
     fnt = _font(11 if size == 48 else 8)
     sheet = Image.new('RGB', (cols * cell_w, 2 * rows * cell_h), bg['light'])
     d = ImageDraw.Draw(sheet)

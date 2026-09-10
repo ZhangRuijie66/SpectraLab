@@ -138,9 +138,21 @@ shot(w, 'layout_float_param')
 w.reset_dock_layout()
 pump(20)
 
-# ---------- 帮助窗口（v4.24 新增：非模态可滚动窗口，深浅两套） ----------
-for theme, dark in (('light', False), ('dark', True)):
-    w.toggle_theme(dark)
+# ---------- 高对比打印友好主题（v4.30 新增：三套主题的第三套） ----------
+w.reset_dock_layout()
+w.set_theme('contrast')
+pump(30)
+shot(w, 'contrast_lifetime')
+w.tab_widget.setCurrentIndex(3)          # 信息页（卡片 + 徽标最吃对比度）
+pump(20)
+shot(w, 'contrast_info_tab')
+w.tab_widget.setCurrentIndex(0)
+w.set_theme('light')
+pump(20)
+
+# ---------- 帮助窗口（v4.24 新增：非模态可滚动窗口；v4.30 起三套主题都截） ----------
+for theme in ('light', 'dark', 'contrast'):
+    w.set_theme(theme)
     pump(10)
     try:
         dlg = w.show_help()

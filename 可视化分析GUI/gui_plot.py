@@ -1373,17 +1373,23 @@ class PlotMixin:
             restore.append(lambda: setter(obj, old))
 
         if white:
+            # 「导出用白底」= 强制切到**打印样式**：白底 + 深色文字 + 浅灰描边。
+            # v4.30 收敛：这几个颜色原来写死（'white' / '#cbd5e1' / '#1e293b'），
+            # 现在直接引用浅色主题的绘图令牌——它就是"白底出版图"那套配色，
+            # 改令牌不会漏掉导出这条路径。
+            from gui_config import THEMES as _T
+            _print = _T['light']
             _set(fig.patch, lambda o: o.get_facecolor(),
-                 lambda o, c: o.set_facecolor(c), 'white')
+                 lambda o, c: o.set_facecolor(c), _print['MPL_FIG'])
             for ax in fig.axes:
                 _set(ax.patch, lambda o: o.get_facecolor(),
-                     lambda o, c: o.set_facecolor(c), 'white')
+                     lambda o, c: o.set_facecolor(c), _print['MPL_AX'])
                 for sp in getattr(ax, 'spines', {}).values():
                     _set(sp, lambda o: o.get_edgecolor(),
-                         lambda o, c: o.set_color(c), '#cbd5e1')
+                         lambda o, c: o.set_color(c), _print['MPL_SPINE'])
                 for gl in (ax.xaxis.get_gridlines() + ax.yaxis.get_gridlines()):
                     _set(gl, lambda o: o.get_color(),
-                         lambda o, c: o.set_color(c), '#cbd5e1')
+                         lambda o, c: o.set_color(c), _print['MPL_GRID'])
                 texts = [getattr(ax, 'title', None),
                          getattr(ax.xaxis, 'label', None),
                          getattr(ax.yaxis, 'label', None)]
@@ -1393,7 +1399,7 @@ class PlotMixin:
                     try:
                         if t is not None and t.get_text():
                             _set(t, lambda o: o.get_color(),
-                                 lambda o, c: o.set_color(c), '#1e293b')
+                                 lambda o, c: o.set_color(c), _print['MPL_FG'])
                     except Exception:
                         pass
                 leg = ax.get_legend()
@@ -1401,10 +1407,10 @@ class PlotMixin:
                     try:
                         fr = leg.get_frame()
                         _set(fr, lambda o: o.get_facecolor(),
-                             lambda o, c: o.set_facecolor(c), 'white')
+                             lambda o, c: o.set_facecolor(c), _print['MPL_AX'])
                         for t in leg.get_texts():
                             _set(t, lambda o: o.get_color(),
-                                 lambda o, c: o.set_color(c), '#1e293b')
+                                 lambda o, c: o.set_color(c), _print['MPL_FG'])
                     except Exception:
                         pass
 

@@ -24,7 +24,7 @@ APP_ORG = "QLSLab"
 APP_NAME = "光谱可视化分析工具"
 
 # 版本号（窗口标题 / 应用版本信息）
-APP_VERSION = "4.29"
+APP_VERSION = "4.30"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-09-10"
 
@@ -69,10 +69,20 @@ LOG_BACKUP_COUNT = 3            # 保留 3 个历史文件
 LOGGER_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOGGER_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
-# ---- 主题（D3）：浅色 / 深色两套色板 ----
+# ---- 主题（D3）：浅色 / 深色 / 高对比打印友好 三套色板 ----
 # 键名与上面的常量一一对应（apply_style 按当前主题取色）。
+# **三套色板的键必须完全一致**——apply_style 是按固定键名解包的，
+# 少一个键就会 KeyError（回归测试里有一条专门守这件事）。
 # 默认主题：light（与 v4.17 之前完全一致）。
 DEFAULT_THEME = "light"
+# 主题切换顺序（「主题」按钮 / Ctrl+T 依次循环）
+THEME_ORDER = ("light", "dark", "contrast")
+# 界面上显示的名字（按钮 tooltip / 帮助说明）
+THEME_LABELS = {
+    "light": "浅色",
+    "dark": "深色",
+    "contrast": "高对比（打印友好）",
+}
 
 THEMES = {
     "light": {
@@ -149,5 +159,46 @@ THEMES = {
         # v4.27：徽标底色（深色下用药丸底色而不是纯色，避免刺眼）
         "SUCCESS_BG": "#064e3b", "WARN_BG": "#7c2d12",
         "DANGER": "#f87171", "DANGER_BG": "#7f1d1d",
+    },
+    # ---- 第三套：高对比 / 打印友好（v4.30）----
+    # 两个目标同时满足：
+    #   ① 屏幕可读性——正文/按钮文字对底色的对比度都 ≥ 7:1（WCAG AAA 级），
+    #      投影、明亮环境、弱视情况下也能看清；
+    #   ② 打印友好——纯白底 + 纯黑描边与文字，不用大面积低对比灰底；
+    #      彩色只承担语义区分（按钮/徽标），黑白激光打印后靠边框和字重仍能分辨。
+    # 具体取值都按 WCAG 相对亮度公式核算过（tests/run_regression.py 里有守卫，
+    # 会实测 TEXT/MUTED/ACCENT/SUCCESS/四个语义色 对 CARD 的对比度 ≥ 7:1）。
+    "contrast": {
+        "BG": "#ffffff", "CARD": "#ffffff", "BORDER": "#000000",
+        "INPUT_BORDER": "#000000", "TEXT": "#000000",
+        "TEXT_SOFT": "#1a1a1a", "MUTED": "#4d4d4d",       # 对白底 8.4:1
+        "ACCENT": "#0033cc", "ACCENT_HOVER": "#002699",   # 8.9:1
+        "ACCENT_PRESSED": "#001a66",
+        "SUCCESS": "#006400", "SUCCESS_HOVER": "#004d00",  # 7.4:1
+        "SUCCESS_PRESSED": "#003300",
+        "VIOLET": "#5b00b3", "VIOLET_HOVER": "#44008a",   # 10.0:1
+        "VIOLET_PRESSED": "#2e005c",
+        "ORANGE": "#8f3800", "ORANGE_HOVER": "#702c00",   # 7.7:1
+        "ORANGE_PRESSED": "#522000",
+        "CYAN": "#00556b", "CYAN_HOVER": "#00404f",       # 8.4:1
+        "CYAN_PRESSED": "#002b36",
+        "NEUTRAL": "#000000", "NEUTRAL_HOVER": "#333333",
+        "NEUTRAL_PRESSED": "#000000",
+        # 绘图区：白底黑轴，网格用中性灰（打印后仍能当浅参考线）
+        "MPL_FIG": "#ffffff", "MPL_AX": "#ffffff", "MPL_FG": "#000000",
+        "MPL_SPINE": "#000000",
+        "MPL_GRID": "#808080",
+        "MPL_GRID_ALPHA": 0.55,
+        "MPL_ZERO": "#000000",
+        "MPL_NOTE_BG": "#ffffff", "MPL_NOTE_FG": "#000000",
+        # 控件状态色：选中用实心主色 + 白字（8.9:1），悬停用中性灰
+        "HOVER_BG": "#e6e6e6", "SELECT_BG": "#0033cc", "SELECT_FG": "#ffffff",
+        "DISABLED_BG": "#e6e6e6", "DISABLED_FG": "#767676",
+        "HANDLE": "#767676", "HANDLE_HOVER": "#000000",
+        "ALT_ROW": "#f2f2f2", "INFO_BG": "#e6ecff",
+        "TOOLTIP_BG": "#000000", "TOOLTIP_FG": "#ffffff",
+        # 徽标底色：浅底 + 深字（不用深色药丸，打印后是一块灰）
+        "SUCCESS_BG": "#d9f2d9", "WARN_BG": "#ffe8d1",
+        "DANGER": "#a80000", "DANGER_BG": "#ffd9d9",
     },
 }

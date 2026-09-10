@@ -53,7 +53,9 @@ LW = 9                    # 线宽（9 / 4 = 2.25px @24，符合 2.2–2.5 规�
 HALF = LW / 2.0
 MARGIN = 2 * SCALE        # 2px@24 的安全边距 -> 96 画布上的 8px
 
-THEMES = (("light", "#475569"), ("dark", "#cbd5e1"))
+THEMES = (("light", "#475569"), ("dark", "#cbd5e1"),
+          # v4.30：高对比 / 打印友好主题用纯黑描边（对纯白底 21:1）
+          ("contrast", "#000000"))
 SIZES = ((48, ""), (24, "@24"))
 
 # icons\ 下已有的 4 个 QSS 小图标：永不覆盖
@@ -67,6 +69,8 @@ ICON_NAMES = (
     "mode_absorb", "mode_emit", "mode_lifetime", "mode_3d",
     # v4.29：停靠面板标题栏（关闭 / 浮动）
     "close", "float",
+    # v4.30：主题按钮切到「高对比（打印友好）」时显示
+    "contrast",
 )
 
 FILL = 255   # 掩膜上的"上色"
@@ -343,6 +347,17 @@ def icon_float(d):
     _rrect(d, 34, 34, 84, 84, 6)      # 前方框（右下）
 
 
+def icon_contrast(d):
+    """高对比主题：半明半暗的圆（经典的「对比度」图形）。
+
+    v4.30：主题按钮从「浅/深」两态变三态循环，需要第三个图标。
+    右半边用 pieslice 填实——掩膜本身没有抗锯齿，靠 96 → 48/24 的
+    LANCZOS 缩小把边缘磨平（和其余图标同一套流程）。
+    """
+    _circle(d, 48, 48, 34)                                     # 外圈描边
+    d.pieslice([14, 14, 82, 82], start=-90, end=90, fill=FILL)  # 右半填实
+
+
 
 ICONS = {
     "home": icon_home,
@@ -370,6 +385,8 @@ ICONS = {
     # v4.29：停靠面板标题栏的两个按钮
     "close": icon_close,
     "float": icon_float,
+    # v4.30：主题按钮第三态（高对比打印友好）
+    "contrast": icon_contrast,
 }
 
 

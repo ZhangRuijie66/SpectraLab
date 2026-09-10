@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFileDialog, QListWidgetItem, QApplication,
 )
 
-from gui_config import DEFAULT_WORKSPACE
+from gui_config import DEFAULT_WORKSPACE, THEMES
 from gui_log import log_exception, log_file_path, setup_logging
 from plot_absorption import load_absorption_spectra, find_absorption_peaks
 from plot_emission import load_spectra as load_emission_spectra
@@ -296,17 +296,13 @@ class DataMixin:
                     self.folder_label.setText(
                         f"文件夹: {self._short_path(last_folder)}")
                     self.folder_label.setToolTip(str(last_folder))
-            # 主题（D3）
+            # 主题（D3 / v4.30 起三套：light / dark / contrast）
             theme = s.value("theme", "light", str)
-            if theme in ("light", "dark"):
+            if theme in THEMES:
                 self.theme = theme
-                if hasattr(self, 'theme_btn'):
-                    # v4.28：图标由 apply_style → _apply_ui_icons 按主题设置
-                    # （浅色界面显示月亮、深色界面显示太阳），这里只管 tooltip
-                    self.theme_btn.setToolTip(
-                        ("当前：深色主题 —— 点击切回浅色（Ctrl+T）"
-                         if theme == "dark" else
-                         "当前：浅色主题 —— 点击切到深色（Ctrl+T）"))
+                if hasattr(self, '_update_theme_btn_tip'):
+                    # 图标由 apply_style → _apply_ui_icons 按主题设置，这里只管 tooltip
+                    self._update_theme_btn_tip()
                 if hasattr(self, 'apply_style'):
                     self.apply_style()
                 if hasattr(self, '_apply_mpl_theme'):
