@@ -21,6 +21,22 @@ def _hex_to_rgba(hexc, alpha):
     return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
 
 
+def saved_theme(default=DEFAULT_THEME):
+    """读取上次会话保存的主题（v4.23）。
+
+    启动时入口界面在「上次会话」之前出现，此前只能硬用默认浅色主题——
+    深色用户每次启动都会看到一块全白入口界面，连标题栏「？」里的
+    帮助也都是白的。这里直接读 QSettings 里的 theme 保持一致。
+    """
+    try:
+        from PyQt5.QtCore import QSettings
+        from gui_config import APP_ORG, APP_NAME
+        t = QSettings(APP_ORG, APP_NAME).value("theme", default, str)
+        return t if t in THEMES else default
+    except Exception:
+        return default
+
+
 class ModuleCard(QFrame):
     """入口界面的模块卡片：白色圆角卡片 + 左侧彩色竖条，悬停时整卡亮起。
 
@@ -112,8 +128,9 @@ class ModuleLauncher(QDialog):
     def __init__(self, parent=None, theme=None):
         super().__init__(parent)
         self.selected_mode = None
-        # 跟随主窗口当前主题：深色会话里点「返回模块选择」不该弹出一块全白界面
-        self.theme = theme if theme in THEMES else DEFAULT_THEME
+        # 跟随主窗口当前主题：深色会话里点「返回模块选择」不该弹出一块全白界面；
+        # 启动时 theme 为 None，退回**上次会话保存的主题**（v4.23）
+        self.theme = theme if theme in THEMES else saved_theme()
         P = THEMES[self.theme]
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} — 选择模块")
         try:

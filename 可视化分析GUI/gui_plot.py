@@ -923,19 +923,29 @@ class PlotMixin:
         self._long_task = True   # 并行拟合同样是长任务（D3）
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.status_bar.showMessage(
-            f"正在并行拟合 {len(self.data_cache)} 个文件（多进程，请稍候）...")
         # D4：参数在主线程读好
         params = self._collect_plot_params()
+        msg = self._batch_fit_status_text(params)
+        self.status_bar.showMessage(msg)
         self.plot_worker = PlotWorker(self._do_overlay_lifetime, params)
         params['worker'] = self.plot_worker
         self.plot_worker.finished.connect(self._on_overlay_finished)
         self.plot_worker.error.connect(self._on_plot_error)
         self.plot_worker.progress.connect(self._on_worker_progress)
         self._set_canvas_busy(True)
-        self._start_progress_dialog(
-            f"正在并行拟合 {len(self.data_cache)} 个文件…", indeterminate=True)
+        self._start_progress_dialog(msg.rstrip('.'), indeterminate=True)
         self.plot_worker.start()
+
+    def _batch_fit_status_text(self, params):
+        """批量拟合前的提示文案：说明有多少样品可以直接复用已有结果（v4.23）。"""
+        total = len(self.data_cache)
+        n_cached = self._lifetime_cached_count(params)
+        if total and n_cached >= total:
+            return f"已复用全部 {total} 个样品的已有拟合结果，正在出图..."
+        if n_cached:
+            return (f"正在拟合 {total - n_cached} 个样品"
+                    f"（复用 {n_cached} 个已有拟合结果）...")
+        return f"正在并行拟合 {total} 个文件（多进程，请稍候）..."
 
     # ---------- v4.22：跨样品汇总图 / 多页 PDF 报告 ----------
 
@@ -966,28 +976,23 @@ class PlotMixin:
         self._fit_cancelled = False
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.status_bar.showMessage(
-            f"正在并行拟合 {len(self.data_cache)} 个文件（多进程，请稍候）...")
         params = self._collect_plot_params()
         params['kind'] = kind
         params['save_dir'] = save_dir
+        msg = self._batch_fit_status_text(params)
+        self.status_bar.showMessage(msg)
         self.plot_worker = PlotWorker(self._do_batch_export, params)
         params['worker'] = self.plot_worker
         self.plot_worker.finished.connect(self._on_batch_export_finished)
         self.plot_worker.error.connect(self._on_plot_error)
         self.plot_worker.progress.connect(self._on_worker_progress)
         self._set_canvas_busy(True)
-        self._start_progress_dialog(
-            f"正在并行拟合 {len(self.data_cache)} 个文件…", indeterminate=True)
+        self._start_progress_dialog(msg.rstrip('.'), indeterminate=True)
         self.plot_worker.start()
 
-    def _do_batch_export(self, params=None):
-        """后台线程：fit_many 并行拟合 → 汇总图 / PDF 报告，返回提示文字。"""
-        import plot_lifetime as _pl
-        if params is None:
-            params = {}
-        worker = params.get('worker')
-        fit_kwargs = dict(
+    def _lifetime_fit_kwargs(self, params):
+        """把主线程参数快照转成 plot_lifetime 的拟合参数（fit_many / MEMFitter.fit）。"""
+        return dict(
             method=params.get('lifetime_method', 'MEM'),
             n_rates=int(params.get('lifetime_nrates', 201)),
             k_min=float(params.get('lifetime_kmin', 0.01)),
@@ -996,18 +1001,91 @@ class PlotMixin:
             auto_lambda=bool(params.get('lifetime_auto_lambda', True)),
             fixed_taus=params.get('lifetime_fixed_taus') or None,
         )
-        datasets = []
-        for name, info in self.data_cache.items():
-            d = info['data']
-            datasets.append({'name': name, 'time': d['time'],
-                             'decay': d['decay'], 'irf': d['irf'],
-                             'meta': d.get('meta')})
+
+    def _lifetime_cache_key(self, file_name, params):
+        """单文件寿命拟合的缓存键：文件名 + 全部影响结果的参数。
+
+        v4.23：`_do_lifetime_plot`（单文件拟合）与批量操作（叠加分布 / 跨样品
+        汇总图 / PDF 报告）**必须用同一个键**，否则批量操作认不出单文件已经
+        拟合过的结果，会把所有样品重新拟合一遍（用户反馈的问题）。
+        """
+        k_min = float(params.get('lifetime_kmin', 0.01))
+        k_max = float(params.get('lifetime_kmax', 100.0))
+        if k_max <= k_min:
+            k_min, k_max = 0.01, 100.0
+        return (file_name,
+                params.get('lifetime_method', 'MEM'),
+                int(params.get('lifetime_nrates', 201)),
+                float(params.get('lifetime_lambda', 1e-3)),
+                bool(params.get('lifetime_auto_lambda', True)),
+                k_min, k_max,
+                tuple(params.get('lifetime_fixed_taus') or []))
+
+    def _lifetime_cached_count(self, params):
+        """当前参数下有多少个样品的寿命拟合结果可直接复用（主线程调用，用于提示文案）。"""
+        cache = getattr(self, '_lifetime_fit_cache', None) or {}
         try:
-            results = _pl.fit_many(datasets, fit_kwargs=fit_kwargs)
-        except (OSError, RuntimeError) as e:
-            log_exception("并行拟合不可用，退回串行", e)
-            results = _pl.fit_many(datasets, max_workers=1,
-                                   fit_kwargs=fit_kwargs)
+            return sum(1 for name in self.data_cache
+                       if self._lifetime_cache_key(name, params) in cache)
+        except Exception:
+            return 0
+
+    def _fit_all_with_cache(self, params, worker=None):
+        """对全部已加载文件做寿命拟合，**已有的拟合结果直接复用**，只拟合缺的。
+
+        v4.23：此前叠加分布 / 跨样品汇总图 / PDF 报告都无条件调用 fit_many，
+        即使用户刚在单文件里拟合过、或刚导出过一次汇总图，也要把全部样品
+        重新拟合一遍（每样品 1–2 分钟）。现在改为按 `_lifetime_fit_cache`
+        查表复用，并把新拟合的结果回写缓存，于是「汇总图 → PDF 报告」这类
+        连续操作只需拟合一次。
+
+        Returns:
+            (results, n_reused, n_fitted)：results 与 self.data_cache 同序，
+            拟合失败的样品为 None。
+        """
+        import plot_lifetime as _pl
+        names = list(self.data_cache.keys())
+        cache = getattr(self, '_lifetime_fit_cache', None)
+        if cache is None:
+            cache = {}
+            self._lifetime_fit_cache = cache
+
+        results = [None] * len(names)
+        todo_idx, todo = [], []
+        n_reused = 0
+        for i, name in enumerate(names):
+            key = self._lifetime_cache_key(name, params)
+            hit = cache.get(key)
+            if hit is not None:
+                results[i] = hit
+                n_reused += 1
+                continue
+            d = self.data_cache[name]['data']
+            todo_idx.append(i)
+            todo.append({'name': name, 'time': d['time'], 'decay': d['decay'],
+                         'irf': d['irf'], 'meta': d.get('meta')})
+
+        if todo:
+            fit_kwargs = self._lifetime_fit_kwargs(params)
+            try:
+                fitted = _pl.fit_many(todo, fit_kwargs=fit_kwargs)
+            except (OSError, RuntimeError) as e:
+                log_exception("并行拟合不可用，退回串行", e)
+                fitted = _pl.fit_many(todo, max_workers=1, fit_kwargs=fit_kwargs)
+            for i, r in zip(todo_idx, fitted):
+                results[i] = r
+                if r:
+                    # 回写缓存：之后单文件查看 / 再次导出可直接命中
+                    cache[self._lifetime_cache_key(names[i], params)] = r
+        return results, n_reused, len(todo)
+
+    def _do_batch_export(self, params=None):
+        """后台线程：fit_many 并行拟合（复用缓存）→ 汇总图 / PDF 报告，返回提示文字。"""
+        import plot_lifetime as _pl
+        if params is None:
+            params = {}
+        worker = params.get('worker')
+        results, n_reused, n_fitted = self._fit_all_with_cache(params, worker)
         if worker is not None and worker.is_cancelled():
             self._fit_cancelled = True
             return "已取消"
@@ -1020,7 +1098,10 @@ class PlotMixin:
                                          verbose=False)
         else:
             path = _pl.plot_summary(results, save_dir=save_dir, verbose=False)
-        return f"已保存（{len(results)} 个样品）：\n{path}"
+        detail = (f"复用 {n_reused} 个已有拟合结果"
+                  if n_fitted == 0 else
+                  f"复用 {n_reused} + 新拟合 {n_fitted}")
+        return f"已保存（{len(results)} 个样品，{detail}）：\n{path}"
 
     def _on_batch_export_finished(self, msg):
         self._plotting = False
@@ -1035,47 +1116,20 @@ class PlotMixin:
         self.status_bar.showMessage(str(msg).splitlines()[-1])
 
     def _do_overlay_lifetime(self, params=None):
-        """后台线程：fit_many 并行拟合 + 画叠加分布图。"""
+        """后台线程：fit_many 并行拟合（复用缓存）+ 画叠加分布图。"""
         import plot_lifetime as _pl
         if params is None:
             params = self._collect_plot_params()
         worker = params.get('worker')
 
-        fit_kwargs = dict(
-            method=params.get('lifetime_method', 'MEM'),
-            n_rates=int(params.get('lifetime_nrates', 201)),
-            k_min=float(params.get('lifetime_kmin', 0.01)),
-            k_max=float(params.get('lifetime_kmax', 100.0)),
-            lambda_coeff=float(params.get('lifetime_lambda', 1e-3)),
-            auto_lambda=bool(params.get('lifetime_auto_lambda', True)),
-            fixed_taus=params.get('lifetime_fixed_taus') or None,
-        )
-
-        datasets = []
-        for name, info in self.data_cache.items():
-            d = info['data']
-            datasets.append({'name': name, 'time': d['time'],
-                             'decay': d['decay'], 'irf': d['irf'],
-                             'meta': d.get('meta')})
-
-        # D8：打包成 exe 后多进程可能不可用（freeze_support/权限/子进程重入），
-        # 失败时退回串行拟合，不让整批结果作废
-        try:
-            results = _pl.fit_many(datasets, fit_kwargs=fit_kwargs)
-        except (OSError, RuntimeError) as e:
-            log_exception("并行拟合不可用，退回串行", e)
-            try:
-                self.status_bar.showMessage(
-                    "并行拟合不可用，已退回串行拟合（会慢一些）...")
-            except Exception:
-                pass
-            results = _pl.fit_many(datasets, max_workers=1,
-                                   fit_kwargs=fit_kwargs)
+        results, n_reused, n_fitted = self._fit_all_with_cache(params, worker)
 
         # 用户中途取消：不覆盖「寿命分布」页上已有的图
         if worker is not None and worker.is_cancelled():
             self._fit_cancelled = True
             return self.lifetime_canvas.fig
+
+        self._overlay_reuse = (n_reused, n_fitted)
 
         # 画叠加图（每条曲线按自身最大值归一，便于比形状）
         fig = self.lifetime_canvas.fig
@@ -1128,10 +1182,15 @@ class PlotMixin:
             pass
         results = getattr(self, '_overlay_results', []) or []
         ok = sum(1 for r in results if r)
+        n_reused, n_fitted = getattr(self, '_overlay_reuse', (0, 0))
+        detail = (f"（复用 {n_reused} 个已有结果）" if n_fitted == 0 and n_reused
+                  else f"（复用 {n_reused} + 新拟合 {n_fitted}）"
+                  if n_reused else "")
         self.status_bar.showMessage(
-            f"并行拟合完成：{ok}/{len(results)} 个样品，叠加分布见「寿命分布」页")
+            f"并行拟合完成：{ok}/{len(results)} 个样品{detail}，"
+            "叠加分布见「寿命分布」页")
         self.info_label.setText(
-            f"并行拟合完成：{ok}/{len(results)} 个样品\n\n"
+            f"并行拟合完成：{ok}/{len(results)} 个样品{detail}\n\n"
             + "\n".join(f"  {r.get('name')}: χ²R = {r['info']['chi_sqr']:.4g}"
                         for r in results if r))
 
@@ -1343,9 +1402,9 @@ class PlotMixin:
         custom_title = params.get('custom_title', '')
 
         # ---- 拟合结果缓存：同文件 + 同方法 + 同速率点数 + λ 设置 → 直接加载上次结果 ----
-        # （缓存随数据重载/模式切换清空，见 gui_data）
-        cache_key = (file_name, method, n_rates, lambda_coeff, auto_lambda,
-                     k_min, k_max, tuple(fixed_taus))
+        # （缓存随数据重载/模式切换清空，见 gui_data；键由 _lifetime_cache_key
+        #   统一生成，保证与批量操作（叠加分布/汇总图/PDF 报告）共用同一份缓存）
+        cache_key = self._lifetime_cache_key(file_name, params)
         cache = getattr(self, "_lifetime_fit_cache", {})
         cached = cache.get(cache_key)
         if cached is not None:

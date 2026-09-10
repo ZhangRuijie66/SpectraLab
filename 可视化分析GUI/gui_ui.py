@@ -1300,6 +1300,46 @@ class UiMixin:
         dn_img = f"image: url({dn_u});" if dn_u else ""
         ck_img = f"image: url({ck_u});" if ck_u else ""
         ch_img = f"image: url({ch_u});" if ch_u else ""
+        # 弹出菜单（v4.23）：QMenu 是独立的弹出窗口，只跟随 QPalette。
+        # 此前 qss 里没有 QMenu 规则，深色主题下「❓ 帮助」下拉面板（以及
+        # matplotlib 工具栏的菜单）仍按浅色 Fusion 默认色板绘制成一块近白面板
+        # （#f9f9f9）——用户反馈的「深色模式下帮助面板背景还是浅色」。
+        # 这段既进全局 qss，也由 apply_style 逐个下发到每个 QMenu（见文末）。
+        menu_qss = f"""
+            QMenu {{
+                background-color: {CARD};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                padding: 6px 5px;
+            }}
+            QMenu::item {{
+                background: transparent;
+                color: {TEXT};
+                padding: 7px 26px 7px 14px;
+                border-radius: 6px;
+                font-size: 15px;
+            }}
+            QMenu::item:selected {{
+                background-color: {SELECT_BG};
+                color: {SELECT_FG};
+            }}
+            QMenu::item:disabled {{
+                color: {DISABLED_FG};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {BORDER};
+                margin: 6px 10px;
+            }}
+            QMenu::icon {{
+                left: 8px;
+            }}
+            QMenu::indicator {{
+                width: 14px;
+                height: 14px;
+                left: 10px;
+            }}
+        """
         qss = f"""
             /* ===== 全局底色 ===== */
             QMainWindow, QDialog {{
@@ -1313,6 +1353,13 @@ class UiMixin:
                 border-radius: 6px;
                 font-size: 14px;
             }}
+
+            /* ===== 弹出菜单（v4.23）=====
+               QMenu 是独立的弹出窗口，只跟随 QPalette；此前 qss 里没有 QMenu 规则，
+               于是深色主题下「❓ 帮助」下拉面板（以及 matplotlib 工具栏的菜单）
+               仍按浅色 Fusion 默认色板绘制成一块近白面板（#f9f9f9）。
+               规则本体抽成 menu_qss（见上方），这里引进来让全局样式表也覆盖到。 */
+            {menu_qss}
 
             /* ===== 文字角色（随主题变色，D3）===== */
             QLabel[role="sectionLabel"] {{
@@ -1672,6 +1719,23 @@ class UiMixin:
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(qss)
+        # 弹出菜单（QMenu）是独立弹出窗口：它的样式规则只在**第一次显示**时解析，
+        # 切换主题后再弹出时不会自动按新色板重算（实测仍是 #ffffff 浅色面板）。
+        # 所以除了把 QMenu 段写进全局 qss，还要逐个 setStyleSheet 强制它重新解析
+        # unpolish/polish（v4.23）。
+        try:
+            from PyQt5.QtWidgets import QMenu
+            menus = list(self.findChildren(QMenu))
+            btn_menu = getattr(getattr(self, 'help_btn', None), 'menu', None)
+            if callable(btn_menu) and btn_menu() is not None:
+                menus.append(btn_menu())
+            for m in menus:
+                m.setStyleSheet(menu_qss)
+                m.style().unpolish(m)
+                m.style().polish(m)
+                m.update()
+        except Exception as e:
+            logging.warning("重新解析 QMenu 样式失败: %s", e)
 
     @staticmethod
     def _style_combo(combo):

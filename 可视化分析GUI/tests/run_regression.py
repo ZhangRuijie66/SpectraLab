@@ -811,8 +811,94 @@ def t_summary_and_pdf():
     shutil.rmtree(out, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- v4.23 新增
+@check("GUI：弹出菜单(QMenu)跟随主题——深色下不再是浅色面板（v4.23）")
+def t_gui_menu_theme():
+    from PyQt5.QtWidgets import QMenu
+    app, w = _make_gui()
+    w.toggle_theme(True)
+    dark = w.theme_palette()
+    qss = app.styleSheet()
+    assert 'QMenu {' in qss and 'QMenu::item:selected' in qss, \
+        "全局样式表缺少 QMenu 规则（深色下帮助菜单会退回浅色 Fusion 色板）"
+    assert dark['CARD'] in qss, "QMenu 规则应使用当前主题的卡片色"
+    menus = list(w.findChildren(QMenu))
+    if getattr(w, 'help_btn', None) is not None and w.help_btn.menu() is not None:
+        menus.append(w.help_btn.menu())
+    assert menus, "应至少存在一个 QMenu（「❓ 帮助」菜单）"
+    dark_bg = f"background-color: {dark['CARD']}"
+    for m in menus:
+        assert dark_bg in m.styleSheet(), \
+            "每个 QMenu 都要单独下发当前主题样式（弹出窗口不会自动重解析）"
+    # 切回浅色：菜单样式必须跟着换回去
+    w.toggle_theme(False)
+    light = w.theme_palette()
+    assert light['CARD'] != dark['CARD']
+    light_bg = f"background-color: {light['CARD']}"
+    for m in menus:
+        assert light_bg in m.styleSheet(), "切回浅色后 QMenu 应换成浅色卡片色"
+        assert dark_bg not in m.styleSheet(), "浅色下不应残留深色卡片底色"
+
+
+@check("寿命：跨样品汇总图/PDF 报告复用已有拟合结果（v4.23）")
+def t_lifetime_batch_reuse_cache():
+    import shutil
+    import tempfile
+    import plot_lifetime as pl
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)
+    t, decay, irf = _synth_double_exponential()
+    w.data_cache = {}
+    for i in range(3):
+        w.data_cache[f's{i}.csv'] = {'data': {
+            'time': t, 'decay': np.maximum(decay * (1.0 - 0.15 * i), 0.0),
+            'irf': irf, 'meta': None}}
+    w.lifetime_auto_lambda_check.setChecked(False)   # 快跑，不扫 λ
+    w.lifetime_nrates_spin.setValue(51)              # 控件下限即 51，小值最快
+    params = w._collect_plot_params()
+
+    calls = []
+    real_fit_many = pl.fit_many
+
+    def spy(datasets, **kw):
+        calls.append([d['name'] for d in datasets])
+        return real_fit_many(datasets, **kw)
+
+    pl.fit_many = spy
+    out = tempfile.mkdtemp(prefix='qls_cache_')
+    try:
+        # 第一次：汇总图要拟合全部 3 个
+        w._do_batch_export(dict(params, kind='summary', save_dir=out))
+        assert len(calls) == 1 and len(calls[0]) == 3, \
+            f"首次汇总图应拟合 3 个，实际 {calls}"
+        assert w._lifetime_cached_count(params) == 3, "结果应回写缓存"
+        # 第二次：PDF 报告应 0 个新拟合（用户反馈的核心场景）
+        calls.clear()
+        msg = w._do_batch_export(dict(params, kind='pdf', save_dir=out))
+        assert calls == [], f"PDF 报告不应重新拟合，实际 {calls}"
+        assert '复用' in msg and '新拟合' not in msg, "提示应说明全部复用"
+        # 叠加分布同样复用
+        calls.clear()
+        w._do_overlay_lifetime(dict(params))
+        assert calls == [], f"叠加分布不应重新拟合，实际 {calls}"
+        # 改参数后缓存失效，必须重新拟合
+        calls.clear()
+        w.lifetime_nrates_spin.setValue(111)      # 51 → 111，缓存键变了
+        params2 = w._collect_plot_params()
+        assert params2['lifetime_nrates'] != params['lifetime_nrates'], \
+            "用例前提：速率点数必须真的变了"
+        w._do_batch_export(dict(params2, kind='summary', save_dir=out))
+        assert len(calls) == 1 and len(calls[0]) == 3, \
+            f"参数变化后应重新拟合全部，实际 {calls}"
+        assert os.path.isdir(out) and os.listdir(out), "批量导出应产出文件"
+    finally:
+        pl.fit_many = real_fit_many
+        shutil.rmtree(out, ignore_errors=True)
+
+
 def main():
     strict = '--strict' in sys.argv
+
     print("=" * 72)
     print("  QLS Lab 光谱可视化分析工具 —— 回归测试集（E3）")
     print(f"  GUI 目录: {GUI_DIR}")
