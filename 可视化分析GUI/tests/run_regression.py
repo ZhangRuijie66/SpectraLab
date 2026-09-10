@@ -896,6 +896,96 @@ def t_lifetime_batch_reuse_cache():
         shutil.rmtree(out, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- v4.24 新增
+@check("GUI：目录树栏按钮等宽、单行路径带 tooltip（v4.24）")
+def t_gui_tree_panel_layout():
+    from PyQt5.QtCore import Qt
+    app, w = _make_gui()
+    # 顶部三个图标按钮必须等宽（旧版 160/160/自适应，左边缘参差）
+    btns = [getattr(w, 'theme_btn', None), getattr(w, 'help_btn', None)]
+    btns = [b for b in btns if b is not None]
+    assert len(btns) == 2, "主题/帮助按钮应存在"
+    sizes = {(b.width(), b.height()) for b in btns}
+    assert len(sizes) == 1, f"顶部图标按钮尺寸不一致: {sizes}"
+    for b in btns:
+        assert b.toolTip(), f"{b.text()} 按钮缺少 tooltip（图标按钮必须靠 tooltip 说明）"
+    # 路径标签必须单行 + 完整路径进 tooltip（旧版长路径自动换行占 3 行）
+    for attr in ('workspace_label', 'folder_label'):
+        lb = getattr(w, attr)
+        assert not lb.wordWrap(), f"{attr} 应关闭自动换行（保持单行）"
+    w.workspace_label.setText("工作区: …\\光谱")
+    assert w.workspace_label.text().count('\n') == 0
+    # 光谱类型下拉框：选项文本不得含英文括号全称（200px 栏里必被截断）
+    items = [w.spectrum_type_combo.itemText(i)
+             for i in range(w.spectrum_type_combo.count())]
+    assert items == ["吸收光谱", "发射光谱", "荧光寿命", "3D 扫描"], \
+        f"光谱类型下拉项应为中文短名，实际 {items}"
+    for i in range(w.spectrum_type_combo.count()):
+        assert w.spectrum_type_combo.itemData(i, Qt.ToolTipRole), \
+            "下拉项应带全称 tooltip"
+
+
+@check("GUI：深色画布与窗口分层、选中态对比度达标（v4.24）")
+def t_gui_dark_canvas_layering():
+    app, w = _make_gui()
+    from gui_config import THEMES
+    D = THEMES['dark']
+    # 画布 figure 底色必须与窗口底色不同，否则深色下画布和窗口糊成一片
+    assert D['MPL_FIG'].lower() != D['BG'].lower(), \
+        "深色下 MPL_FIG 与 BG 相同 → 画布没有边界（v4.24 回归）"
+    # 注：深色下两者亮度都很低，对比度上限本来就只有约 1.17:1（黑是硬下限），
+    # 所以这里只要求"有可测量的明暗差"，真正的边界由 pane 的描边 + 内边距给出
+    assert _contrast(D['MPL_FIG'], D['BG']) >= 1.03, \
+        "深色下画布与窗口的明暗差过小，看不出边界"
+    # 画布坐标区与 figure 边距之间也要分层
+    assert D['MPL_AX'].lower() != D['MPL_FIG'].lower()
+    # 结构性分层：标签页 pane 必须有描边与内边距
+    qss = app.styleSheet()
+    assert 'QTabWidget::pane' in qss, "样式表缺少 QTabWidget::pane 规则"
+    assert 'padding: 4px' in qss, \
+        "画布卡片应留 4px 内边距（深色下靠这圈边框区分画布与卡片）"
+    # 选中态：深色下选中项背景对卡片底色的对比度（旧值 #1e3a5f 仅约 1.3:1）
+    sel = _contrast(D['SELECT_BG'], D['CARD'])
+    assert sel >= 1.8, f"深色选中态对比度 {sel:.2f} < 1.8（选中项几乎看不见）"
+    # 浅色主题不受影响
+    L = THEMES['light']
+    assert _contrast(L['SELECT_BG'], L['CARD']) >= 1.2
+
+
+@check("GUI：帮助改用主题化可滚动窗口、深色下不是白板（v4.24）")
+def t_gui_help_dialog():
+    from PyQt5.QtWidgets import QListWidget, QTextBrowser
+    from gui_help import HelpDialog
+    app, w = _make_gui()
+    w.toggle_theme(True)
+    dark = w.theme_palette()
+    dlg = w.show_help()
+    assert isinstance(dlg, HelpDialog), \
+        "F1 帮助应改用 gui_help.HelpDialog（不是 QMessageBox.about）"
+    # 结构：左侧目录 + 右侧可滚动正文
+    assert dlg.findChildren(QTextBrowser), "帮助窗口应有可滚动的正文区"
+    toc = dlg.findChildren(QListWidget)
+    assert toc and toc[0].count() == 3, "帮助窗口应有三节目录（当前模式/快捷键/其它）"
+    assert f"background-color: {dark['CARD']}" in dlg.styleSheet(), \
+        "深色下帮助窗口正文底应为深色卡片色"
+    assert 'QTextBrowser' in dlg.styleSheet(), "正文区应有显式样式（否则跟随系统调色板）"
+    # 切回浅色再打开同一窗口：样式表必须跟着换（不能残留深色/白块）
+    w.toggle_theme(False)
+    light = w.theme_palette()
+    dlg2 = w.show_help()
+    assert f"background-color: {light['CARD']}" in dlg2.styleSheet(), \
+        "切回浅色后帮助窗口应换成浅色卡片色"
+    dlg2.close()
+    # 入口界面的「？」帮助共用同一个窗口类
+    from gui_launcher import ModuleLauncher
+    lau = ModuleLauncher(theme='dark')
+    ld = lau.show_help()
+    assert isinstance(ld, HelpDialog), "入口界面帮助也应改用 HelpDialog"
+    assert f"background-color: {dark['CARD']}" in ld.styleSheet()
+    ld.close()
+    lau.close()
+
+
 def main():
     strict = '--strict' in sys.argv
 

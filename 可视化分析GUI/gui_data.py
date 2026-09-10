@@ -282,8 +282,12 @@ class DataMixin:
             if theme in ("light", "dark"):
                 self.theme = theme
                 if hasattr(self, 'theme_btn'):
-                    self.theme_btn.setText("☀️ 浅色主题" if theme == "dark"
-                                           else "🌙 深色主题")
+                    # v4.24：顶部按钮改为纯图标，状态与说明放 tooltip
+                    self.theme_btn.setText("☀️" if theme == "dark" else "🌙")
+                    self.theme_btn.setToolTip(
+                        ("当前：深色主题 —— 点击切回浅色（Ctrl+T）"
+                         if theme == "dark" else
+                         "当前：浅色主题 —— 点击切到深色（Ctrl+T）"))
                 if hasattr(self, 'apply_style'):
                     self.apply_style()
                 if hasattr(self, '_apply_mpl_theme'):
@@ -486,7 +490,11 @@ class DataMixin:
             self.file_system_model.setRootPath(str(path))
             self.tree.setRootIndex(self.file_system_model.index(str(path)))
             if hasattr(self, 'workspace_label'):
-                self.workspace_label.setText(f"工作区: {path}")
+                # v4.24：单行短路径 + 完整路径 tooltip（原来是长路径自动换行占 3 行）
+                self.workspace_label.setText(
+                    f"工作区: {self._short_path(path)}")
+                self.workspace_label.setToolTip(
+                    f"工作区（目录树根目录）:\n{path}")
             # 记住工作区，下次打开仍有效
             self.settings.setValue("workspace", str(path))
             self._save_settings()
@@ -636,14 +644,17 @@ class DataMixin:
             self.plot_type_label.setVisible(is_spectrum)
         if hasattr(self, 'plot_type_combo'):
             self.plot_type_combo.setVisible(is_spectrum)
-        # 文件列表提示随模式变化
+        # 文件列表提示随模式变化（v4.24：标题保持短，操作说明进 tooltip）
         if hasattr(self, 'file_list_label'):
             if is_lifetime:
-                self.file_list_label.setText("已加载的文件（点选一个以拟合查看）:")
+                self.file_list_label.setText("已加载文件")
+                self.file_list_label.setToolTip("点选一个文件以拟合查看（寿命模式无合并图）")
             elif is_scan3d:
-                self.file_list_label.setText("已加载的文件（点选一个以绘制 EEM）:")
+                self.file_list_label.setText("已加载文件")
+                self.file_list_label.setToolTip("点选一个文件以绘制该 EEM 图（一次只画一个）")
             else:
-                self.file_list_label.setText("已加载的文件（勾选以绘制合并图）:")
+                self.file_list_label.setText("已加载文件")
+                self.file_list_label.setToolTip("勾选多个文件以绘制合并图；双击/单击查看单个")
         # 「寿命分布」「拟合诊断」选项卡只在荧光寿命模式下显示
         if hasattr(self, '_set_dist_tab_visible'):
             self._set_dist_tab_visible(is_lifetime)
@@ -750,9 +761,13 @@ class DataMixin:
                     all_files, progress_cb)
 
             self.folder_label.setText(
-                f"文件夹: {self._short_path(folder_path)}\n"
-                f"已加载 {loaded_count} 个文件")
-            self.folder_label.setToolTip(str(folder_path))
+                f"文件夹: {self._short_path(folder_path)}")
+            self.folder_label.setToolTip(
+                f"已加载文件夹:\n{folder_path}\n共 {loaded_count} 个文件")
+            # v4.24：数据栏只有 210px 宽，文件名一律被省略号截断 —— 给每一项挂
+            # 完整文件名 tooltip，鼠标悬停即可看全（item.text() 本身没被截断，
+            # 截断只发生在绘制阶段）
+            self._sync_file_item_tooltips()
             if hasattr(self, 'file_count_label'):
                 self.file_count_label.setText(f"已加载 {loaded_count} 个文件")
             self.current_folder = folder
@@ -1295,6 +1310,21 @@ class DataMixin:
             if item.checkState() == Qt.Checked:
                 checked.append(item.text())
         return checked
+
+    def _sync_file_item_tooltips(self):
+        """给文件列表每一项挂完整文件名 tooltip（v4.24）。
+
+        数据栏默认只有约 210px 宽，`20260826RBL8i.csv` 这类名字在画面上一定被
+        省略号截断；`QListWidgetItem.text()` 保存的是完整字符串（截断只发生在
+        绘制阶段），所以直接把它作为 tooltip 即可，不必额外存映射。
+        """
+        try:
+            for i in range(self.file_list.count()):
+                item = self.file_list.item(i)
+                if item is not None:
+                    item.setToolTip(item.text())
+        except Exception as e:
+            log_exception("设置文件列表 tooltip 失败", e)
 
     @staticmethod
     def _extract_xy(data):

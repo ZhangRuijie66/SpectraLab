@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 
 from gui_config import (
     DEFAULT_WORKSPACE, APP_NAME, APP_VERSION, APP_ICON_FILENAME, UI_FONT_FAMILY,
+    RELEASE_DATE,
     COLOR_BG as BG, COLOR_CARD as CARD, COLOR_BORDER as BORDER,
     COLOR_INPUT_BORDER as INPUT_BORDER, COLOR_TEXT as TEXT,
     COLOR_TEXT_SOFT as TEXT_SOFT, COLOR_MUTED as MUTED,
@@ -231,29 +232,46 @@ class UiMixin:
             "<li><b>F5 行为</b>：实时预览（重新绘制，不拟合）</li></ul>")
 
     def show_help(self):
-        """F1 帮助（主窗口内）：正文按当前光谱模式生成（E3）。"""
+        """F1 帮助（主窗口内）：非模态、可滚动的主题化帮助窗口（v4.24）。
+
+        原来用 `QMessageBox.about()` 弹一次性富文本：实测 722×600 逻辑像素、
+        占可用高度 70%，不可滚动、不可复制、宽度不可调，内容再长就溢出。
+        现改为 `gui_help.HelpDialog`（左侧小节目录 + 可滚动正文 + 搜索 +
+        复制全部 + 打开日志文件夹），深浅主题都走 theme_palette()。
+        """
         from gui_log import log_dir
-        QMessageBox.about(
-            self, f"帮助 — {APP_NAME}",
-            f"<h3>{APP_NAME} v{APP_VERSION}</h3>"
-            + self._help_mode_section()
-            + "<p><b>快捷键：</b></p><ul>"
-            "<li>F5 — 实时预览（寿命模式为开始拟合）</li>"
-            "<li>Ctrl+R — 重新加载数据</li>"
-            "<li>Ctrl+O — 选择文件夹</li>"
-            "<li>Ctrl+E / Ctrl+S — 导出当前图</li>"
-            "<li>Ctrl+Shift+E — 导出全部图片</li>"
-            "<li>Ctrl+D — 复制积分结果</li>"
-            "<li>Ctrl+T — 切换浅色 / 深色主题（也可点左上角「🌙 深色主题」按钮）</li>"
-            "<li>F1 — 本帮助</li></ul>"
-            "<p><b>其它：</b></p><ul>"
-            "<li>「🏠 返回模块选择」回到入口界面重新选模式；直接关窗则退出程序</li>"
+        from gui_help import show_help_dialog
+        shortcuts = (
+            "<ul>"
+            "<li><b>F5</b> — 实时预览（寿命模式为开始拟合）</li>"
+            "<li><b>Ctrl+R</b> — 重新加载数据</li>"
+            "<li><b>Ctrl+O</b> — 选择文件夹</li>"
+            "<li><b>Ctrl+E / Ctrl+S</b> — 导出当前图</li>"
+            "<li><b>Ctrl+Shift+E</b> — 导出全部图片</li>"
+            "<li><b>Ctrl+D</b> — 复制积分结果</li>"
+            "<li><b>Ctrl+T</b> — 切换浅色 / 深色主题（也可点左上角 🌙 / ☀️）</li>"
+            "<li><b>F1</b> — 本帮助</li>"
+            "</ul>")
+        others = (
+            "<ul>"
             "<li>把文件夹直接拖到窗口上也可以加载；目录树单击展开、"
             "<b>双击</b>加载该文件夹</li>"
             "<li>导出格式由「导出格式」下拉框决定（PNG / PDF / SVG 或其组合）；"
             "「导出用白底」勾选后导出图强制白底深字，"
             "深色主题下投稿/做 PPT 用得上</li>"
-            f"<li>日志（含加载失败原因、未捕获异常）：<br>{log_dir()}</li></ul>")
+            "<li>「🏠 返回模块选择」回到入口界面重新选模式；直接关窗则退出程序</li>"
+            "<li>界面元素说明：鼠标悬停任意按钮/标签/下拉项都会显示 tooltip"
+            "（被截断的文件名、完整路径也在这里看）</li>"
+            "</ul>")
+        return show_help_dialog(
+            self,
+            title=f"帮助 — {APP_NAME}",
+            sections=[("当前模式", self._help_mode_section()),
+                      ("快捷键", shortcuts),
+                      ("其它", others)],
+            palette=self.theme_palette(),
+            subtitle=f"v{APP_VERSION} · {RELEASE_DATE}",
+            log_text=f"日志（含加载失败原因、未捕获异常）：{log_dir()}")
 
     def _connect_live_update(self):
         """将所有参数控件连接到实时预览（防抖自动刷新）"""
@@ -326,26 +344,36 @@ class UiMixin:
 
         root_layout = QVBoxLayout()
 
-        # 返回入口界面（模块选择）：关闭当前窗口，由主循环重新弹出 ModuleLauncher
-        home_btn = QPushButton("🏠 返回模块选择")
-        home_btn.setProperty("variant", "neutral")
+        # ---- 顶部三个等宽图标按钮（v4.24）----
+        # 原来三个按钮宽度各不相同（160/160/自适应）且只有「帮助」是白底下拉按钮，
+        # 左边缘参差、三种视觉语言混在一起。现在统一成 ghost 图标按钮 + tooltip，
+        # 尺寸一致、排成一行，说明文字放进 tooltip 不再占版面。
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+
+        home_btn = QPushButton("🏠")
+        home_btn.setProperty("variant", "ghost")
+        home_btn.setFixedSize(36, 30)
         home_btn.setCursor(Qt.PointingHandCursor)
+        home_btn.setToolTip("返回模块选择（回到入口界面重新选模式）")
         home_btn.clicked.connect(self.return_to_launcher)
-        root_layout.addWidget(home_btn)
+        top_row.addWidget(home_btn)
 
         # 主题切换（D3）：浅色 / 深色
-        self.theme_btn = QPushButton("🌙 深色主题")
-        self.theme_btn.setProperty("variant", "neutral")
+        self.theme_btn = QPushButton("🌙")
+        self.theme_btn.setProperty("variant", "ghost")
+        self.theme_btn.setFixedSize(36, 30)
         self.theme_btn.setCursor(Qt.PointingHandCursor)
+        self.theme_btn.setToolTip("切换浅色 / 深色主题（Ctrl+T）")
         self.theme_btn.clicked.connect(lambda: self.toggle_theme())
-        root_layout.addWidget(self.theme_btn)
+        top_row.addWidget(self.theme_btn)
 
         # 帮助菜单（D6）：快捷键说明 + 打开日志文件夹
-        self.help_btn = QToolButton()
-        self.help_btn.setText("❓ 帮助")
-        self.help_btn.setPopupMode(QToolButton.InstantPopup)
+        self.help_btn = QPushButton("❓")
+        self.help_btn.setProperty("variant", "ghost")
+        self.help_btn.setFixedSize(36, 30)
         self.help_btn.setCursor(Qt.PointingHandCursor)
-        self.help_btn.setToolTip("快捷键与说明（F1）；查看日志文件夹")
+        self.help_btn.setToolTip("帮助：快捷键说明（F1）/ 打开日志文件夹")
         help_menu = QMenu(self.help_btn)
         act_help = QAction("快捷键与说明 (F1)", self.help_btn)
         act_help.triggered.connect(self.show_help)
@@ -354,44 +382,63 @@ class UiMixin:
         act_log.triggered.connect(self._open_log_folder)
         help_menu.addAction(act_log)
         self.help_btn.setMenu(help_menu)
-        root_layout.addWidget(self.help_btn)
+        top_row.addWidget(self.help_btn)
+        top_row.addStretch(1)
+        root_layout.addLayout(top_row)
 
         # 顶部：光谱类型切换
         type_label = QLabel("光谱类型:")
         type_label.setProperty("role", "sectionLabel")
+        type_label.setToolTip("当前模块；四个模式各有专属参数与操作")
         root_layout.addWidget(type_label)
         self.spectrum_type_combo = QComboBox()
+        # v4.24：括号里的英文名在 200px 栏里必被截断（旧文案会显示成
+        # 「吸收光谱（UV-」），改为中文短名 + tooltip 给全称
         self.spectrum_type_combo.addItems([
-            "吸收光谱 (UV-Vis)",
-            "发射光谱 (Emission)",
-            "荧光寿命 (Lifetime)",
-            "3D 扫描 (EEM)",
+            "吸收光谱",
+            "发射光谱",
+            "荧光寿命",
+            "3D 扫描",
         ])
+        for _i, _tip in enumerate([
+                "吸收光谱 (UV-Vis)：波长-吸收值，峰检测 / 差谱 / 积分",
+                "发射光谱 (Emission)：发射谱绘图、EX 标注与归一化",
+                "荧光寿命 (Lifetime)：MEM / SESM 最大熵寿命拟合",
+                "3D 扫描 (EEM)：激发-发射矩阵曲面 / 等高线 / Waterfall"]):
+            self.spectrum_type_combo.setItemData(_i, _tip, Qt.ToolTipRole)
         self.spectrum_type_combo.currentIndexChanged.connect(self.on_spectrum_type_changed)
         self._style_combo(self.spectrum_type_combo)
         root_layout.addWidget(self.spectrum_type_combo)
 
-        # 选择工作区按钮（设置目录树的根目录，并记住下次启动）
-        workspace_btn = QPushButton("选择工作区")
-        workspace_btn.clicked.connect(self.select_workspace)
-        workspace_btn.setProperty("variant", "primary")
-        workspace_btn.setCursor(Qt.PointingHandCursor)
-        root_layout.addWidget(workspace_btn)
-
-        self.workspace_label = QLabel("工作区: 未设置")
-        self.workspace_label.setWordWrap(True)
-        self.workspace_label.setProperty("role", "hint")
-        root_layout.addWidget(self.workspace_label)
-
-        # 选择文件夹按钮（直接加载该文件夹的数据）
-        folder_btn = QPushButton("选择文件夹")
+        # 数据文件夹：本栏唯一的主操作，独占一行（v4.24）
+        # 原来「选择工作区」「选择文件夹」两个彩色实心按钮并排，在 200px 栏里
+        # 每个只剩约 77px，中文标签被切掉一半（画面上显示成「; 工作」）。
+        folder_btn = QPushButton("选择数据文件夹")
         folder_btn.clicked.connect(self.select_folder)
-        folder_btn.setProperty("variant", "success")
+        folder_btn.setProperty("variant", "primary")
         folder_btn.setCursor(Qt.PointingHandCursor)
+        folder_btn.setToolTip("选择数据文件夹并加载其中全部数据文件（Ctrl+O）")
         root_layout.addWidget(folder_btn)
 
+        # 工作区（目录树的根目录）：低频操作，缩成路径行上的小图标按钮
+        ws_row = QHBoxLayout()
+        ws_row.setSpacing(4)
+        self.workspace_label = QLabel("工作区: 未设置")
+        self.workspace_label.setWordWrap(False)
+        self.workspace_label.setProperty("role", "hint")
+        ws_row.addWidget(self.workspace_label, 1)
+
+        workspace_btn = QPushButton("📂")
+        workspace_btn.setProperty("variant", "ghost")
+        workspace_btn.setFixedSize(26, 22)
+        workspace_btn.setCursor(Qt.PointingHandCursor)
+        workspace_btn.setToolTip("选择工作区（左侧目录树的根目录，会记住）")
+        workspace_btn.clicked.connect(self.select_workspace)
+        ws_row.addWidget(workspace_btn, 0)
+        root_layout.addLayout(ws_row)
+
         self.folder_label = QLabel("未选择文件夹")
-        self.folder_label.setWordWrap(True)
+        self.folder_label.setWordWrap(False)
         self.folder_label.setProperty("role", "folderLabel")
         root_layout.addWidget(self.folder_label)
 
@@ -407,8 +454,9 @@ class UiMixin:
         root_layout.addWidget(self.recent_combo)
 
         # 目录树（只显示目录、包含子文件夹；单击展开，双击加载数据，D2）
-        tree_label = QLabel("选择数据文件夹（双击子文件夹加载）:")
+        tree_label = QLabel("目录（双击加载）")
         tree_label.setProperty("role", "sectionLabel")
+        tree_label.setToolTip("单击展开子文件夹，双击该文件夹即加载其中数据")
         root_layout.addWidget(tree_label)
         self.file_system_model = QFileSystemModel()
         # 只显示目录（不含文件），提升浏览速度
@@ -427,7 +475,9 @@ class UiMixin:
         self.tree.clicked.connect(self.on_tree_clicked)
         self.tree.doubleClicked.connect(self.on_tree_double_clicked)
         root_layout.addWidget(self.tree)
-        self.workspace_label.setText(f"工作区: {initial_root}")
+        # 单行短路径 + 完整路径 tooltip（v4.24：原来是整条长路径自动换行占 3 行）
+        self.workspace_label.setText(f"工作区: {self._short_path(initial_root)}")
+        self.workspace_label.setToolTip(f"工作区（目录树根目录）:\n{initial_root}")
 
         file_group.setLayout(root_layout)
         v = QVBoxLayout(panel)
@@ -442,8 +492,11 @@ class UiMixin:
 
         root_layout = QVBoxLayout()
 
-        file_list_label = QLabel("已加载的文件（勾选以绘制合并图）:")
+        # v4.24：标题缩短——原文案「已加载的文件（勾选以绘制合并图）:」在 210px
+        # 栏里必被截断，说明移到 tooltip；各模式的完整提示仍由 gui_data 写入 tooltip
+        file_list_label = QLabel("已加载文件")
         file_list_label.setProperty("role", "sectionLabel")
+        file_list_label.setToolTip("勾选以绘制合并图（寿命/3D 模式为点选单个文件）")
         self.file_list_label = file_list_label  # 文案随模式切换（见 gui_data.on_spectrum_type_changed）
         root_layout.addWidget(file_list_label)
 
@@ -1143,8 +1196,12 @@ class UiMixin:
         if dark is None:
             dark = getattr(self, 'theme', 'light') != 'dark'
         self.theme = 'dark' if dark else 'light'
+        # v4.24：顶部按钮改成纯图标（等宽），状态靠图标 + tooltip 表达
         if hasattr(self, 'theme_btn'):
-            self.theme_btn.setText("☀️ 浅色主题" if dark else "🌙 深色主题")
+            self.theme_btn.setText("☀️" if dark else "🌙")
+            self.theme_btn.setToolTip(
+                ("当前：深色主题 —— 点击切回浅色（Ctrl+T）" if dark
+                 else "当前：浅色主题 —— 点击切到深色（Ctrl+T）"))
         self.apply_style()
         self._apply_mpl_theme()
         # 重绘一次让颜色跟上主题。注意：
@@ -1478,6 +1535,22 @@ class UiMixin:
             }}
             QPushButton[variant="neutral"]:hover {{ background-color: {NEUTRAL_HOVER}; }}
             QPushButton[variant="neutral"]:pressed {{ background-color: {NEUTRAL_PRESSED}; }}
+            /* 幽灵按钮（v4.24）：透明底 + 悬停浅底，用于图标按钮
+               （目录树栏顶部的 🏠 / 🌓 / ❓）——既统一尺寸又不抢视觉 */
+            QPushButton[variant="ghost"] {{
+                background: transparent;
+                border: 1px solid transparent;
+                color: {TEXT_SOFT};
+                padding: 2px;
+                font-size: 16px;
+            }}
+            QPushButton[variant="ghost"]:hover {{
+                background-color: {HOVER_BG};
+                border-color: {BORDER};
+            }}
+            QPushButton[variant="ghost"]:pressed {{
+                background-color: {DISABLED_BG};
+            }}
 
             /* ===== 列表 / 目录树 ===== */
             QListWidget, QTreeView {{
@@ -1581,11 +1654,14 @@ class UiMixin:
             }}
 
             /* ===== 标签页 ===== */
+            /* v4.24：给 pane 加 4px 内边距——画布 figure 底色（MPL_FIG）比卡片深，
+               留出这圈"卡纸边"后画布才像一张嵌在卡片里的图纸，而不是挖了个洞 */
             QTabWidget::pane {{
                 border: 1px solid {BORDER};
                 border-radius: 10px;
                 background-color: {CARD};
                 top: -1px;
+                padding: 4px;
             }}
             QTabBar::tab {{
                 background: transparent;

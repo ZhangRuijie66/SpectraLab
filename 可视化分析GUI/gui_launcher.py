@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """入口界面：启动时选择功能模块，再进入对应模式的主窗口。"""
 
+import logging
+
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
@@ -187,7 +189,6 @@ class ModuleLauncher(QDialog):
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, True)
 
         self._help_text = f"""
-        <h3>{APP_NAME} v{APP_VERSION}</h3>
         <p><b>更新日期：</b>{RELEASE_DATE}</p>
         <p><b>创建人：</b>张瑞杰</p>
         <p><b>代码生成：</b>deepseek-v4-flash、GLM-5.3-flash</p>
@@ -198,6 +199,7 @@ class ModuleLauncher(QDialog):
           <li>荧光寿命 (Lifetime) —— 最大熵寿命拟合（MEM/SESM）与分量分解</li>
           <li>3D 扫描 (EEM) —— 激发-发射矩阵曲面/等高线/Waterfall，自动去周期梳状伪迹</li>
         </ul>
+        <p>进入主窗口后按 <b>F1</b> 可查看当前模式的完整说明与全部快捷键。</p>
         """
 
     def event(self, e):
@@ -209,8 +211,19 @@ class ModuleLauncher(QDialog):
         return super().event(e)
 
     def show_help(self):
-        """显示版本、更新日期、创建人与代码生成信息"""
-        QMessageBox.about(self, f"帮助 — {APP_NAME}", self._help_text)
+        """帮助 / 关于（v4.24）：改为主题化可滚动窗口，深色下不再是一块白板"""
+        try:
+            from gui_help import show_help_dialog
+            from gui_log import log_dir
+            return show_help_dialog(
+                self,
+                title=f"帮助 — {APP_NAME}",
+                sections=[("关于本工具", self._help_text)],
+                palette=THEMES[self.theme],
+                subtitle=f"v{APP_VERSION} · {RELEASE_DATE}",
+                log_text=f"日志目录：{log_dir()}")
+        except Exception as e:                      # 兜底：绝不因帮助起不来而崩
+            logging.warning("打开帮助窗口失败: %s", e)
 
     def _choose(self, mode):
         self.selected_mode = mode

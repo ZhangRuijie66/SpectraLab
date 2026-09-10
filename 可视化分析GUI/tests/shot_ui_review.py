@@ -39,6 +39,20 @@ def pump(n=30):
         app.processEvents()
 
 
+def wait_idle(timeout_s=90):
+    """等后台绘图/拟合线程收工，否则截图可能拍到「正在生成图表…」的空画布。"""
+    import time
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        app.processEvents()
+        if not getattr(w, '_plotting', False):
+            pump(15)
+            return True
+        time.sleep(0.05)
+    print('  [WARN] 等待绘图线程超时，截图可能不完整', flush=True)
+    return False
+
+
 def shot(w, name):
     pump(20)
     p = os.path.join(OUT, name + '.png')
@@ -65,10 +79,10 @@ for folder in ABS_CANDIDATES:
         break
 w.plot_type_combo.setCurrentIndex(0)
 w.update_plot(explicit=True)
-pump(60)
+wait_idle()
 shot(w, 'light_absorption')
 w.toggle_theme(True)
-pump(30)
+wait_idle()
 shot(w, 'dark_absorption')
 
 # ---------- 寿命模式 ----------
@@ -92,6 +106,20 @@ try:
     shot(w, 'dark_info_tab')
 except Exception as e:
     print('info tab failed', e, flush=True)
+
+# ---------- 帮助窗口（v4.24 新增：非模态可滚动窗口，深浅两套） ----------
+for theme, dark in (('light', False), ('dark', True)):
+    w.toggle_theme(dark)
+    pump(10)
+    try:
+        dlg = w.show_help()
+        pump(40)
+        p = os.path.join(OUT, f'help_{theme}.png')
+        dlg.grab().save(p)
+        print('saved', p, dlg.width(), 'x', dlg.height(), flush=True)
+        dlg.close()
+    except Exception as e:
+        print('help dialog shot failed:', e, flush=True)
 
 # ---------- 入口界面 ----------
 from gui_launcher import ModuleLauncher  # noqa: E402

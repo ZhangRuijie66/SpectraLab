@@ -24,7 +24,7 @@ APP_ORG = "QLSLab"
 APP_NAME = "光谱可视化分析工具"
 
 # 版本号（窗口标题 / 应用版本信息）
-APP_VERSION = "4.23"
+APP_VERSION = "4.24"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-09-10"
 
@@ -122,7 +122,10 @@ THEMES = {
         "NEUTRAL": "#64748b", "NEUTRAL_HOVER": "#94a3b8",
         "NEUTRAL_PRESSED": "#475569",
         # 绘图区（matplotlib）配色
-        "MPL_FIG": "#0f172a", "MPL_AX": "#1e293b", "MPL_FG": "#e2e8f0",
+        # v4.24：MPL_FIG 从 #0f172a 调深到 #0b1220——原来它与窗口底色 BG 完全相同，
+        # 深色下画布和窗口糊成一片、看不出图纸边界（配合 QTabWidget 的 1px 描边
+        # + 4px 内边距，画布才成为一张"嵌在卡片里的图纸"）。
+        "MPL_FIG": "#0b1220", "MPL_AX": "#1e293b", "MPL_FG": "#e2e8f0",
         # v4.20：坐标轴边框从 #475569 提亮到 #94a3b8——原色对坐标区底色
         # #1e293b 只有约 2.0:1 对比度，深色模式下坐标轴几乎看不见（用户反馈）。
         # 现在边框 5.6:1、网格线 2.7:1（#94a3b8 @ 55%），刻度文字沿用 MPL_FG。
@@ -133,7 +136,9 @@ THEMES = {
         "MPL_NOTE_BG": "#334155",    # 图上数值框底色（原为白底，深色下文字看不清）
         "MPL_NOTE_FG": "#e2e8f0",
         # 控件状态色
-        "HOVER_BG": "#334155", "SELECT_BG": "#1e3a5f", "SELECT_FG": "#93c5fd",
+        # v4.24：SELECT_BG 从 #1e3a5f 提到 #2b5285——原值对卡片底色 #1e293b
+        # 只有约 1.3:1 对比度，深色下选中项几乎看不见。
+        "HOVER_BG": "#334155", "SELECT_BG": "#2b5285", "SELECT_FG": "#bfdbfe",
         "DISABLED_BG": "#334155", "DISABLED_FG": "#64748b",
         "HANDLE": "#475569", "HANDLE_HOVER": "#64748b",
         "ALT_ROW": "#172033", "INFO_BG": "#1e3a5f",
