@@ -544,6 +544,62 @@ def t_degenerate_inputs():
     assert len(cases) == 9, f"应覆盖 9 种退化输入，实际 {cases}"
 
 
+@check("寿命拟合：归一化数据自动还原，寿命与计数刻度一致（v4.32）")
+def t_normalized_autoscale():
+    """峰值 = 1 的归一化数据必须能拟合，且结果与计数刻度一致。
+
+    回归背景：噪声判据 ``max(peak/500, 10, 1.5×bg)`` 里的绝对下限 10 是为光子
+    计数写的。归一化数据（峰值 1）全部通道 < 10 → 窗口被夹到 50 点 → 报"欠定"。
+    修复后 preprocess 会先把数据还原到计数刻度再定窗口。
+    """
+    import plot_lifetime as pl
+
+    def _fit(dec, irf):
+        f = pl.MEMFitter(verbose=False, name='n')
+        f.load(t, dec, irf)
+        f.preprocess()
+        f.fit(method='MEM', n_rates=201)
+        f.postprocess()
+        return f.info, sorted(p[0] for p in (f.peak_result or []))
+
+    t, decay, irf = _synth_double_exponential()
+    i_cnt, tau_cnt = _fit(decay, irf)
+    assert not i_cnt['rescaled_from_normalized'], "计数数据不应触发还原"
+    assert i_cnt.get('rescale_factor') == 1.0, "计数数据的还原因子应为 1"
+
+    # 归一化到峰值 = 1（作业/交换数据的常见形态）
+    dn, i_n = decay / decay.max(), irf / irf.max()
+    i_nor, tau_nor = _fit(dn, i_n)
+    assert i_nor['rescaled_from_normalized'], "峰值=1 的数据应被识别为归一化"
+    npts = i_nor['fit_end'] - i_nor['fit_start']
+    assert not i_nor['window_floored'], \
+        f"还原后窗口不应仍被 50 点下限托底（实际 {npts} 点）"
+    assert npts > 200, f"还原后拟合窗口只有 {npts} 点，窗口仍不健康"
+
+    assert len(tau_nor) == 2, f"归一化数据应仍恢复 2 个分量，实际 {tau_nor}"
+    for a, b in zip(tau_cnt, tau_nor):
+        assert abs(a - b) / max(b, 1e-9) < 0.10, \
+            f"归一化 vs 计数刻度的寿命漂移过大：{a:.3f} vs {b:.3f}"
+    # 真值 2.5 / 8.0 ns 仍要落在 10% 内
+    assert abs(tau_nor[0] - 2.5) / 2.5 < 0.20, f"快分量 {tau_nor[0]:.3f} 偏离 2.5"
+    assert abs(tau_nor[1] - 8.0) / 8.0 < 0.20, f"慢分量 {tau_nor[1]:.3f} 偏离 8.0"
+
+    # 窗口被托底时必须给出可操作的诊断，而不是只说"把 n_rates 调小"
+    f = pl.MEMFitter(verbose=False, name='degenerate')
+    f._rescale_if_normalized = lambda a, b: (a, b)      # 模拟修复前行为
+    f.load(t, dn, i_n)
+    f.preprocess()
+    assert f.info['window_floored'], "关掉还原后窗口应被下限托底"
+    try:
+        f.fit(method='SESM', n_rates=101)
+    except ValueError as e:
+        msg = str(e)
+        assert '50 点下限' in msg, f"报错应说明窗口被下限托底：{msg[:120]}"
+        assert '噪声水平' in msg, "报错应给出噪声水平等诊断量"
+    else:
+        raise AssertionError("窗口被托底且点数不足时应报错")
+
+
 @check("寿命拟合：SESM 的 λ 真正生效且不过平滑（A3）")
 def t_sesm_lambda():
     import plot_lifetime as pl

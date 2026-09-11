@@ -1768,6 +1768,15 @@ class PlotMixin:
         lines = [f"文件名: {result.get('name', '')}", ""]
         lines.append(f"拟合方法: {info.get('method', 'MEM')}")
         lines.append(f"简化卡方 χ²R = {info['chi_sqr']:.4g}")
+        # v4.32：数据被归一化过时，程序会自动还原到计数刻度再拟合。
+        # 这会影响拟合窗口与 χ²R 的绝对量级，必须让用户看得见，不能静默发生。
+        if info.get('rescaled_from_normalized'):
+            lines.append(
+                f"⚠ 输入为归一化数据（衰减峰值 "
+                f"{info.get('decay_peak_before_rescale', float('nan')):.4g}），"
+                f"已 ×{info.get('rescale_factor', float('nan')):.4g} 还原到计数刻度"
+                f"（峰值 → {info.get('decay_max', float('nan')):.4g}）；"
+                "该换算只恢复噪声判据的物理量级，不改动 τ")
         lam_mode = '自动拟合' if info.get('lambda_auto') else '手动'
         lambda_used = info.get('lambda_coeff_used', info.get('lambda_coeff'))
         lines.append(f"熵权重 λ = {lambda_used:.5g}（{lam_mode}）")

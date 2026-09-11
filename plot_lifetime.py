@@ -23,6 +23,11 @@
   3. postprocess 对速率分布做多重高斯拟合，提取各寿命分量的 tau / 强度占比 / FWHM
   4. 绘图        衰减曲线拟合图（含残差、chi^2_R）+ 寿命分布图（含各高斯分量）
 
+数据幅度：拟合窗口的噪声判据含绝对下限 10 计数，因此**输入应为光子计数**。
+若数据是被归一化成峰值 ≈ 1 的相对强度（作业/交换数据的常见形态），
+preprocess 会先自动还原到计数刻度再定窗口（v4.32，见
+MEMFitter._rescale_if_normalized），否则整个衰减会被判成噪声、窗口退化成 50 点。
+
 适用数据格式（自动检测）：
   1. Horiba / DeltaHub 时间扫描 CSV（如 Decay2.csv）：
        文件头部含 Labels,Decay2,IR1 / Type,Time Scan,Instrument Response... 等元数据，
@@ -76,6 +81,22 @@ from matplotlib.gridspec import GridSpec
 
 
 # ======================== 0. 基础设置 ========================
+
+# ---- 归一化数据自动还原（v4.32）----
+# 衰减峰值低于 _NORMALIZED_PEAK_MAX 视为"已归一化的相对强度"而非光子计数。
+# 真实 TCSPC 计数数据峰值在 10³~10⁵（工作区实测最低 3×10³），所以 10 这个门槛
+# 既不会误伤真实数据，又能抓住峰值 = 1 的归一化数据。
+# 触发后把数据整体乘到 _RESCALE_TARGET_PEAK——一个典型的中等计数峰值，
+# 使噪声判据里的绝对下限 10 与 1.5×本底重新落在有物理意义的量级上。
+_NORMALIZED_PEAK_MAX = 10.0
+_RESCALE_TARGET_PEAK = 10000.0
+
+# 拟合窗口噪声判据里的绝对下限，以及"它还算地板"的判定倍率。
+# 峰值 ≥ _NOISE_FLOOR × _NOISE_FLOOR_SAFE_RATIO（= 100）时下限才是地板；
+# 更低的峰值下它成了天花板（全部通道都低于它 → 窗口退化），改用纯相对判据。
+_NOISE_FLOOR = 10.0
+_NOISE_FLOOR_SAFE_RATIO = 10.0
+
 
 def _safe_print(*args):
     """安全打印：在 GBK / ASCII 终端下避免因非 ASCII 字符崩溃"""
@@ -393,14 +414,63 @@ class MEMFitter:
 
     # ---------- 预处理 ----------
 
+    def _rescale_if_normalized(self, decay, irf):
+        """把被归一化过的衰减数据还原到计数刻度（v4.32）。
+
+        背景：拟合窗口的噪声判据是
+        ``noise_level = max(decay_max/500, 10, 1.5×本底)``，其中 **10** 这个绝对
+        下限是针对原始 TCSPC 光子计数写的——真实计数数据峰值在 10³~10⁵，本底几十，
+        该下限几乎不生效。但作业/交换数据常被归一化成峰值 = 1 的**相对强度**，
+        此时全部通道都 < 10，"低于噪声水平"的第一段就从衰减峰位开始触发，
+        于是 ``fit_end = decay_max_pos - 1 < fit_start``，窗口被夹到 50 点下限，
+        报"拟合点数不足（欠定）"——与真实数据质量无关。
+
+        还原的依据：重卷积模型是幅度的线性函数、χ² 的 Neyman 权重取观测计数，
+        二者同步缩放 → 近似不变。之所以只说"近似"：噪声判据里那个**绝对**下限 10
+        在两种刻度下的相对强度不同（归一化刻度上峰值只到 1e4，下限相对更强），
+        窗口端点会差几个通道，拟合参数随之有零点几个百分点的偏移。实测同一份数据
+        用真实计数刻度与"归一化后自动还原"两种输入，主寿命差 0.07%
+        （6.1053 ns vs 6.1007 ns）；而**不还原**时窗口退化成 50 点、τ 偏到 200 ns。
+        所以还原恢复的是"噪声判据的物理量级"，不是逐位复现。
+
+        判据：衰减峰值 < ``_NORMALIZED_PEAK_MAX`` 视为归一化（真实计数数据峰值
+        远高于此，工作区实测最低 3×10³）。返回 (decay, irf)。
+        """
+        peak = float(np.max(np.abs(decay))) if decay.size else 0.0
+        irf_peak = float(np.max(np.abs(irf))) if irf.size else 0.0
+        normalized = peak < _NORMALIZED_PEAK_MAX
+        self.info['decay_peak_before_rescale'] = peak
+        self.info['irf_peak_before_rescale'] = irf_peak
+        self.info['rescaled_from_normalized'] = bool(normalized)
+        if not normalized:
+            self.info['rescale_factor'] = 1.0
+            return decay, irf
+        if peak <= 0:
+            # 全零/全非正：交给下游"峰值不超过本底"的检查报错，这里不动
+            self.info['rescale_factor'] = 1.0
+            return decay, irf
+        factor = _RESCALE_TARGET_PEAK / peak
+        self.info['rescale_factor'] = float(factor)
+        self._log(f"[预处理] 检测到归一化数据（衰减峰值 {peak:.4g} < "
+                  f"{_NORMALIZED_PEAK_MAX:g}），按 ×{factor:g} 还原到计数刻度"
+                  f"（峰值 → {_RESCALE_TARGET_PEAK:g}）；"
+                  "该换算不改变拟合结果，仅恢复噪声判据的物理意义")
+        return decay * factor, irf * factor
+
     def preprocess(self, background_length=30):
         """
         预处理：统计 IRF / decay 特征，tail-fitting 估计时间位移 qshift，
         并确定拟合区间 [fit_start, fit_end)。
+
+        **归一化数据自动还原（v4.32）**：见 _rescale_if_normalized。输入若是被
+        归一化过的相对强度（峰值 ≤ 1）而非光子计数，会先整体还原到计数刻度，
+        否则噪声判据里的 ``10`` 下限会把整个衰减判成噪声、把拟合窗口压到 50 点。
         """
         time = self.time.copy()
         irf = self.irf.copy()
         decay = self.decay.copy()
+        # 先还原被归一化的数据，再做本底/噪声统计（两者都依赖绝对计数刻度）
+        decay, irf = self._rescale_if_normalized(decay, irf)
         # 卡方与对数运算需要正值，把非正计数抬到 0.1
         decay[decay <= 0] = 0.1
 
@@ -499,7 +569,15 @@ class MEMFitter:
         # 本底可能远高于 10，只按峰高比例判断会把信号并入本底之后的纯噪声区
         # 继续拖进拟合窗（模型含本底项，在该区域必然失配）；再要求连续 5 通道
         # 低于阈值才认定进入噪声区，避免个别下探把窗口提前截断
-        noise_level = max(decay_max / 500, 10, 1.5 * decay_background)
+        #
+        # v4.32：绝对下限 10 只在**峰值确实远高于它**时才有意义。它原本是给光子
+        # 计数数据当"探测本底地板"用的，一旦峰值降到该量级（归一化数据、或弱信号
+        # 数据），`10` 就不再是地板而是天花板——全部通道都低于它，窗口必然退化。
+        # 此时改用纯相对判据 max(峰值/500, 1.5×本底)：它天然尺度无关，对峰值远大于
+        # 10 的**正常计数数据**（工作区实测峰值 ≥ 3×10³）则保持旧式判据逐位不变。
+        noise_relative = max(decay_max / 500, 1.5 * decay_background)
+        noise_level = max(noise_relative, _NOISE_FLOOR)
+        info['noise_level_relative'] = float(noise_relative)
         fit_start = int(irf_shifted.argmax())
         low = decay[decay_max_pos:] < noise_level
         below_start = None
@@ -511,7 +589,12 @@ class MEMFitter:
                 break
         fit_end = (int(below_start + decay_max_pos - 1) if below_start is not None
                    else int(round(0.95 * data_len)))
+        fit_end_raw = int(fit_end)
         fit_end = min(max(fit_end, fit_start + 50), data_len)
+        # 窗口是否被 50 点下限托底（而非由噪声判据自然给出）。为 True 说明
+        # "低于噪声水平"在衰减峰附近就触发了——通常是幅度刻度/本底判据不匹配，
+        # 而不是数据真的只有这么短。fit() 会据此给出可操作的报错提示。
+        window_floored = bool(fit_end_raw < fit_start + 50)
 
         info.update({
             'data_len': data_len,
@@ -527,6 +610,9 @@ class MEMFitter:
             'qshift_degenerate': bool(qshift_degenerate),
             'fit_start': fit_start,
             'fit_end': fit_end,
+            'fit_end_raw': fit_end_raw,
+            'window_floored': window_floored,
+            'noise_level': float(noise_level),
         })
         self.decay = decay
         self.time = time
@@ -604,11 +690,24 @@ class MEMFitter:
         npts = fit_end - fit_start
         n_free = n_rates + len([t for t in (fixed_taus or []) if float(t) > 0])
         if npts < n_free:
+            hint = (f"请把速率网格点数降到 ≤ {max(3, npts - 1)}，或扩大拟合区间"
+                    f"（当前 n_rates={n_rates}）")
+            if self.info.get('window_floored'):
+                # 窗口是被 50 点下限托底的：噪声判据在衰减峰附近就判定"进入噪声区"，
+                # 说明幅度刻度或本底与判据不匹配，而不是数据真的只有这么短。
+                hint = (
+                    "本次拟合窗口是被 50 点下限托底的（噪声判据在衰减峰附近即触发），\n"
+                    f"依据：噪声水平 = {self.info.get('noise_level', float('nan')):.4g}，"
+                    f"衰减峰值 = {decay_max:.4g}，本底 = {decay_background:.4g}；\n"
+                    "请依次检查：\n"
+                    "  1) 衰减列是否为计数（峰值过低/被归一化会导致判据失效）；\n"
+                    "  2) IRF 是否与衰减同窗、且有明显上升沿；\n"
+                    "  3) 数据是否需要先去背景/去尖峰。\n"
+                    f"若确认数据正常，可把速率网格点数降到 ≤ {max(3, npts - 1)}"
+                    f"（当前 n_rates={n_rates}）。")
             raise ValueError(
                 f"拟合点数不足：拟合窗口 {npts} 点，自由分量 {n_free} 个"
-                "（欠定问题，无法给出唯一解）；"
-                f"请把速率网格点数降到 ≤ {max(3, npts - 1)}，或扩大拟合区间"
-                f"（当前 n_rates={n_rates}）")
+                "（欠定问题，无法给出唯一解）；" + hint)
         npts_per_component = npts / max(n_free, 1)
 
         # 进度 / 取消回调（GUI 用它更新进度条并支持中途取消）
