@@ -989,6 +989,111 @@ def t_lifetime_batch_reuse_cache():
         shutil.rmtree(out, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- v4.32 新增
+def _write_three_col_csv(path, t, decay, irf):
+    """写一份「简单三列表格」CSV（plot_lifetime 的格式二），含表头。"""
+    import csv
+    with open(path, 'w', newline='', encoding='utf-8') as fh:
+        wr = csv.writer(fh)
+        wr.writerow(['time', 'decay', 'irf'])
+        for a, b, c in zip(t, decay, irf):
+            wr.writerow([f'{a:.6g}', f'{b:.6g}', f'{c:.6g}'])
+
+
+@check("GUI：寿命分布叠加不逐条归一，保留相对幅度（v4.33）")
+def t_overlay_shared_scale():
+    """叠加分布必须用**共用**比例因子，而不是每条曲线各自归一。
+
+    旧行为 `dist / dist.max()` 把每条曲线的峰高都拉到 1，抹掉了分布之间的
+    幅度差异。新行为除以**全部曲线的全局最大值**，曲线间高度差得以保留。
+
+    注意 `k_distribution` 是**相对幅度**（拟合内部已按 decay_max 归一，
+    x_fit = 峰高/decay_max），所以整体衰减倍数不体现在其上；样本间的差异
+    来自分布形状（几个分量的相对强弱）。本用例用 3 份形状不同的衰减验证。
+    """
+    import shutil
+    import tempfile
+    from PyQt5.QtWidgets import QApplication, QMessageBox
+
+    for fn in ('information', 'warning', 'critical'):
+        setattr(QMessageBox, fn, staticmethod(lambda *a, **k: None))
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    rng = np.random.default_rng(11)
+    dt = 0.05
+    t = np.arange(0, 60, dt)
+    irf = np.exp(-0.5 * ((t - 2.0) / 0.15) ** 2)
+    irf = irf / irf.sum()
+
+    def _make(frac_fast, tau_fast, tau_slow, seed):
+        r = np.random.default_rng(seed)
+        truth = np.zeros_like(t)
+        for a, tau in ((frac_fast, tau_fast), (1 - frac_fast, tau_slow)):
+            truth += a * np.convolve(irf, np.exp(-t / tau), mode='full')[:len(t)]
+        truth *= 20000.0 / truth.max()
+        return np.maximum(r.poisson(truth).astype(float), 0.0)
+
+    # 三个「明显不同形状」的样品：快/慢分量的比例与寿命都不同
+    specs = [(0.9, 1.0, 12.0, 1), (0.5, 2.5, 8.0, 2), (0.1, 4.0, 6.0, 3)]
+
+    out = tempfile.mkdtemp(prefix='qls_overlay_')
+    try:
+        for i, (ff, tf, ts, sd) in enumerate(specs):
+            _write_three_col_csv(os.path.join(out, f'sample{i}.csv'),
+                                 t, _make(ff, tf, ts, sd), irf * 1e6)
+
+        from absorption_gui import AbsorptionGUI
+        w = AbsorptionGUI()
+        w.spectrum_type_combo.setCurrentIndex(2)      # 荧光寿命
+        w.lifetime_method_combo.setCurrentIndex(1)    # SESM 快
+        w.lifetime_nrates_spin.setValue(101)
+        w.load_data_from_folder(out)
+        assert w.file_list.count() == 3, \
+            f"应载入 3 个样品，实际 {w.file_list.count()}"
+
+        fig = w._do_overlay_lifetime()
+        ax = fig.axes[0]
+        assert '未逐条归一' in ax.get_ylabel(), \
+            f"纵轴标签应说明未逐条归一，实际 {ax.get_ylabel()!r}"
+
+        peaks = [float(np.max(np.asarray(ln.get_ydata(), dtype=float)))
+                 for ln in ax.get_lines()]
+        assert len(peaks) == 3, f"应有 3 条曲线，实际 {len(peaks)}"
+        # 核心断言：旧 bug 下每条曲线都被拉到 1（全部相等）
+        assert not all(abs(p - 1.0) < 1e-9 for p in peaks), \
+            "所有曲线峰高都等于 1 → 仍是逐条归一（旧 bug 回归）"
+        assert max(peaks) - min(peaks) > 0.02, \
+            f"曲线峰高几乎相同（{peaks}），相对幅度差异被抹掉了"
+        # 全局最大值那条应为 1（共用因子的定义），其余 < 1
+        assert abs(max(peaks) - 1.0) < 1e-9, \
+            f"全局最大值那条曲线应为 1，实际 {max(peaks)}"
+        # 与原始分布的自算比值一致（确认没有额外变形）
+        raw = [float(np.max(np.asarray(r['k_distribution'], dtype=float)))
+               for r in w._overlay_results if r]
+        gmax = max(raw)
+        for p, rv in zip(sorted(peaks), sorted(v / gmax for v in raw)):
+            assert abs(p - rv) < 1e-9, \
+                f"绘图峰高 {p} 应等于原始幅度比 {rv}"
+
+        # 图例必须同时给出「振幅 A」与「实际强度 I」
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert len(labels) == 3, f"应有 3 条图例，实际 {labels}"
+        for lab in labels:
+            assert 'A=' in lab and 'a.u.' in lab, f"图例缺振幅：{lab!r}"
+            assert 'I=' in lab and 'counts' in lab, f"图例缺实际强度：{lab!r}"
+        # 强度口径核对：应等于「拟合窗口内总计数 × 还原因子」
+        for r, lab in zip([x for x in w._overlay_results if x], labels):
+            info = r['info']
+            fs = int(info['fit_start']); fe = int(info['fit_end'])
+            want = float(np.sum(np.asarray(r['decay'], float)[fs:fe])) * \
+                float(info.get('rescale_factor', 1.0) or 1.0)
+            got = float(lab.split('I=')[1].split(' ')[0])
+            assert abs(got - want) / max(want, 1e-9) < 1e-3, \
+                f"图例 I={got} 与窗口总计数 {want} 不符（{lab!r}）"
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
 # ---------------------------------------------------------------- v4.24 新增
 @check("GUI：目录树栏按钮等宽、单行路径带 tooltip（v4.24）")
 def t_gui_tree_panel_layout():
