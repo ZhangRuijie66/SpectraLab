@@ -1803,6 +1803,69 @@ def t_gui_info_fit_card():
     assert w.fit_card.isHidden(), "没有结果时卡片应重新隐藏"
 
 
+@check("GUI：信息页/结果摘要兼容 5 元 peak_result，不抛未捕获异常（v4.35）")
+def t_info_accepts_five_element_peaks():
+    """v4.33 给 peak_result 追加了第 5 项（振幅占比），有消费者仍在按 4 元解包。
+
+    实测报错（点「开始拟合」后弹「发生未处理的错误」）：
+        gui_plot.py: _on_plot_finished → _show_lifetime_fit_info
+        ValueError: too many values to unpack (expected 4)
+
+    本用例直接走那条路径：用一份带 5 元 peak_result 的**真实拟合结果**喂给
+    信息页与分量表，断言不抛异常、且振幅列有值。
+    """
+    app, w = _make_gui()
+
+    # 真实拟合一份数据，拿到含第 5 项的 peak_result
+    rng = np.random.default_rng(3)
+    dt = 0.05
+    t = np.arange(0, 60, dt)
+    irf = np.exp(-0.5 * ((t - 2.0) / 0.15) ** 2)
+    irf = irf / irf.sum()
+    truth = np.zeros_like(t)
+    for a, tau in ((0.6, 2.5), (0.4, 8.0)):
+        truth += a * np.convolve(irf, np.exp(-t / tau), mode='full')[:len(t)]
+    truth *= 20000.0 / truth.max()
+    decay = np.maximum(rng.poisson(truth).astype(float), 0.0)
+
+    import plot_lifetime as pl
+    f = pl.MEMFitter(verbose=False, name='five')
+    f.load(t, decay, irf)
+    f.preprocess()
+    f.fit(method='SESM', n_rates=101)
+    f.postprocess()
+    res = f.serialize(None)
+    assert res['peak_result'], "用例前提：应分离出分量"
+    assert all(len(p) >= 5 for p in res['peak_result']), \
+        "用例前提：peak_result 应含第 5 项振幅占比"
+
+    # ① 信息页文本（原报错点）
+    w._last_lifetime_result = res
+    w._show_lifetime_fit_info()          # 旧代码在此抛 ValueError
+    txt = w.info_label.text()
+    assert '振幅占比' in txt, f"信息页应给出振幅占比：{txt[:200]!r}"
+    assert '强度占比' in txt, "信息页应给出强度占比"
+
+    # ② 分量表（同一循环也曾按 4 元解包）
+    w._update_info_fit_card()
+    tbl = w.fit_table
+    assert tbl.columnCount() == 4, f"分量表应有 4 列，实际 {tbl.columnCount()}"
+    assert '振幅' in tbl.horizontalHeaderItem(3).text(), \
+        f"第 4 列应为振幅占比：{tbl.horizontalHeaderItem(3).text()!r}"
+    amp_cells = [tbl.item(r, 3).text() for r in range(tbl.rowCount())]
+    assert any(c not in ('', '—') for c in amp_cells), \
+        f"振幅列应有数值，实际 {amp_cells}"
+
+    # ③ 旧结果的 4 元 peak_result 仍要能显示（向后兼容，缺失处显示 —）
+    legacy = dict(res)
+    legacy['peak_result'] = [tuple(p[:4]) for p in res['peak_result']]
+    w._last_lifetime_result = legacy
+    w._show_lifetime_fit_info()
+    w._update_info_fit_card()
+    assert w.fit_table.rowCount() == len(legacy['peak_result']), \
+        "旧结果也应能填入分量表"
+
+
 @check("GUI：状态栏进度条 + 模式/样品数徽标（v4.27）")
 def t_gui_status_bar():
     from PyQt5.QtCore import Qt as _Qt

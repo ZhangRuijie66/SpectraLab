@@ -1822,8 +1822,14 @@ class PlotMixin:
         peaks = result.get('peak_result') or []
         if peaks:
             lines.append(f"检测到 {len(peaks)} 个寿命分量:")
-            for n, (tau, area, _fwhm, _w) in enumerate(peaks, 1):
-                lines.append(f"  τ{n} = {tau:.4g} ns, 占比 = {area * 100:.2f}%")
+            for n, p in enumerate(peaks, 1):
+                tau, area = float(p[0]), float(p[1])
+                amp = (float(p[4]) if len(p) > 4 else float('nan'))
+                amp_txt = f"，振幅占比 = {amp * 100:.2f}%" if np.isfinite(amp) else ""
+                lines.append(f"  τ{n} = {tau:.4g} ns, 强度占比 = {area * 100:.2f}%"
+                             f"{amp_txt}")
+            lines.append("（强度占比 = 发光强度贡献，各分量和 100%；"
+                         "振幅占比 = 分量峰高，按最大者归一）")
         else:
             lines.append("未分离出明显寿命分量（分布过宽）")
         fixed = info.get('fixed_taus') or []
@@ -1917,27 +1923,31 @@ class PlotMixin:
 
             peaks = result.get('peak_result') or []
             fixed = info.get('fixed_taus') or []
-            rows = [(f"τ{n}", tau, area * 100.0)
-                    for n, (tau, area, _f, _w) in enumerate(peaks, 1)]
+
+            def _amp_of(p):
+                """振幅占比：第 5 项（v4.33 新增）；旧结果没有 → nan。"""
+                return float(p[4]) * 100.0 if len(p) > 4 else float('nan')
+
+            rows = [(f"τ{n}", float(p[0]), float(p[1]) * 100.0, _amp_of(p))
+                    for n, p in enumerate(peaks, 1)]
             for t in fixed:                      # 固定分量单独标注，避免与分离峰混看
-                rows.append((f"固定 τ = {t:.4g}", float(t), float('nan')))
+                rows.append((f"固定 τ = {t:.4g}", float(t), float('nan'),
+                             float('nan')))
 
             table = getattr(self, 'fit_table', None)
             if table is not None:
-                table.setSortingEnabled(False)
                 try:
+                    table.setSortingEnabled(False)
                     table.clearContents()
                     table.setRowCount(len(rows))
-                    for r, (name, tau, share) in enumerate(rows):
-                        name_item = QTableWidgetItem(str(name))
-                        table.setItem(r, 0, name_item)
-                        tau_item = NumericTableItem(f"{tau:.4g}")
-                        tau_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                        table.setItem(r, 1, tau_item)
-                        share_item = QTableWidgetItem(
-                            "—" if not np.isfinite(share) else f"{share:.2f}")
-                        share_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                        table.setItem(r, 2, share_item)
+                    for r, (name, tau, share, amp) in enumerate(rows):
+                        table.setItem(r, 0, QTableWidgetItem(str(name)))
+                        for col, val in ((1, tau), (2, share), (3, amp)):
+                            item = (NumericTableItem(f"{val:.4g}") if col == 1
+                                    else QTableWidgetItem(
+                                        "—" if not np.isfinite(val) else f"{val:.2f}"))
+                            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                            table.setItem(r, col, item)
                 finally:
                     table.setSortingEnabled(True)
                 # 重新打开排序会按“当前排序指示器”自动排一遍，行序就不可控了；

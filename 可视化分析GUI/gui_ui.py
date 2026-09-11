@@ -1857,9 +1857,9 @@ class UiMixin:
         head_row.addWidget(self.fit_quality_label, 1)
         fit_card_layout.addLayout(head_row)
 
-        self.fit_table = QTableWidget(0, 3)
+        self.fit_table = QTableWidget(0, 4)
         self.fit_table.setHorizontalHeaderLabels(
-            ["分量", "τ (ns)", "占比 (%)"])
+            ["分量", "τ (ns)", "强度占比 (%)", "振幅占比 (%)"])
         self.fit_table.verticalHeader().setVisible(False)
         self.fit_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.fit_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1869,12 +1869,14 @@ class UiMixin:
         self.fit_table.setWordWrap(False)
         fhdr = self.fit_table.horizontalHeader()
         fhdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        fhdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        fhdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        for _c in (1, 2, 3):
+            fhdr.setSectionResizeMode(_c, QHeaderView.ResizeToContents)
         self.fit_table.setMinimumHeight(90)
         self.fit_table.setMaximumHeight(220)
         self.fit_table.setToolTip(
-            "分离出的寿命分量；点表头可排序，框选后 Ctrl+C 复制")
+            "分离出的寿命分量；点表头可排序，框选后 Ctrl+C 复制。\n"
+            "强度占比 = 发光强度贡献（分布下面积，各分量和 100%），"
+            "振幅占比 = 分量峰高（按最大者归一）")
         fit_card_layout.addWidget(self.fit_table)
         self.fit_card.setVisible(False)      # 没拟合过就不显示（含它占的空间）
         info_layout.addWidget(self.fit_card)
