@@ -366,7 +366,7 @@ class MEMFitter:
         self.irf = None
         self.k = None                # 速率轴 k = 1/tau
         self.k_distribution = None   # 速率分布（归一化权重）
-        self.peak_result = None      # 各高斯分量: [tau, 强度占比, FWHM(k-space), 强度占比]
+        self.peak_result = None      # 各高斯分量: [tau, 强度占比, FWHM(k), 强度占比, 振幅占比]
         self.info = {}
         self.meta = {}
 
@@ -1432,6 +1432,12 @@ class MEMFitter:
             for i in range(len(fit_pars))])
         intensity = intensity / max(intensity.sum(), 1e-12)
         peak_FWHM = 2 * math.sqrt(math.log(2)) * fit_pars[:, 2]
+        # 各分量**振幅占比**（v4.33）：振幅 = 该高斯分量在 k 空间的峰高
+        # （fit_pars[:,0]，与 k_distribution 同刻度），按最大者归一为百分比。
+        # 与"强度占比"口径不同：强度 ∝ 幅值/k 的积分，宽而慢的分量强度大、
+        # 峰却不高；窄而快的分量峰高但几乎不发光。两个口径都给，才看得出
+        # "这个分量是主发光体还是仅一个窄峰"。
+        amp_share = fit_pars[:, 0] / max(float(np.max(fit_pars[:, 0])), 1e-12)
         # 丢掉发光强度占比可忽略的"噪声分量"（阈值 min_share，默认 0.5%）：
         # 它们对曲线毫无贡献，却会让报告多出 0.04 ns 这类无意义分量
         keep = intensity >= float(min_share)
@@ -1442,11 +1448,18 @@ class MEMFitter:
             fit_pars = fit_pars[keep]
             intensity = intensity[keep]
             peak_FWHM = peak_FWHM[keep]
+            amp_share = amp_share[keep]
             intensity = intensity / max(intensity.sum(), 1e-12)
+            # 丢弃分量后重新归一振幅占比，保证最大者仍为 1（图例显示 100%）
+            amp_share = amp_share / max(float(np.max(amp_share)), 1e-12)
         self.info['peaks_dropped_low_share'] = n_low
+        self.info['peak_amplitude_share'] = [float(v) for v in amp_share]
+        # 每项: [tau, 强度占比, FWHM(k-space), 强度占比, 振幅占比(v4.33 新增)]
+        # 第 5 项是**追加**的：既有消费者都用 p[0..3] 或 4 元解包（末尾 _），
+        # 追加不破坏它们。
         self.peak_result = [
-            [1 / p[1], w, f, w]
-            for p, w, f in zip(fit_pars, intensity, peak_FWHM)
+            [1 / p[1], w, f, w, a]
+            for p, w, f, a in zip(fit_pars, intensity, peak_FWHM, amp_share)
         ]
 
         # 未归属质量诊断：距任何分量中心都超过 0.5 dex 的网格点，其发光强度
@@ -1461,9 +1474,10 @@ class MEMFitter:
 
         self.info['peak_fit'] = fit_pars
         self._log("[后处理] 寿命分量:")
-        for n, (tau, area, fwhm, _) in enumerate(self.peak_result):
+        for n, (tau, area, fwhm, _, ampv) in enumerate(self.peak_result):
             self._log(f"    tau_{n + 1} = {tau:.4g} ns, "
-                      f"占比 = {area * 100:.2f}%, FWHM(k) = {fwhm:.3g}")
+                      f"强度占比 = {area * 100:.2f}%, "
+                      f"振幅占比 = {ampv * 100:.2f}%, FWHM(k) = {fwhm:.3g}")
 
     # ---------- 序列化 ----------
 
@@ -1904,11 +1918,18 @@ def _plot_one(res, save_dir, name, show, dpi, fmt):
     if peak_fit is not None and len(peak_result) > 0:
         weights = np.array([p[3] for p in peak_result], dtype=float)
         weights = weights / max(weights.sum(), 1e-12)
+        # 振幅占比（v4.33）：第 5 项；旧结果没有则回退按分量峰高自算
+        amps = np.array([p[4] if len(p) > 4 else 0.0 for p in peak_result],
+                        dtype=float)
+        if not np.any(amps > 0):
+            pf = np.asarray(peak_fit, dtype=float)
+            amps = pf[:, 0] / max(float(np.max(pf[:, 0])), 1e-12)
         for n, peak in enumerate(np.asarray(peak_fit)):
             comp = peak[0] * np.exp(-((k - peak[1]) / peak[2]) ** 2)
             ax.fill_between(tau, 0, comp, alpha=0.5,
                             label=(fr'$\tau_{{{n + 1}}} = {1 / peak[1]:.3g}$ ns, '
-                                   fr'$\alpha = {weights[n]:.3g}$'))
+                                   fr'振幅 {amps[n] * 100:.1f}%, '
+                                   fr'强度 {weights[n] * 100:.1f}%'))
         ax.legend(fontsize=8)
 
     out2 = None

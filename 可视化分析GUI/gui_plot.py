@@ -1669,11 +1669,18 @@ class PlotMixin:
         if peak_fit is not None and len(peak_result) > 0:
             weights = np.array([p[3] for p in peak_result], dtype=float)
             weights = weights / max(weights.sum(), 1e-12)
+            # 振幅占比（v4.33）：第 5 项；旧结果/旧 json 没有则回退按分量峰高自算
+            amps = np.array([p[4] if len(p) > 4 else 0.0 for p in peak_result],
+                            dtype=float)
+            if not np.any(amps > 0):
+                pf = np.asarray(peak_fit, dtype=float)
+                amps = pf[:, 0] / max(float(np.max(pf[:, 0])), 1e-12)
             for n, peak in enumerate(np.asarray(peak_fit)):
                 comp = peak[0] * np.exp(-((k - peak[1]) / peak[2]) ** 2)
                 ax3.fill_between(tau, 0, comp, alpha=0.5,
                                  label=(fr'$\tau_{{{n + 1}}} = {1 / peak[1]:.3g}$ ns, '
-                                        fr'$\alpha = {weights[n]:.3g}$'))
+                                        fr'振幅 {amps[n] * 100:.1f}%, '
+                                        fr'强度 {weights[n] * 100:.1f}%'))
             ax3.legend(fontsize=8)
         dfig.subplots_adjust(left=0.12, right=0.97, top=0.90, bottom=0.17)
         self._fit_left_margin(dfig, ax3, base=0.12)

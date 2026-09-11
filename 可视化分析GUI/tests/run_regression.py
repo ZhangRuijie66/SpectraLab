@@ -1714,6 +1714,59 @@ def t_gui_empty_guide():
     w3.settings.sync()
 
 
+@check("GUI：单独拟合的寿命分布图例给出每组分振幅与强度（v4.33）")
+def t_single_fit_component_legend():
+    """单独拟合后「寿命分布」页的图例，每个分量要同时给**振幅占比**与**强度占比**。
+
+    两个口径物理意义不同、会明显不同：强度 ∝ 幅值/k 的积分，宽而慢的分量
+    强度大但峰不高；窄而快的分量峰高却几乎不发光。旧图例只给 α（强度占比），
+    看不出"这个分量是不是真的主发光体"。
+    """
+    import shutil
+    import tempfile
+
+    app, w = _make_gui()
+    rng = np.random.default_rng(5)
+    dt = 0.05
+    t = np.arange(0, 60, dt)
+    irf = np.exp(-0.5 * ((t - 2.0) / 0.15) ** 2)
+    irf = irf / irf.sum()
+    truth = np.zeros_like(t)
+    for a, tau in ((0.5, 1.0), (0.5, 9.0)):      # 快慢各半，口径差异明显
+        truth += a * np.convolve(irf, np.exp(-t / tau), mode='full')[:len(t)]
+    truth *= 20000.0 / truth.max()
+    decay = np.maximum(rng.poisson(truth).astype(float), 0.0)
+
+    out = tempfile.mkdtemp(prefix='qls_single_')
+    try:
+        _write_three_col_csv(os.path.join(out, 's.csv'), t, decay, irf * 1e6)
+        w.spectrum_type_combo.setCurrentIndex(2)
+        w.lifetime_method_combo.setCurrentIndex(1)     # SESM 快
+        w.lifetime_nrates_spin.setValue(101)
+        w.load_data_from_folder(out)
+        w.file_list.setCurrentRow(0)
+        w._do_lifetime_plot()
+        res = w._last_lifetime_result
+        ax3 = w.lifetime_canvas.fig.axes[0]
+        labels = [x.get_text() for x in ax3.get_legend().get_texts()]
+        comp = [s for s in labels if '振幅' in s or '强度' in s]
+        assert len(comp) == len(res['peak_result']), \
+            f"每个分量都要有图例条目：{labels}"
+        for s in comp:
+            assert '振幅' in s and '强度' in s, f"图例应同时含振幅与强度：{s!r}"
+            assert 'ns' in s, f"图例应含 τ：{s!r}"
+
+        # 数值口径核对：振幅占比取 p[4]，强度占比取 p[3]（归一后）
+        pr = res['peak_result']
+        assert all(len(p) >= 5 for p in pr), "peak_result 应含第 5 项振幅占比"
+        amps = sorted(round(p[4] * 100, 1) for p in pr)
+        got = sorted(float(s.split('振幅')[1].split('%')[0]) for s in comp)
+        for a, b in zip(amps, got):
+            assert abs(a - b) < 0.15, f"振幅占比不符：{amps} vs {got}"
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
 @check("GUI：信息页拟合摘要卡片 + 质量徽标三档（v4.27）")
 def t_gui_info_fit_card():
     app, w = _make_gui()
