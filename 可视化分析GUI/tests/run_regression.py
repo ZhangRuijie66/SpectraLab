@@ -1075,21 +1075,14 @@ def t_overlay_shared_scale():
             assert abs(p - rv) < 1e-9, \
                 f"绘图峰高 {p} 应等于原始幅度比 {rv}"
 
-        # 图例必须同时给出「振幅 A」与「实际强度 I」
+        # 图例必须**干净**：只留样品名（v4.34），不再挂振幅/强度
         labels = [t.get_text() for t in ax.get_legend().get_texts()]
         assert len(labels) == 3, f"应有 3 条图例，实际 {labels}"
+        names = [str(r.get('name', '')) for r in w._overlay_results if r]
+        assert labels == names, f"图例应只含样品名：{labels} vs {names}"
         for lab in labels:
-            assert 'A=' in lab and 'a.u.' in lab, f"图例缺振幅：{lab!r}"
-            assert 'I=' in lab and 'counts' in lab, f"图例缺实际强度：{lab!r}"
-        # 强度口径核对：应等于「拟合窗口内总计数 × 还原因子」
-        for r, lab in zip([x for x in w._overlay_results if x], labels):
-            info = r['info']
-            fs = int(info['fit_start']); fe = int(info['fit_end'])
-            want = float(np.sum(np.asarray(r['decay'], float)[fs:fe])) * \
-                float(info.get('rescale_factor', 1.0) or 1.0)
-            got = float(lab.split('I=')[1].split(' ')[0])
-            assert abs(got - want) / max(want, 1e-9) < 1e-3, \
-                f"图例 I={got} 与窗口总计数 {want} 不符（{lab!r}）"
+            assert 'A=' not in lab and 'I=' not in lab and '\n' not in lab, \
+                f"图例应保持干净、无振幅/强度附加行：{lab!r}"
     finally:
         shutil.rmtree(out, ignore_errors=True)
 

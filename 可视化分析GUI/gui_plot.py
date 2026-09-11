@@ -1235,10 +1235,13 @@ class PlotMixin:
         # 逐条归一会把分布之间的幅度差抹掉、所有曲线峰高都被拉到 1，只剩形状。
         # 改为所有曲线共用**同一个**比例因子（全部曲线的全局最大值），
         # 于是曲线间的高度差得以保留；同一尺度下也比得出形状。
+        # 图例只留样品名（v4.34）：叠加图是"看形状对比"用的，逐条挂振幅/强度
+        # 会把图例撑成一大片、遮住右侧空间；组分级的振幅/强度占比见单独拟合的
+        # 「寿命分布」页图例（8.8 节），那里才是逐组分读数的地方。
         fig = self.lifetime_canvas.fig
         fig.clf()
         ax = fig.add_subplot(111)
-        entries = []        # (tau, dist, amp, name, r)
+        entries = []        # (tau, dist, amp, name)
         for r in results:
             if not r:
                 continue
@@ -1246,71 +1249,36 @@ class PlotMixin:
             dist = np.asarray(r['k_distribution'], dtype=float)
             tau = 1.0 / np.maximum(k, 1e-12)
             amp = float(np.max(dist)) if dist.size else 0.0
-            entries.append((tau, dist, amp, str(r.get('name', '')), r))
+            entries.append((tau, dist, amp, str(r.get('name', ''))))
         scale = max((e[2] for e in entries), default=0.0)
         ok = 0
-        for tau, dist, amp, name, r in entries:
+        for tau, dist, amp, name in entries:
             ax.plot(tau, dist / scale if scale > 0 else dist, linewidth=1.0,
-                    label=self._overlay_entry_label(r, amp, scale))
+                    label=name)
             ok += 1
         ax.set_xscale('log')
         ax.set_xlabel(r'$\tau$ (ns)')
         ylab = '分布强度（同刻度，未逐条归一）'
         # 有样品的输入是归一化数据（preprocess 自动还原到各自 1e4 刻度）时，
-        # 各曲线的绝对刻度并不统一，图例里的 I 也随之不可直接互比。只加一行短警告：
-        # 文字太长会变成 3 行纵轴标签，高度不够会被裁掉（实测），详情见按钮 tooltip。
+        # 各曲线的绝对刻度并不统一 → 纵向刻度不可跨样品直接比较。
+        # 只加一行短警告：文字太长会变成 3 行纵轴标签、高度不够会被裁掉（实测）。
         if any((r or {}).get('info', {}).get('rescaled_from_normalized')
                for r in results):
-            ylab += '\n⚠ 含归一化输入，I 不可跨样品比'
+            ylab += '\n⚠ 含归一化输入（各自还原），纵向不可跨样品比'
             # 两行纵轴标签会紧贴刻度数字（实测间距仅 ~10px），补一点间隙
             ax.yaxis.labelpad = 10
         ax.set_ylabel(ylab, fontsize=9)
         ax.set_title(f'寿命分布叠加对比（{ok}/{len(results)} 个样品）',
                      fontsize=12)
         if ok:
-            ax.legend(fontsize=7, loc='center left', bbox_to_anchor=(1.01, 0.5),
+            ax.legend(fontsize=8, loc='center left', bbox_to_anchor=(1.01, 0.5),
                       frameon=False)
         self._grid(ax, dashed=True)
-        fig.subplots_adjust(left=0.10, right=0.68, top=0.90, bottom=0.17)
+        fig.subplots_adjust(left=0.10, right=0.80, top=0.90, bottom=0.17)
         self._fit_left_margin(fig, ax, base=0.10)
 
         self._overlay_results = results
         return fig
-
-    @staticmethod
-    def _overlay_entry_label(r, amp, amp_max):
-        """叠加分布图例的一条：样品名 + 振幅 + 实际强度（v4.32）。
-
-        两个量口径不同，缺一不可：
-
-        - **振幅 A（a.u.）**：该样品 `k_distribution` 的峰值，即图上这条曲线
-          （未经共用因子缩放）的最高点。它反映分布的"集中程度"——熵正则越强、
-          分布越弥散，A 越小。拟合内部已按 decay_max 归一（x_fit = 峰高/decay_max），
-          所以 A 与样品的整体亮度无关，只描述分布形状。
-        - **实际强度 I（counts）**：该样品衰减曲线在**拟合窗口内**的总计数。
-          这是各样品之间真正可比、也真正代表"亮不亮"的量——整体衰减倍数会在
-          振幅里被约掉，只有总计数留得住。它同时决定统计噪声水平（I 越大，
-          χ²R 越可信）。
-
-        振幅按占比给出（A/A_max，%）：分布是形状量，绝对刻度没有物理意义，
-        百分比才看得出"集中/弥散"；强度给绝对值（counts），便于跨样品直接比较。
-
-        统一到**拟合实际使用的刻度**：preprocess 若把归一化数据还原过
-        （`info['rescale_factor']`），这里同样乘上该因子。否则图例读的是未还原的
-        原始列，I 会比拟合所用的计数小好几个量级，与振幅、与图上曲线自相矛盾。
-        """
-        info = r.get('info', {}) or {}
-        fs = int(info.get('fit_start', 0) or 0)
-        fe = int(info.get('fit_end', 0) or 0)
-        decay = np.asarray(r.get('decay', []), dtype=float)
-        factor = float(info.get('rescale_factor', 1.0) or 1.0)
-        if decay.size and fe > fs:
-            total = float(np.sum(decay[fs:fe])) * factor
-        else:
-            total = float(np.sum(decay)) * factor
-        share = (100.0 * amp / amp_max) if amp_max > 0 else 0.0
-        return (f"{r.get('name', '')}\n"
-                f"    A={amp:.4g} a.u.（{share:.1f}%）  I={total:.4g} counts")
 
     def _on_overlay_finished(self, fig):
         """并行叠加拟合完成（主线程）"""
