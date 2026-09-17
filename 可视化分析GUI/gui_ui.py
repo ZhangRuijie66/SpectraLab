@@ -1633,6 +1633,13 @@ class UiMixin:
         self._style_combo(self.subtract_ref_combo)
         subtract_layout.addWidget(self.subtract_ref_combo)
 
+        # v4.36：一批数据里常混着不同发射窗口的光谱，扣不了本底的那些只跳过自己
+        subtract_group.setToolTip(
+            "A 选「所有光谱（各减本底）」= 每条光谱都减去 B 本底；\n"
+            "A 选某个文件 = 只画 A − B 差谱（按重叠区间插值对齐）。\n"
+            "样品与本底的波长范围没有重叠时无法相减：该条只跳过自己，\n"
+            "其余光谱照常绘制/积分（跳过明细见状态栏与积分计数标签的悬停提示）。")
+
         subtract_group.setLayout(subtract_layout)
         self.subtract_group = subtract_group
         param_layout.addWidget(subtract_group)
@@ -1954,6 +1961,7 @@ class UiMixin:
         self.integ_table.setMaximumHeight(240)
         self.integ_table.setToolTip(
             "梯形积分，用原始强度（不受归一化影响）；\n"
+            "覆盖所有已加载样品（与左侧勾选无关），启用光谱减法时按扣本底后的曲线积分；\n"
             "点表头可排序，框选后 Ctrl+C 复制选中行")
         integ_layout.addWidget(self.integ_table)
 

@@ -1576,6 +1576,90 @@ def t_gui_integration_table():
     assert len(lines) == 3, f"CSV 应为表头 + 2 行，实际 {len(lines)}"
 
 
+# ---------------------------------------------------------------- v4.36 新增
+@check("GUI：减法扣不了本底的光谱只跳过自己，不再清空积分表/整图报错（v4.36）")
+def t_gui_subtract_skip_keeps_integration():
+    from PyQt5.QtCore import Qt as _Qt
+    from PyQt5.QtWidgets import QListWidgetItem
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(1)          # 发射模式
+    # 一批数据里混着不同发射窗口：A/B 与水本底（300–548）重叠，C（560–800）完全不重叠。
+    # 这正是 20260915 那批实测数据的情形（RB 300–540、R101/EtOH 560–800、H2O 300–548）。
+    def _peak(wl, c, wd, amp=1000.0):
+        return {'wavelength': wl, 'intensity': amp * np.exp(-((wl - c) / wd) ** 2)}
+
+    w.data_cache = {
+        'A (Emission)': {'data': _peak(np.arange(300.0, 541.0), 420.0, 20.0)},
+        'B (Emission)': {'data': _peak(np.arange(360.0, 501.0), 450.0, 25.0)},
+        'C (Emission)': {'data': _peak(np.arange(560.0, 801.0), 650.0, 25.0)},
+        'bg (Emission)': {'data': _peak(np.arange(300.0, 549.0), 430.0, 3.0, 50.0)},
+    }
+    w.file_list.clear()
+    for n in w.data_cache:
+        it = QListWidgetItem(n)
+        it.setFlags(it.flags() | _Qt.ItemIsUserCheckable)
+        it.setCheckState(_Qt.Checked)
+        w.file_list.addItem(it)
+
+    w.subtract_enable_check.setChecked(True)
+    w._refresh_subtract_combos()
+    w.subtract_minuend_combo.setCurrentIndex(0)       # 所有光谱（各减本底）
+    w.subtract_ref_combo.setCurrentText('bg (Emission)')
+    w.integ_min_spin.setValue(400.0)
+    w.integ_max_spin.setValue(510.0)
+    sub_cfg = w._get_subtract_config()
+    assert sub_cfg == {'mode': 'bg', 'a': None, 'b': 'bg (Emission)'}, \
+        f"用例前提：应为扣除本底模式，实际 {sub_cfg}"
+
+    # 修复前：C 与本底无重叠 → _subtract_ref 抛 ValueError → 整个 _do_plot 崩掉，
+    # _last_integration_results 被置 None，结果表整张清空（用户看到的就是「无法积分」）
+    w._do_plot()
+    res = w._last_integration_results
+    assert res is not None, "启用减法后积分结果不应整表清空（v4.35 的 bug）"
+    names = [n for n, _v in res['rows']]
+    assert names == ['A', 'B'], f"只有与本底重叠的样品能积分，实际 {names}"
+    assert all(np.isfinite(v) for _n, v in res['rows']), "积分值应为有限数"
+    skips = dict(res['skipped'])
+    assert 'C' in skips and '无重叠' in skips['C'], f"跳过原因要写清楚：{skips}"
+    assert not any(n.startswith('bg') for n in names), "本底文件自身不参与积分"
+
+    w._update_integration_output()
+    assert w.integ_table.rowCount() == 2, \
+        f"结果表应有 2 行，实际 {w.integ_table.rowCount()}"
+    label = w.integ_count_label.text()
+    assert '共 2 个样品' in label and '1 个无法扣本底已跳过' in label, \
+        f"计数标签应说明跳过数：{label!r}"
+    assert 'C' in w.integ_count_label.toolTip(), "跳过明细应挂悬停提示"
+
+    # 绘图：扣不了本底的那条只跳过自己，其余照画，不再弹「绘图失败」
+    assert len(w.canvas.axes.get_lines()) == 2, \
+        f"应画出 2 条可扣本底的光谱，实际 {len(w.canvas.axes.get_lines())} 条"
+    note = w._subtract_skip_note()
+    assert '已跳过 1 条' in note and 'C' in note, f"状态栏应说明跳过：{note!r}"
+
+    # 差谱模式：A=C 与本底无重叠 → 结果表为空但只提示、不抛异常
+    w.subtract_minuend_combo.setCurrentText('C (Emission)')
+    w._do_plot()
+    res = w._last_integration_results
+    assert res is not None and res['rows'] == [], f"差谱无重叠应只跳过：{res}"
+    assert len(res['skipped']) == 1 and 'C' in res['skipped'][0][0], \
+        f"应记录一条跳过明细：{res['skipped']}"
+    w._update_integration_output()
+    assert w.integ_table.rowCount() == 0
+    assert '无法扣除本底' in w.integ_count_label.text(), \
+        f"应提示无可用结果：{w.integ_count_label.text()!r}"
+
+    # 关掉减法：口径回到「所有已加载样品」，不出现任何跳过
+    # （C 与积分区间无重叠 → 积分值 NaN，由结果表按「无重叠未列出」处理）
+    w.subtract_enable_check.setChecked(False)
+    w._do_plot()
+    res = w._last_integration_results
+    assert res['skipped'] == [], f"未启用减法不应有跳过：{res['skipped']}"
+    assert len(res['rows']) == 4, f"未启用减法应给出 4 个样品：{res['rows']}"
+    assert any(not np.isfinite(v) for _n, v in res['rows']), \
+        "C 与积分区间无重叠，其积分值应为 NaN（由结果表跳过展示）"
+
+
 # ---------------------------------------------------------------- v4.27 新增
 @check("GUI：matplotlib 工具条中文 tooltip + 三组分隔不重复（v4.27）")
 def t_gui_nav_toolbar():

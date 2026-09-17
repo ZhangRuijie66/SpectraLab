@@ -357,6 +357,44 @@ class PlotMixin:
             wl, y = self._subtract_ref(wl, y, sub_cfg['b'])
         return np.asarray(wl), np.asarray(y)
 
+    def _reset_subtract_skips(self):
+        """清空「无法扣除本底」跳过清单（每次重绘前调用一次）。"""
+        self._subtract_skipped = []
+
+    def _get_plot_xy_checked(self, file_name, sub_cfg=None, record=True):
+        """宽容版 `_get_plot_xy`：返回 (波长, 强度) 或 (None, 原因)。
+
+        「光谱减法」要求样品与本底的波长范围有**重叠**。一批数据里常混着用不同
+        发射窗口测的光谱（例：300–540 nm 的样品能和 300–548 nm 的水本底相减，
+        而 560–800 nm 的样品与本底毫无重叠）。v4.35 及以前这里让 ValueError 一路
+        抛出，会把**整张图、整张积分结果表**一起带崩——现象就是"启用减法之后无法
+        积分"（结果表整个清空、状态栏也没有任何解释）。
+
+        现在改成：扣不了本底的那一条**只跳过自己**并记入 `_subtract_skipped`，
+        其余光谱照常绘制/积分（`record=False` 供积分自己收集明细）。
+        """
+        try:
+            wl, y = self._get_plot_xy(file_name, sub_cfg)
+        except Exception as e:
+            reason = str(e) or e.__class__.__name__
+            if record:
+                if getattr(self, '_subtract_skipped', None) is None:
+                    self._subtract_skipped = []
+                self._subtract_skipped.append((file_name, reason))
+            logging.warning("光谱减法跳过 %s：%s", file_name, reason)
+            return None, reason
+        return (np.asarray(wl, dtype=float), np.asarray(y, dtype=float)), None
+
+    def _subtract_skip_note(self, base="图表更新完成"):
+        """状态栏文案：跳过了无法扣除本底的光谱时附上条数与原因。"""
+        skips = getattr(self, '_subtract_skipped', None) or []
+        if not skips:
+            return base
+        names = "、".join(n for n, _ in skips[:3])
+        more = f" 等 {len(skips)} 条" if len(skips) > 3 else ""
+        return (f"{base}；已跳过 {len(skips)} 条无法扣除本底的光谱"
+                f"（{names}{more}，波长范围与本底无重叠）")
+
     # ---- 光谱积分（绘图区下方的数据输出区） ----
 
     @staticmethod
@@ -387,31 +425,45 @@ class PlotMixin:
     def _compute_integration_results(self, sub_cfg=None):
         """对所有已加载样品计算积分，供数据输出区显示。
 
-        返回 {'lo', 'hi', 'rows': [(样品名, 积分值)]}；范围无效返回 None。
-        与绘图口径一致：启用光谱减法时按扣本底后的曲线积分（本底文件本身跳过）；
+        返回 {'lo', 'hi', 'rows': [(样品名, 积分值)], 'skipped': [(样品名, 原因)]}；
+        范围无效返回 None。
+        范围是**所有已加载样品**（不受左侧勾选影响）；减法口径与绘图一致：
+        启用光谱减法时按扣本底后的曲线积分（本底文件本身跳过）；
         差谱模式只输出 A − B 一行；积分用原始强度，不受「归一化」显示影响。
+
+        v4.36：单条光谱扣不了本底（波长范围与本底无重叠）时**只跳过这一条**，
+        不再让整张结果表整个清空——v4.35 的「启用减法之后无法积分」正是这么来的：
+        一条 560–800 nm 的样品配 300–548 nm 的水本底，抛出的 ValueError 被
+        `_do_plot` 里的 try/except 吞掉，`_last_integration_results` 直接置 None。
         """
         lo = float(self.integ_min_spin.value())
         hi = float(self.integ_max_spin.value())
         if hi <= lo:
             return None
-        rows = []
+        rows, skipped = [], []
         if sub_cfg and sub_cfg['mode'] == 'diff':
-            data_a = self.data_cache[sub_cfg['a']]['data']
-            wl_a, y_a = self._extract_xy(data_a)
-            wl, y = self._subtract_ref(wl_a, y_a, sub_cfg['b'])
-            label = (f"{self._sample_name(sub_cfg['a'], data_a)} − "
-                     f"{self._sample_name(sub_cfg['b'])}")
-            rows.append((label, self._integrate_band(wl, y, lo, hi)))
+            name_a, name_b = sub_cfg['a'], sub_cfg['b']
+            data_a = self.data_cache[name_a]['data']
+            label = (f"{self._sample_name(name_a, data_a)} − "
+                     f"{self._sample_name(name_b)}")
+            xy, reason = self._get_plot_xy_checked(name_a, sub_cfg, record=False)
+            if xy is None:
+                skipped.append((label, reason))
+            else:
+                rows.append((label, self._integrate_band(xy[0], xy[1], lo, hi)))
         else:
             for file_name in self.data_cache:
                 if sub_cfg and file_name == sub_cfg['b']:
                     continue  # 本底文件自身不参与积分（与绘图一致）
                 data = self.data_cache[file_name]['data']
-                wl, y = self._get_plot_xy(file_name, sub_cfg)
-                rows.append((self._sample_name(file_name, data),
-                             self._integrate_band(wl, y, lo, hi)))
-        return {'lo': lo, 'hi': hi, 'rows': rows}
+                name = self._sample_name(file_name, data)
+                xy, reason = self._get_plot_xy_checked(file_name, sub_cfg,
+                                                       record=False)
+                if xy is None:
+                    skipped.append((name, reason))
+                    continue
+                rows.append((name, self._integrate_band(xy[0], xy[1], lo, hi)))
+        return {'lo': lo, 'hi': hi, 'rows': rows, 'skipped': skipped}
 
     def _integration_rows(self, results):
         """把积分结果整理成 [(样品, 区间, 积分值)]，跳过与积分区间无重叠的样品。"""
@@ -455,6 +507,7 @@ class PlotMixin:
         table.sortItems(0, Qt.AscendingOrder)
         count_label = getattr(self, 'integ_count_label', None)
         if count_label is not None:
+            sub_skips = (results or {}).get('skipped') or []
             if results is None:
                 # 原来这两句提示是写进文本框正文的，改表格后放进计数标签；
                 # 注意区分「没加载数据」（未计算）和「范围填反了」（无效范围）
@@ -463,14 +516,27 @@ class PlotMixin:
                 else:
                     count_label.setText("未计算")
             elif not rows:
-                count_label.setText(f"{results['lo']:g}–{results['hi']:g} nm 无数据重叠")
+                if sub_skips:
+                    count_label.setText(
+                        f"无可用积分结果（{len(sub_skips)} 个无法扣除本底，见悬停提示）")
+                else:
+                    count_label.setText(f"{results['lo']:g}–{results['hi']:g} nm 无数据重叠")
             else:
                 skipped = len(results['rows']) - len(rows)
                 text = (f"共 {len(rows)} 个样品 · "
                         f"{results['lo']:g}–{results['hi']:g} nm")
                 if skipped:
                     text += f"（{skipped} 个无重叠未列出）"
+                if sub_skips:
+                    text += f"（{len(sub_skips)} 个无法扣本底已跳过）"
                 count_label.setText(text)
+            # 跳过明细放悬停提示：哪些样品、为什么（v4.36）
+            if sub_skips:
+                count_label.setToolTip(
+                    "已跳过（无法扣除本底）：\n" +
+                    "\n".join(f"· {n}：{r}" for n, r in sub_skips))
+            else:
+                count_label.setToolTip("")
 
     def _integration_tsv(self):
         """结果表的制表符文本（可直接粘进 Excel / Origin）。"""
@@ -856,6 +922,7 @@ class PlotMixin:
         # 安全清空画布（保留 constrained_layout 设置，避免 KeyError）
         self.canvas.clear_fig()
         self.canvas.axes = self.canvas.fig.add_subplot(111)
+        self._reset_subtract_skips()
 
         # 设置中文字体
         self.setup_chinese_font()
@@ -2003,6 +2070,10 @@ class PlotMixin:
         try:
             wl, y = self._subtract_ref(wl_a, y_a, name_b)
         except ValueError as e:
+            # 画布写原因，同时记进跳过清单让状态栏也说明（v4.36）
+            if getattr(self, '_subtract_skipped', None) is None:
+                self._subtract_skipped = []
+            self._subtract_skipped.append((f"{name_a} − {name_b}", str(e)))
             ax.text(0.5, 0.5, str(e), transform=ax.transAxes,
                     ha='center', va='center', fontsize=13,
                     color=self._mpl_colors()['muted'])
@@ -2080,7 +2151,10 @@ class PlotMixin:
 
         for i, file_name in enumerate(valid_files):
             data = self.data_cache[file_name]['data']
-            wavelength, absorption = self._get_plot_xy(file_name, sub_cfg)
+            xy, _reason = self._get_plot_xy_checked(file_name, sub_cfg)
+            if xy is None:
+                continue          # 扣不了本底的那条只跳过自己（v4.36）
+            wavelength, absorption = xy
 
             ax.plot(wavelength, absorption,
                     label=self._build_legend_label(file_name, data),
@@ -2132,7 +2206,14 @@ class PlotMixin:
             return
 
         data = self.data_cache[file_name]['data']
-        wavelength, absorption = self._get_plot_xy(file_name, sub_cfg)
+        xy, reason = self._get_plot_xy_checked(file_name, sub_cfg)
+        if xy is None:
+            # 单图模式：把原因写在画布上，不再弹「绘图失败」（v4.36）
+            ax.text(0.5, 0.5, f"无法扣除本底：\n{reason}", transform=ax.transAxes,
+                    ha='center', va='center', fontsize=13, wrap=True,
+                    color=self._mpl_colors()['muted'])
+            return
+        wavelength, absorption = xy
 
         # 使用所选颜色方案生成颜色
         colors = self._palette(color_map, 3)
@@ -2206,7 +2287,10 @@ class PlotMixin:
 
         for i, file_name in enumerate(valid_files):
             data = self.data_cache[file_name]['data']
-            wl, intensity = self._get_plot_xy(file_name, sub_cfg)
+            xy, _reason = self._get_plot_xy_checked(file_name, sub_cfg)
+            if xy is None:
+                continue          # 扣不了本底的那条只跳过自己（v4.36）
+            wl, intensity = xy
             if normalize and np.nanmax(intensity) > 0:
                 intensity = intensity / np.nanmax(intensity)
 
@@ -2255,7 +2339,14 @@ class PlotMixin:
             return
 
         data = self.data_cache[file_name]['data']
-        wl, intensity = self._get_plot_xy(file_name, sub_cfg)
+        xy, reason = self._get_plot_xy_checked(file_name, sub_cfg)
+        if xy is None:
+            # 单图模式：把原因写在画布上，不再弹「绘图失败」（v4.36）
+            ax.text(0.5, 0.5, f"无法扣除本底：\n{reason}", transform=ax.transAxes,
+                    ha='center', va='center', fontsize=13, wrap=True,
+                    color=self._mpl_colors()['muted'])
+            return
+        wl, intensity = xy
         ex_wl = data.get('ex_wl', data.get('ex'))
         # 图例标签：单图显示全部信息（样品名 + 说明信息）+ EX
         label = self._build_legend_label(file_name, data, show_all=True)
@@ -2331,7 +2422,7 @@ class PlotMixin:
         else:
             # 把积分结果写入绘图区下方的数据输出区
             self._update_integration_output()
-            self.status_bar.showMessage("图表更新完成")
+            self.status_bar.showMessage(self._subtract_skip_note())
         # v4.27：画布/空状态切换 + 状态栏徽标（有数据了就把引导页收起来）
         self._sync_empty_state()
         self._update_status_badges()
@@ -2548,7 +2639,11 @@ class PlotMixin:
         fig, ax = plt.subplots(figsize=self._pub_figsize((8.0, 5.0)))
         self.setup_chinese_font()
         data = self.data_cache[file_name]['data']
-        wl, y = self._get_plot_xy(file_name, sub_cfg)
+        xy, reason = self._get_plot_xy_checked(file_name, sub_cfg, record=False)
+        if xy is None:
+            # 让「导出全部」把这一条记进失败明细（原因写清楚），其余照常导出
+            raise ValueError(f"无法扣除本底：{reason}")
+        wl, y = xy
         colors = self._palette(self.get_color_map(), 3)
 
         if self.spectrum_type == "emission":
@@ -2615,7 +2710,10 @@ class PlotMixin:
 
         for i, file_name in enumerate(export_files):
             data = self.data_cache[file_name]['data']
-            wl, y = self._get_plot_xy(file_name, sub_cfg)
+            xy, _reason = self._get_plot_xy_checked(file_name, sub_cfg, record=False)
+            if xy is None:
+                continue          # 扣不了本底的不进导出图（v4.36）
+            wl, y = xy
             if normalize and np.nanmax(y) > 0:
                 y = y / np.nanmax(y)
             ax.plot(wl, y, linewidth=linewidth, color=colors[i],
