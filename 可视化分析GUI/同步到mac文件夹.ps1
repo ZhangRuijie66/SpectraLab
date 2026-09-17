@@ -82,6 +82,8 @@ $manifest = @(
     # ---- 上级 画图 目录下的绘图模块 ----
     "parent|plot_absorption.py",
     "parent|plot_emission.py",
+    "parent|plot_compare.py",
+    "parent|plot_compare使用说明.md",
     "parent|plot_lifetime.py",
     "parent|plot_3d_scan.py",
     "parent|read_xlsx_info.py",

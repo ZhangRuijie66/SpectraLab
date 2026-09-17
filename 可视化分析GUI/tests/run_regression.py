@@ -942,10 +942,19 @@ def t_lifetime_batch_reuse_cache():
     w.spectrum_type_combo.setCurrentIndex(2)
     t, decay, irf = _synth_double_exponential()
     w.data_cache = {}
+    # v4.37：批量动作只处理**勾选**的样品，所以文件列表里必须有条目（全勾选）
+    w.file_list.clear()
+    from PyQt5.QtCore import Qt as _Qt2
+    from PyQt5.QtWidgets import QListWidgetItem as _Item
     for i in range(3):
-        w.data_cache[f's{i}.csv'] = {'data': {
+        key = f's{i}.csv'
+        w.data_cache[key] = {'data': {
             'time': t, 'decay': np.maximum(decay * (1.0 - 0.15 * i), 0.0),
             'irf': irf, 'meta': None}}
+        _it = _Item(key)
+        _it.setFlags(_it.flags() | _Qt2.ItemIsUserCheckable)
+        _it.setCheckState(_Qt2.Checked)
+        w.file_list.addItem(_it)
     w.lifetime_auto_lambda_check.setChecked(False)   # 快跑，不扫 λ
     w.lifetime_nrates_spin.setValue(51)              # 控件下限即 51，小值最快
     params = w._collect_plot_params()
@@ -2071,6 +2080,246 @@ def t_splash_theme():
     r, g, b = img.getpixel((380, 200))
     lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
     assert lum < 0.45, f"bootloader 启动图应是深色底，实测亮度 {lum:.2f}（{r},{g},{b}）"
+
+
+def _install_spectra(w, spectra, mode='emission'):
+    """把 {缓存键: (wl, y)} 装进窗口：data_cache + 文件列表（全勾选）。
+
+    v4.37 的勾选口径测试需要"文件列表里有条目"，只有 data_cache 是不够的
+    （`_checked_scope` 走的是文件列表的勾选状态）。
+    """
+    from PyQt5.QtCore import Qt as _Qt
+    from PyQt5.QtWidgets import QListWidgetItem
+    w.spectrum_type_combo.setCurrentIndex(1 if mode == 'emission' else 0)
+    w.data_cache = {}
+    w.file_list.clear()
+    for key, xy in spectra.items():
+        wl, y = xy[0], xy[1]
+        extra = xy[2] if len(xy) > 2 else {}
+        data = {'wavelength': np.asarray(wl, float),
+                'intensity': np.asarray(y, float)}
+        data.update(extra)
+        w.data_cache[key] = {'data': data}
+        it = QListWidgetItem(key)
+        it.setFlags(it.flags() | _Qt.ItemIsUserCheckable)
+        it.setCheckState(_Qt.Checked)
+        w.file_list.addItem(it)
+
+
+# ---------------------------------------------------------------- v4.37 新增
+@check("plot_compare：三种纵轴口径 + null/空值样品不进图（v4.37）")
+def t_compare_module():
+    import tempfile
+    from pathlib import Path as _Path
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import plot_compare as pc
+    from read_xlsx_info import load_xlsx_info
+
+    wl = np.arange(400.0, 701.0, 1.0)
+    y = 100.0 * np.exp(-((wl - 500.0) / 30.0) ** 2)
+
+    # 峰强度：全谱 / 指定区间
+    assert abs(pc.measure_metric(wl, y, 'peak_intensity') - 100.0) < 1e-9
+    assert abs(pc.measure_metric(wl, y, 'peak_intensity', band=(480, 520)) - 100.0) < 1e-9
+    # 峰面积 = 同一份梯形积分实现（GUI 积分结果表也用它）
+    area = pc.measure_metric(wl, y, 'peak_area', band=(430, 570))
+    assert abs(area - pc.integrate_band(wl, y, 430, 570)) < 1e-12
+    # 指定波长：插值取值；范围外不外推
+    assert abs(pc.measure_metric(wl, y, 'at_wavelength', at_wl=500.0) - 100.0) < 1e-6
+    assert np.isnan(pc.measure_metric(wl, y, 'at_wavelength', at_wl=900.0)), \
+        "指定波长落在数据范围外时应返回 NaN（不外推）"
+    assert np.isnan(pc.measure_metric(wl, y, 'peak_intensity', band=(800, 900))), \
+        "区间与数据无重叠时应返回 NaN"
+
+    # 说明.xlsx：空单元格 / 文本 null / N/A / - 一律视为"没有值"；0 是有效值
+    tmp = tempfile.mkdtemp(prefix='cmp_xlsx_')
+    path = os.path.join(tmp, '说明.xlsx')
+    pd.DataFrame({
+        '编号': [1, 2, 3, 4],
+        'RB浓度': [10, None, 'null', 0],
+        'L8i浓度': [100, 200, 'N/A', '-'],
+        '全空列': [None, None, 'null', '-'],
+        '备注': ['样品', '参比', '-', 'N/A'],
+    }).to_excel(path, index=False)
+    info = load_xlsx_info(tmp)
+    assert info is not None, "说明.xlsx 应能读出"
+    assert info.numeric_columns() == ['RB浓度', 'L8i浓度'], \
+        f"「全空列」不应算数值列：{info.numeric_columns()}"
+    assert info.value_for(1, 'RB浓度') == 10
+    assert info.value_for(2, 'RB浓度') is None, "空单元格应视为没有值"
+    assert info.value_for(3, 'RB浓度') is None, "文本 null 应视为没有值"
+    assert info.value_for(4, 'RB浓度') == 0, "0 是有效值，不能被当成空"
+    assert info.value_for(1, '备注') == '样品'
+    assert info.value_for(3, '备注') is None, "'-' 应视为没有值"
+    assert 'null' not in str(info.info) and 'N/A' not in str(info.info), \
+        f"清洗后不应残留 null / N/A：{info.info}"
+
+    samples = [('s1', 's-1.csv', wl, y), ('s2', 's-2.csv', wl, y),
+               ('s3', 's-3.csv', wl, y), ('s4', 's-4.csv', wl, y)]
+    res = pc.collect_points(samples, info, x_var='RB浓度', metric='peak_intensity')
+    assert sorted(p[1] for p in res['points']) == [0.0, 10.0], \
+        f"只有 #1(10) 与 #4(0) 有 RB浓度：{res['points']}"
+    reasons = dict(res['skipped'])
+    assert '为空' in reasons.get('s2', '') and '为空' in reasons.get('s3', ''), reasons
+
+    # 分组变量为空值的样品同样被剔除：#1 有 L8i=100，#2/#3/#4 都没有
+    res_g = pc.collect_points(samples, info, 'RB浓度', group_var='L8i浓度',
+                              metric='peak_intensity')
+    assert [p[3] for p in res_g['points']] == ['s1'], res_g['points']
+    assert res_g['points'][0][0] == 100, res_g['points']
+    assert len(res_g['skipped']) == 3, res_g['skipped']
+
+    # 出图：不分组 → 一条曲线；图例给出样品数
+    fig, summary = pc.make_compare_figure(res['points'], 'RB浓度', '峰强度', 't')
+    try:
+        assert summary['n_points'] == 2 and len(fig.axes[0].get_lines()) == 1, summary
+        assert '全部样品' in fig.axes[0].get_legend().get_texts()[0].get_text()
+    finally:
+        plt.close(fig)
+
+    # 一键：真实数据（RB-L8i-1..6 + 说明.xlsx），按 L8i浓度 分组
+    folder = (r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\202608\20260825')
+    if os.path.isdir(folder) and os.path.exists(os.path.join(folder, '说明.xlsx')):
+        out = pc.run_compare(folder=folder, x_var='RB浓度', group_var='L8i浓度',
+                             metric='peak_intensity', band=(560, 620),
+                             save_dir=os.path.join(tmp, 'plots'), verbose=False)
+        assert out['summary']['n_points'] == 6, out['summary']
+        assert len(out['summary']['groups']) == 4, out['summary']['groups']
+        assert os.path.exists(out['figure']) and os.path.exists(out['csv'])
+        head = open(out['csv'], encoding='utf-8-sig').read().splitlines()[0]
+        assert head.split(',')[:3] == ['样品', '编号', 'RB浓度'], head
+
+
+@check("GUI：数据比较取点 + 积分/比较只统计勾选项（v4.37）")
+def t_gui_compare_and_checked_scope():
+    from pathlib import Path as _Path
+    from read_xlsx_info import XlsxInfo
+
+    app, w = _make_gui()
+    wl = np.arange(400.0, 601.0, 1.0)
+    y1 = 100.0 * np.exp(-((wl - 500.0) / 25.0) ** 2)
+    y2 = 50.0 * np.exp(-((wl - 500.0) / 25.0) ** 2)
+    _install_spectra(w, {'s-1 (Emission)': (wl, y1), 's-2 (Emission)': (wl, y2)})
+
+    # #2 缺「浓度」→ 不该出现在点线图里
+    w.xlsx_info = XlsxInfo(info={1: {'浓度': 5}, 2: {}}, numbers=[1, 2],
+                           columns=['浓度'], path=_Path('说明.xlsx'))
+    w._refresh_compare_combos()
+    assert w.compare_x_combo.isEnabled(), "有说明.xlsx 数值列时按钮应可用"
+    assert w.compare_x_combo.currentText() == '浓度'
+    assert [w.compare_group_combo.itemText(i)
+            for i in range(w.compare_group_combo.count())] == ['（不分组）', '浓度']
+
+    w.compare_x_combo.setCurrentText('浓度')
+    w.compare_group_combo.setCurrentIndex(0)
+    w.compare_metric_combo.setCurrentIndex(0)
+    w.compare_peak_lo_spin.setValue(450.0)
+    w.compare_peak_hi_spin.setValue(550.0)
+    res = w._do_compare_plot()
+    assert res['summary']['n_points'] == 1, f"#2 缺变量值，应只剩 #1：{res}"
+    assert res['skipped'] and '为空' in res['skipped'][0][1], res['skipped']
+    assert '5' in w._compare_status_text(res) or '1 个点' in w._compare_status_text(res)
+    # 跳过明细挂在画布 tooltip 上
+    w._update_compare_output(res)
+    assert 's-2' in w.compare_canvas.toolTip(), w.compare_canvas.toolTip()
+    # 指标切换只启用相关输入框
+    w.compare_metric_combo.setCurrentIndex(2)      # 指定波长
+    assert w.compare_wl_spin.isEnabled() and not w.compare_peak_lo_spin.isEnabled()
+    w.compare_wl_spin.setValue(500.0)
+    res2 = w._do_compare_plot()
+    assert res2['y_label'].startswith('发射强度@500'), res2['y_label']
+    w.compare_metric_combo.setCurrentIndex(1)      # 峰面积 → 复用积分区间
+    w.compare_peak_lo_spin.setValue(0.0)
+    w.compare_peak_hi_spin.setValue(0.0)
+    w.integ_min_spin.setValue(450.0)
+    w.integ_max_spin.setValue(550.0)
+    assert w._compare_config()['band'] == (450.0, 550.0), "峰面积应复用积分区间"
+
+    # 积分：只统计勾选项
+    w._do_plot()
+    w._update_integration_output()
+    assert w.integ_table.rowCount() == 2, w.integ_table.rowCount()
+    for i in range(w.file_list.count()):
+        if w.file_list.item(i).text().startswith('s-2'):
+            w.file_list.item(i).setCheckState(0)
+    w._do_plot()
+    w._update_integration_output()
+    assert w.integ_table.rowCount() == 1, "取消勾选后该样品应从积分表消失"
+    assert w.integ_table.item(0, 0).text() == 's-1'
+    # 数据比较同样只看勾选
+    assert w._do_compare_plot()['n_scope'] == 1
+    # 一个都不勾：明确提示，不给一张空表
+    for i in range(w.file_list.count()):
+        w.file_list.item(i).setCheckState(0)
+    w._do_plot()
+    w._update_integration_output()
+    assert w.integ_table.rowCount() == 0
+    assert '未勾选' in w.integ_count_label.text(), w.integ_count_label.text()
+
+    # 没有说明.xlsx 时「数据比较」应置灰并给出原因
+    app2, w2 = _make_gui()
+    assert not w2.compare_x_combo.isEnabled() or w2.compare_x_combo.count() == 0
+    assert '说明' in w2.compare_x_combo.currentText(), w2.compare_x_combo.currentText()
+    assert not w2.compare_btn.isEnabled()
+
+
+@check("GUI：寿命模式勾选框 + 叠加分布/汇总图只处理勾选样品（v4.37）")
+def t_gui_lifetime_checked_scope():
+    from PyQt5.QtCore import Qt as _Qt
+    from PyQt5.QtWidgets import QListWidgetItem
+    import plot_lifetime as pl
+
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)
+    t, decay, irf = _synth_double_exponential()
+    w.data_cache = {}
+    w.file_list.clear()
+    for i in range(3):
+        key = f'L{i}.csv'
+        w.data_cache[key] = {'data': {'time': t, 'decay': decay, 'irf': irf,
+                                      'meta': None}}
+        it = QListWidgetItem(key)
+        it.setFlags(it.flags() | _Qt.ItemIsUserCheckable)
+        it.setCheckState(_Qt.Checked)
+        w.file_list.addItem(it)
+    for i in range(3):
+        assert w.file_list.item(i).flags() & _Qt.ItemIsUserCheckable, \
+            "寿命模式必须有勾选框（v4.37：叠加分布只画勾选的样品）"
+
+    calls = []
+    real = pl.fit_many
+    try:
+        pl.fit_many = lambda datasets, **kw: (calls.append([d['name'] for d in datasets])
+                                              or [None] * len(datasets))
+        w._lifetime_fit_cache = {}
+        w._fit_all_with_cache(w._collect_plot_params())
+        assert calls[-1] == ['L0.csv', 'L1.csv', 'L2.csv'], calls
+        assert '勾选 3/3' in w._batch_fit_status_text(w._collect_plot_params())
+
+        w.file_list.item(2).setCheckState(_Qt.Unchecked)
+        w._lifetime_fit_cache = {}
+        w._fit_all_with_cache(w._collect_plot_params())
+        assert calls[-1] == ['L0.csv', 'L1.csv'], \
+            f"只勾 2 个时只应拟合这 2 个：{calls[-1]}"
+        assert '勾选 2/3' in w._batch_fit_status_text(w._collect_plot_params())
+    finally:
+        pl.fit_many = real
+
+    # 一个都不勾：按钮给提示、不进入拟合
+    for i in range(3):
+        w.file_list.item(i).setCheckState(_Qt.Unchecked)
+    boxed = []
+    from PyQt5.QtWidgets import QMessageBox
+    real_warn = QMessageBox.warning
+    try:
+        QMessageBox.warning = staticmethod(lambda *a, **k: boxed.append(a))
+        w._run_overlay_lifetime()
+        w._run_batch_export('summary')
+    finally:
+        QMessageBox.warning = real_warn
+    assert len(boxed) == 2 and all('勾选' in str(a) for a in boxed), boxed
+    assert not getattr(w, '_plotting', False), "没勾选时不应进入拟合/绘图状态"
 
 
 def main():

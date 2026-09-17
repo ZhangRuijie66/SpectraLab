@@ -121,6 +121,7 @@ echo "--- PyInstaller 打包中（约 2 分钟）---"
     --hidden-import plot_absorption \
     --hidden-import curve_colors \
     --hidden-import plot_emission \
+    --hidden-import plot_compare \
     --hidden-import plot_lifetime \
     --hidden-import plot_3d_scan \
     --hidden-import read_xlsx_info \

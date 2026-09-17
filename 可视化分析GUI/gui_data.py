@@ -515,7 +515,7 @@ class DataMixin:
         self._plotting = False
         self._fit_cancelled = False
         self._long_task = False
-        for attr in ('canvas', 'lifetime_canvas', 'diag_canvas'):
+        for attr in ('canvas', 'lifetime_canvas', 'diag_canvas', 'compare_canvas'):
             cv = getattr(self, attr, None)
             if cv is not None:
                 try:
@@ -720,13 +720,20 @@ class DataMixin:
         if hasattr(self, 'file_list_label'):
             if is_lifetime:
                 self.file_list_label.setText("已加载文件")
-                self.file_list_label.setToolTip("点选一个文件以拟合查看（寿命模式无合并图）")
+                self.file_list_label.setToolTip(
+                    "勾选参与「叠加分布 / 跨样品汇总图 / PDF 报告」的样品（v4.37）；\n"
+                    "点一下某个文件＝只拟合查看它")
             elif is_scan3d:
                 self.file_list_label.setText("已加载文件")
                 self.file_list_label.setToolTip("点选一个文件以绘制该 EEM 图（一次只画一个）")
             else:
                 self.file_list_label.setText("已加载文件")
                 self.file_list_label.setToolTip("勾选多个文件以绘制合并图；双击/单击查看单个")
+        # 「数据比较」参数组与标签页只在吸收/发射模式下出现（v4.37）
+        if hasattr(self, 'compare_group'):
+            self.compare_group.setVisible(is_spectrum)
+        if hasattr(self, '_set_compare_tab_visible'):
+            self._set_compare_tab_visible(is_spectrum)
         # 「寿命分布」「拟合诊断」选项卡只在荧光寿命模式下显示
         if hasattr(self, '_set_dist_tab_visible'):
             self._set_dist_tab_visible(is_lifetime)
@@ -950,7 +957,7 @@ class DataMixin:
         self.update_plot()
 
     def _load_xlsx_info(self, folder):
-        """读取文件夹中的 说明.xlsx，供图例标签增强使用；找不到则为 None。"""
+        """读取文件夹中的 说明.xlsx，供图例标签增强 + 「数据比较」变量下拉框使用。"""
         self.xlsx_info = None
         try:
             info = load_xlsx_info(folder)
@@ -963,6 +970,109 @@ class DataMixin:
         except Exception as e:
             self.xlsx_info = None
             log_exception("[read_xlsx_info] 读取失败", e)
+        finally:
+            # 变量下拉框跟着说明.xlsx 走（v4.37）
+            self._refresh_compare_combos()
+
+    def _refresh_compare_combos(self):
+        """把说明.xlsx 的**数值列**填进「数据比较」的横轴 / 分组下拉框（v4.37）。
+
+        - 没有说明.xlsx、或里面没有数值列时：下拉框给出原因，按钮禁用；
+        - 只有一个数值列时：分组变量只有「（不分组）」可选；
+        - 尽量保留用户原来的选择。
+        """
+        combo_x = getattr(self, 'compare_x_combo', None)
+        if combo_x is None:
+            return
+        combo_g = getattr(self, 'compare_group_combo', None)
+        btn = getattr(self, 'compare_btn', None)
+        csv_btn = getattr(self, 'compare_csv_btn', None)
+
+        info = getattr(self, 'xlsx_info', None)
+        cols = list(info.numeric_columns()) if (info is not None and info.numbers) else []
+        # 文件夹里那个 .xlsx 可能根本不是"说明表"（寿命模式的多列数据 xlsx 就长这样，
+        # 列名是 A0/A6/IRF…）。判定规则（v4.37）：
+        #   文件名含「说明」→ 认它是说明表（哪怕编号暂时对不上，也要让用户能试、
+        #   并从"匹配不到编号"的跳过明细里看出问题）；
+        #   文件名不含「说明」→ 必须在已加载文件里至少匹配到一个编号，才算说明表。
+        no_cols_reason = None
+        if cols:
+            is_info_file = '说明' in Path(str(getattr(info, 'path', ''))).stem
+            if not is_info_file:
+                cache = getattr(self, 'data_cache', None) or {}
+                matched = False
+                for key in cache:
+                    try:
+                        if match_number(self._filename_for_match(key), info.numbers) is not None:
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+                if not matched:
+                    cols = []
+                    no_cols_reason = "该 .xlsx 不是说明表"        # 太长会把参数栏撑宽
+        else:
+            no_cols_reason = ("未找到说明.xlsx" if info is None
+                              else "说明.xlsx 无数值列")
+
+        prev_x = combo_x.currentText()
+        prev_g = combo_g.currentText() if combo_g is not None else ''
+
+        for combo in (combo_x, combo_g):
+            if combo is None:
+                continue
+            combo.blockSignals(True)
+            combo.clear()
+        if not cols:
+            combo_x.addItem(f"（{no_cols_reason}）")
+            combo_x.setEnabled(False)
+            if combo_g is not None:
+                combo_g.addItem("（不可用）")
+                combo_g.setEnabled(False)
+            if btn is not None:
+                btn.setEnabled(False)
+                btn.setToolTip(f"数据比较不可用：{no_cols_reason}\n"
+                               "需要在数据文件夹里放一份含数值列、且编号与文件名对得上的 说明.xlsx")
+            if csv_btn is not None:
+                csv_btn.setEnabled(False)
+            for combo in (combo_x, combo_g):
+                if combo is not None:
+                    combo.blockSignals(False)
+            return
+
+        combo_x.addItems(cols)
+        combo_x.setEnabled(True)
+        combo_x.setCurrentText(prev_x if prev_x in cols else cols[0])
+        if combo_g is not None:
+            combo_g.addItem("（不分组）")
+            combo_g.addItems(cols)
+            combo_g.setEnabled(len(cols) > 1)
+            if prev_g in cols or prev_g == "（不分组）":
+                combo_g.setCurrentText(prev_g)
+            else:
+                combo_g.setCurrentIndex(0)
+        if btn is not None:
+            btn.setEnabled(True)
+            btn.setToolTip("按说明.xlsx 的变量画点线图（只统计左侧勾选的样品）\n"
+                           "图在「数据比较」标签页")
+        if csv_btn is not None:
+            csv_btn.setEnabled(True)
+        for combo in (combo_x, combo_g):
+            if combo is not None:
+                combo.blockSignals(False)
+
+    def _compare_variables(self):
+        """当前选择的 (横轴变量, 分组变量或 None)；不可用时抛 ValueError。"""
+        combo_x = getattr(self, 'compare_x_combo', None)
+        combo_g = getattr(self, 'compare_group_combo', None)
+        if combo_x is None or not combo_x.isEnabled():
+            raise ValueError("没有可用的说明.xlsx 数值列作为横轴变量")
+        x_var = combo_x.currentText()
+        g_txt = combo_g.currentText() if combo_g is not None else "（不分组）"
+        group_var = None if (not g_txt or g_txt.startswith('（')) else g_txt
+        if group_var == x_var:
+            group_var = None      # 分组与横轴同列没有意义，按不分组处理
+        return x_var, group_var
 
     def _filename_for_match(self, cache_key):
         """取用于编号匹配的文件名：优先数据缓存里的真实文件名，否则用缓存键。"""
@@ -1012,6 +1122,29 @@ class DataMixin:
             else:
                 parts.append(f'{col}={val}')
         return ', '.join(parts)
+
+    def _xlsx_vars_text(self, file_name):
+        """该样品在说明.xlsx 里的变量文字（**只列有值的变量**，v4.37）。
+
+        值为空单元格 / ``null`` / ``N/A`` 的变量直接不出现——以前这种样品会在
+        图例或信息页里漏出 ``RB浓度=null`` 之类的字样。
+        """
+        info = getattr(self, 'xlsx_info', None)
+        if info is None or not info.numbers:
+            return ''
+        try:
+            num = match_number(self._filename_for_match(file_name), info.numbers)
+        except Exception:
+            return ''
+        if num is None:
+            return ''
+        parts = []
+        for col in info.columns:
+            val = info.value_for(num, col)
+            if val is None:
+                continue
+            parts.append(str(val) if '备注' in str(col) else f'{col}={val}')
+        return '  '.join(parts)
 
     def _build_legend_label(self, file_name, data=None, show_all=False):
         """构造图例标签：说明.xlsx 信息或样品名 (+EX)。
@@ -1245,13 +1378,10 @@ class DataMixin:
             seen[key] = seen.get(key, 1)
             self.data_cache[key] = {'path': file_path, 'data': data}
             item = QListWidgetItem(key)
-            # 寿命模式没有合并图，去掉勾选框（QListWidgetItem 默认 flags 含
-            # ItemIsUserCheckable，必须显式清除，否则仍会绘制勾选框）
-            if self.spectrum_type != "lifetime":
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked)
-            else:
-                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+            # v4.37：寿命模式**也**给勾选框——「叠加分布 / 跨样品汇总图 / PDF 报告」
+            # 现在只处理勾选的样品（以前寿命模式没有合并图，勾选框被去掉了）。
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
             self.file_list.addItem(item)
             loaded_count += 1
         return loaded_count, skipped, errors
@@ -1295,6 +1425,11 @@ class DataMixin:
                 info_text += f"波长范围: {wavelength.min():.1f} - {wavelength.max():.1f} nm\n"
                 info_text += f"数据点数: {len(wavelength)}\n"
                 info_text += f"{y_label}范围: {intensity.min():.4f} - {intensity.max():.4f}\n\n"
+
+                # 说明.xlsx 里这个样品的变量（空值不显示，v4.37）
+                xlsx_line = self._xlsx_vars_text(file_name)
+                if xlsx_line:
+                    info_text += f"说明.xlsx: {xlsx_line}\n\n"
 
                 # 峰信息
                 if self.mark_peaks_check.isChecked():

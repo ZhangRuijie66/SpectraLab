@@ -45,6 +45,13 @@ _NUM_COL_NAMES = (
     'No', 'NO', 'no', 'No.', 'Number', 'num', 'index', 'ID',
 )
 
+# 文本形式的「空值」——说明.xlsx 里常手填这些表示"该变量没有值"（v4.37）。
+# 只收无歧义的写法；像「无」「未测」这类可能是有意义的备注内容，不当空值处理。
+_NULL_TOKENS = {
+    '', 'null', 'none', 'nil', 'nan', 'n/a', '#n/a', '#value!',
+    'na', 'nd', '-', '--', '---', '—', '–',
+}
+
 
 def _is_number_col(name: str) -> bool:
     """判断某列名是否像「编号」列。"""
@@ -65,7 +72,14 @@ def _is_number_col(name: str) -> bool:
 
 
 def _clean_value(v):
-    """把单元格值清洗成适合展示的形式：NaN -> 空串；浮点整数值 -> int；其余原样。"""
+    """把单元格值清洗成适合展示的形式：空值 -> 空串；浮点整数值 -> int；其余原样。
+
+    v4.37：除 Excel 真正的空单元格（读进来是 NaN）之外，**文本形式的空值**也
+    一律当空处理——说明.xlsx 里常有人手填 ``null`` / ``NULL`` / ``None`` /
+    ``N/A`` / ``#N/A`` / ``-`` / ``—`` 表示"这个变量没有值"，它们以前会被原样
+    当成有效值显示成 ``RB浓度=null``，现在统一按空值丢弃（不参与展示、不参与
+    数据比较的取点）。
+    """
     try:
         if pd.isna(v):
             return ''
@@ -75,7 +89,7 @@ def _clean_value(v):
         return int(v)
     if isinstance(v, str):
         s = v.strip()
-        if s.lower() == 'nan':
+        if s.lower() in _NULL_TOKENS:
             return ''
         return s
     return v
@@ -112,6 +126,35 @@ class XlsxInfo:
     def label_for(self, number: int) -> str:
         """返回某编号的说明字符串，如 ``'RB浓度=20, L8i浓度=200, 备注=样品'``。"""
         return format_info(self.info.get(int(number), {}))
+
+    def value_for(self, number: int, column: str):
+        """取某编号在某列的值；该样品缺这一列（空单元格 / null 文本）时返回 None。
+
+        「数据比较」模块靠它把"没有值"和"值为 0"区分开——返回 None 的样品
+        不进入点线图（v4.37）。
+        """
+        entry = self.info.get(int(number), {})
+        val = _clean_value(entry.get(column))
+        return None if val == '' else val
+
+    def numeric_columns(self) -> List[str]:
+        """可作为横轴 / 分组变量的**数值列**（至少有一个样品给出可转 float 的值）。
+
+        空值列、纯文本列（如「备注」）都不会出现在这里。
+        """
+        cols = []
+        for col in self.columns:
+            for entry in self.info.values():
+                val = _clean_value(entry.get(col))
+                if val == '':
+                    continue
+                try:
+                    float(val)
+                except (TypeError, ValueError):
+                    continue
+                cols.append(col)
+                break
+        return cols
 
 
 def load_xlsx_info(folder_path: Union[str, Path], xlsx_name: Optional[str] = None) -> Optional[XlsxInfo]:

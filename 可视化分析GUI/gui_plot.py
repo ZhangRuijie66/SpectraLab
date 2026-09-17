@@ -22,6 +22,7 @@ from gui_components import PlotWorker
 from gui_log import log_exception, log_file_path
 from plot_absorption import find_absorption_peaks
 from curve_colors import CurveColors
+import plot_compare as _pc
 
 # 将父目录加入 Python 路径，便于独立导入绘图模块
 _parent = Path(__file__).resolve().parent.parent
@@ -361,6 +362,18 @@ class PlotMixin:
         """清空「无法扣除本底」跳过清单（每次重绘前调用一次）。"""
         self._subtract_skipped = []
 
+    def _checked_scope(self):
+        """当前要处理的样品：左侧**勾选** ∩ 已加载（顺序与文件列表一致）。
+
+        v4.37 起统一口径：光谱积分、寿命「叠加分布 / 跨样品汇总图 / PDF 报告」、
+        「数据比较」点线图都只统计勾选项 —— 图上看不到的数据不再偷偷参与统计。
+        """
+        cache = getattr(self, 'data_cache', None) or {}
+        try:
+            return [f for f in self.get_checked_files() if f in cache]
+        except Exception:
+            return list(cache.keys())
+
     def _get_plot_xy_checked(self, file_name, sub_cfg=None, record=True):
         """宽容版 `_get_plot_xy`：返回 (波长, 强度) 或 (None, 原因)。
 
@@ -401,34 +414,20 @@ class PlotMixin:
     def _integrate_band(wl, y, lo, hi):
         """梯形法计算 [lo, hi] 波长区间内的曲线下面积。
 
-        区间边界处对光谱做线性插值（避免半步长误差）；
-        数据与区间无重叠时返回 NaN。
+        v4.37 起实现搬进 `plot_compare.integrate_band`（独立模块 + 命令行可用），
+        这里保留同名薄封装：积分结果表与「数据比较」的峰面积由此**共用同一实现**，
+        两个数字不会因为两份代码而分叉。
         """
-        wl = np.asarray(wl, dtype=float)
-        y = np.asarray(y, dtype=float)
-        mask = np.isfinite(wl) & np.isfinite(y)
-        wl, y = wl[mask], y[mask]
-        if wl.size < 2 or not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-            return float('nan')
-        order = np.argsort(wl)
-        wl, y = wl[order], y[order]
-        grid_lo = max(lo, float(wl[0]))
-        grid_hi = min(hi, float(wl[-1]))
-        if grid_hi <= grid_lo:
-            return float('nan')
-        wg = np.concatenate(([grid_lo], wl[(wl > grid_lo) & (wl < grid_hi)], [grid_hi]))
-        yg = np.interp(wg, wl, y)
-        # numpy 2 起 trapz 更名为 trapezoid（兼容旧版）
-        trapz = getattr(np, 'trapezoid', np.trapz)
-        return float(trapz(yg, wg))
+        return _pc.integrate_band(wl, y, lo, hi)
 
     def _compute_integration_results(self, sub_cfg=None):
         """对所有已加载样品计算积分，供数据输出区显示。
 
-        返回 {'lo', 'hi', 'rows': [(样品名, 积分值)], 'skipped': [(样品名, 原因)]}；
-        范围无效返回 None。
-        范围是**所有已加载样品**（不受左侧勾选影响）；减法口径与绘图一致：
-        启用光谱减法时按扣本底后的曲线积分（本底文件本身跳过）；
+        返回 {'lo', 'hi', 'rows': [(样品名, 积分值)], 'skipped': [(样品名, 原因)],
+        'unchecked': bool}；范围无效返回 None。
+        范围是**左侧勾选的样品**（v4.37 起；与图上画出来的曲线一一对应——
+        以前是"所有已加载样品"，会出现表里有、图上却没有的样品）。
+        减法口径与绘图一致：启用光谱减法时按扣本底后的曲线积分（本底文件本身跳过）；
         差谱模式只输出 A − B 一行；积分用原始强度，不受「归一化」显示影响。
 
         v4.36：单条光谱扣不了本底（波长范围与本底无重叠）时**只跳过这一条**，
@@ -452,7 +451,12 @@ class PlotMixin:
             else:
                 rows.append((label, self._integrate_band(xy[0], xy[1], lo, hi)))
         else:
-            for file_name in self.data_cache:
+            scope = self._checked_scope()
+            if not scope:
+                # 一个样品都没勾：不猜、也不偷偷按全部算（v4.37）
+                return {'lo': lo, 'hi': hi, 'rows': [], 'skipped': [],
+                        'unchecked': True}
+            for file_name in scope:
                 if sub_cfg and file_name == sub_cfg['b']:
                     continue  # 本底文件自身不参与积分（与绘图一致）
                 data = self.data_cache[file_name]['data']
@@ -463,7 +467,8 @@ class PlotMixin:
                     skipped.append((name, reason))
                     continue
                 rows.append((name, self._integrate_band(xy[0], xy[1], lo, hi)))
-        return {'lo': lo, 'hi': hi, 'rows': rows, 'skipped': skipped}
+        return {'lo': lo, 'hi': hi, 'rows': rows, 'skipped': skipped,
+                'unchecked': False}
 
     def _integration_rows(self, results):
         """把积分结果整理成 [(样品, 区间, 积分值)]，跳过与积分区间无重叠的样品。"""
@@ -508,6 +513,7 @@ class PlotMixin:
         count_label = getattr(self, 'integ_count_label', None)
         if count_label is not None:
             sub_skips = (results or {}).get('skipped') or []
+            unchecked = bool((results or {}).get('unchecked'))
             if results is None:
                 # 原来这两句提示是写进文本框正文的，改表格后放进计数标签；
                 # 注意区分「没加载数据」（未计算）和「范围填反了」（无效范围）
@@ -515,6 +521,9 @@ class PlotMixin:
                     count_label.setText("积分范围无效（结束需大于起始）")
                 else:
                     count_label.setText("未计算")
+            elif unchecked:
+                # v4.37：积分只统计勾选项，没勾就明确说清楚（而不是给一张空表）
+                count_label.setText("未勾选任何样品（积分只统计左侧勾选项）")
             elif not rows:
                 if sub_skips:
                     count_label.setText(
@@ -604,6 +613,175 @@ class PlotMixin:
         except Exception as e:
             log_exception("导出积分结果 CSV 失败", e)
             QMessageBox.critical(self, "错误", f"导出积分结果失败：{e}")
+            return None
+
+    # ---- 数据比较：说明.xlsx 的变量 vs 峰强度/峰面积/指定波长（v4.37） ----
+
+    def _compare_config(self):
+        """读「数据比较」参数（主线程）。返回 dict；参数不完整时抛 ValueError。"""
+        x_var, group_var = self._compare_variables()
+        text = self.compare_metric_combo.currentText()
+        if text.startswith('峰面积'):
+            metric = 'peak_area'
+        elif text.startswith('指定波长'):
+            metric = 'at_wavelength'
+        else:
+            metric = 'peak_intensity'
+        lo = float(self.compare_peak_lo_spin.value())
+        hi = float(self.compare_peak_hi_spin.value())
+        band = (lo, hi) if (lo > 0 and hi > lo) else None
+        at_wl = float(self.compare_wl_spin.value()) or None
+        if metric == 'peak_area' and band is None:
+            # 峰面积必须有区间：退回下方「光谱积分」的起止波长，保证与结果表同口径
+            ilo = float(self.integ_min_spin.value())
+            ihi = float(self.integ_max_spin.value())
+            if ihi <= ilo:
+                raise ValueError("「峰面积」需要波长区间：请填「峰强区间」，"
+                                 "或把下方「光谱积分」的起止波长设成有效值")
+            band = (ilo, ihi)
+        if metric == 'at_wavelength' and at_wl is None:
+            raise ValueError("纵轴选「指定波长处的值」时，请填「指定波长」")
+        return {'x_var': x_var, 'group_var': group_var, 'metric': metric,
+                'band': band, 'at_wl': at_wl}
+
+    def _compare_y_label(self, cfg):
+        """纵轴标签：按模式换用吸收/发射的措辞（模块里给的是发射口径）。"""
+        metric, band, at_wl = cfg['metric'], cfg['band'], cfg['at_wl']
+        absorption = self.spectrum_type == 'absorption'
+        rng = f"{band[0]:g}–{band[1]:g} nm" if band else None
+        if metric == 'peak_area':
+            return (f'吸收峰面积 ({rng})' if absorption and rng
+                    else (f'峰面积 ({rng})' if rng else '峰面积'))
+        if metric == 'at_wavelength':
+            return (f'吸光度 A@{at_wl:g} nm' if absorption
+                    else f'发射强度@{at_wl:g} nm')
+        if absorption:
+            return f'最大吸收 ({rng})' if rng else '最大吸收（全谱）'
+        return f'峰强度 ({rng})' if rng else '峰强度（全谱最大）'
+
+    def _do_compare_plot(self, cfg=None):
+        """画「指标 - 变量」点线图（同步执行；数据量小，无需后台线程）。
+
+        只统计**勾选**的样品；曲线口径与预览图一致（启用减法时用扣本底后的曲线）。
+        缺变量值的样品不进入图，并记进 `skipped`（v4.37 需求：null 不显示）。
+        结果存 `self._last_compare_result`。
+        """
+        if cfg is None:
+            cfg = self._compare_config()
+        sub_cfg = self._get_subtract_config()
+        scope = self._checked_scope()
+
+        samples, broken = [], []
+        for file_name in scope:
+            data = self.data_cache[file_name]['data']
+            name = self._sample_name(file_name, data)
+            match_name = self._filename_for_match(file_name)
+            try:
+                wl, y = self._get_plot_xy(file_name, sub_cfg)
+            except Exception as e:
+                broken.append((name, f'曲线取不到（{e}）'))
+                continue
+            samples.append((name, match_name, np.asarray(wl, float),
+                            np.asarray(y, float)))
+
+        res = _pc.collect_points(samples, getattr(self, 'xlsx_info', None),
+                                 cfg['x_var'], group_var=cfg['group_var'],
+                                 metric=cfg['metric'], band=cfg['band'],
+                                 at_wl=cfg['at_wl'])
+        res['skipped'] = list(res['skipped']) + broken
+        res['n_scope'] = len(scope)
+        res['n_samples'] = len(samples)
+        res['y_label'] = self._compare_y_label(cfg)
+        res['x_label'] = cfg['x_var']
+
+        title = f"{res['y_label']} - {cfg['x_var']}"
+        if cfg['group_var']:
+            title += f"（按 {cfg['group_var']} 分组）"
+        res['title'] = title
+
+        fig, summary = _pc.make_compare_figure(
+            res['points'], res['x_label'], res['y_label'], title,
+            linewidth=float(self.linewidth_spin.value()),
+            color_map=self.get_color_map(),
+            legend_prefix=cfg['group_var'],
+            fig=self.compare_canvas.fig)
+        res['summary'] = summary
+        self._last_compare_result = res
+        return res
+
+    def _compare_status_text(self, res):
+        """状态栏文案：点线图取了多少点、跳过了哪些（含缺变量值 / 未匹配编号）。"""
+        txt = (f"数据比较：{res['summary']['n_points']} 个点"
+               f"（{res['x_label']}"
+               + (f" / 按 {res['group_var']} 分组" if res['group_var'] else '')
+               + f"，取自勾选的 {res['n_scope']} 个样品）")
+        if res['skipped']:
+            txt += f"；跳过 {len(res['skipped'])} 个（详见「数据比较」页悬停提示）"
+        return txt
+
+    def _update_compare_output(self, res):
+        """把跳过明细挂到「数据比较」画布 tooltip 上（哪些样品、为什么没进图）。"""
+        canvas = getattr(self, 'compare_canvas', None)
+        if canvas is None:
+            return
+        if res and res.get('skipped'):
+            canvas.setToolTip("未进入点线图的样品：\n" +
+                              "\n".join(f"· {n}：{r}" for n, r in res['skipped']))
+        else:
+            canvas.setToolTip("")
+
+    def _run_compare(self):
+        """「数据比较」按钮：画点线图并切到该标签页（v4.37）。"""
+        if self.spectrum_type not in ('absorption', 'emission'):
+            return
+        try:
+            cfg = self._compare_config()
+        except Exception as e:
+            QMessageBox.warning(self, "提示", str(e))
+            return
+        if not self._checked_scope():
+            QMessageBox.warning(self, "提示",
+                                "请先在左侧勾选至少一个样品\n（数据比较只统计勾选的样品）")
+            return
+        try:
+            res = self._do_compare_plot(cfg)
+        except Exception as e:
+            log_exception("数据比较失败", e)
+            QMessageBox.critical(self, "错误", f"数据比较失败：{e}")
+            return
+        self._update_compare_output(res)
+        try:
+            self.tab_widget.setCurrentWidget(self.compare_tab)
+        except Exception:
+            pass
+        try:
+            self.compare_canvas._fit_to_widget()
+            self.compare_canvas.draw()
+        except Exception:
+            pass
+        self.status_bar.showMessage(self._compare_status_text(res))
+
+    def _export_compare_csv(self, save_dir=None):
+        """把点线图的取点结果导出 CSV（与积分结果导出一致的习惯，v4.37）。"""
+        res = getattr(self, '_last_compare_result', None)
+        if not res or not res.get('points'):
+            QMessageBox.warning(self, "提示", "暂无可导出的数据比较结果，请先点「数据比较」")
+            return None
+        if save_dir is None:
+            save_dir = QFileDialog.getExistingDirectory(
+                self, "选择数据比较结果导出目录",
+                self._dialog_start_dir(), QFileDialog.ShowDirsOnly)
+        if not save_dir:
+            return None
+        try:
+            out = _pc.points_to_csv(
+                res['points'], res['x_label'], res['y_label'],
+                Path(save_dir) / f"数据比较_{res['x_label']}_{res['metric']}.csv")
+            self.status_bar.showMessage(f"数据比较结果已导出: {out}")
+            return str(out)
+        except Exception as e:
+            log_exception("导出数据比较 CSV 失败", e)
+            QMessageBox.critical(self, "错误", f"导出数据比较结果失败：{e}")
             return None
 
     # ---- 单图目标与标题（供绘图与导出共用，保证导出文件名=标题） ----
@@ -818,7 +996,7 @@ class PlotMixin:
 
     def _set_canvas_busy(self, busy):
         """标记三个画布「后台线程正在绘制」（D4）。"""
-        for attr in ('canvas', 'lifetime_canvas', 'diag_canvas'):
+        for attr in ('canvas', 'lifetime_canvas', 'diag_canvas', 'compare_canvas'):
             cv = getattr(self, attr, None)
             if cv is None:
                 continue
@@ -1076,11 +1254,16 @@ class PlotMixin:
     # ---------- C1 + C8：并行拟合全部 + 寿命分布叠加 ----------
 
     def _run_overlay_lifetime(self):
-        """并行拟合全部已加载文件，并在「寿命分布」页叠加对比。"""
+        """并行拟合**勾选**的样品，并在「寿命分布」页叠加对比（v4.37）。"""
         if self.spectrum_type != "lifetime":
             return
         if not self.data_cache:
             QMessageBox.warning(self, "提示", "请先加载寿命数据")
+            return
+        if not self._checked_scope():
+            QMessageBox.warning(
+                self, "提示",
+                "请先在左侧勾选至少一个样品\n（「叠加分布」只处理勾选的样品）")
             return
         if getattr(self, '_plotting', False):
             return
@@ -1103,15 +1286,21 @@ class PlotMixin:
         self.plot_worker.start()
 
     def _batch_fit_status_text(self, params):
-        """批量拟合前的提示文案：说明有多少样品可以直接复用已有结果（v4.23）。"""
-        total = len(self.data_cache)
+        """批量拟合前的提示文案：说明有多少样品可以直接复用已有结果（v4.23）。
+
+        v4.37：只统计**勾选**的样品，文案里给出「勾选 N / 共 M」。
+        """
+        scope = self._checked_scope()
+        total = len(scope)
+        n_all = len(self.data_cache)
         n_cached = self._lifetime_cached_count(params)
+        head = f"勾选 {total}/{n_all} 个样品："
         if total and n_cached >= total:
-            return f"已复用全部 {total} 个样品的已有拟合结果，正在出图..."
+            return f"{head}已全部复用已有拟合结果，正在出图..."
         if n_cached:
-            return (f"正在拟合 {total - n_cached} 个样品"
+            return (f"{head}正在拟合 {total - n_cached} 个"
                     f"（复用 {n_cached} 个已有拟合结果）...")
-        return f"正在并行拟合 {total} 个文件（多进程，请稍候）..."
+        return f"{head}正在并行拟合 {total} 个文件（多进程，请稍候）..."
 
     # ---------- v4.22：跨样品汇总图 / 多页 PDF 报告 ----------
 
@@ -1128,6 +1317,11 @@ class PlotMixin:
             return
         if not self.data_cache:
             QMessageBox.warning(self, "提示", "请先加载寿命数据")
+            return
+        if not self._checked_scope():
+            QMessageBox.warning(
+                self, "提示",
+                "请先在左侧勾选至少一个样品\n（跨样品汇总图 / PDF 报告只处理勾选的样品）")
             return
         if getattr(self, '_plotting', False):
             QMessageBox.information(self, "提示", "正在拟合中，请稍候…")
@@ -1197,7 +1391,7 @@ class PlotMixin:
             return 0
 
     def _fit_all_with_cache(self, params, worker=None):
-        """对全部已加载文件做寿命拟合，**已有的拟合结果直接复用**，只拟合缺的。
+        """对**勾选的**文件做寿命拟合（v4.37），已有的拟合结果直接复用。
 
         v4.23：此前叠加分布 / 跨样品汇总图 / PDF 报告都无条件调用 fit_many，
         即使用户刚在单文件里拟合过、或刚导出过一次汇总图，也要把全部样品
@@ -1205,12 +1399,16 @@ class PlotMixin:
         查表复用，并把新拟合的结果回写缓存，于是「汇总图 → PDF 报告」这类
         连续操作只需拟合一次。
 
+        v4.37：处理范围从"全部已加载"改为"左侧勾选的样品"，于是「叠加分布」
+        可以只画部分样品对比；没勾选任何样品时返回空结果，由按钮处已给的
+        提示兜住。
+
         Returns:
-            (results, n_reused, n_fitted)：results 与 self.data_cache 同序，
+            (results, n_reused, n_fitted)：results 与勾选顺序一致，
             拟合失败的样品为 None。
         """
         import plot_lifetime as _pl
-        names = list(self.data_cache.keys())
+        names = self._checked_scope()
         cache = getattr(self, '_lifetime_fit_cache', None)
         if cache is None:
             cache = {}
@@ -2589,6 +2787,20 @@ class PlotMixin:
             except Exception as e:
                 failures.append(f"合并图: {e}")
                 logging.warning("导出合并图失败: %s", e)
+
+            # 数据比较点线图（v4.37）：画过就一起导出，命名与「数据比较」CSV 对齐
+            cmp_res = getattr(self, '_last_compare_result', None)
+            if cmp_res and cmp_res.get('points'):
+                try:
+                    base = _unique(self._safe_filename(
+                        f"数据比较_{cmp_res['x_label']}_{cmp_res['metric']}"))
+                    for ext in exts:
+                        self._savefig_pub(self.compare_canvas.fig,
+                                          plots_dir / f"{base}{ext}", dpi)
+                    n_ok += 1
+                except Exception as e:
+                    failures.append(f"数据比较图: {e}")
+                    logging.warning("导出数据比较图失败: %s", e)
 
             self.progress_bar.setVisible(False)
             msg = (f"所有图片已保存到:\n{plots_dir}\n"

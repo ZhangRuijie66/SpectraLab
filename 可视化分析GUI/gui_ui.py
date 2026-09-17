@@ -100,6 +100,12 @@ class UiMixin:
         self.file_panel = self.create_file_panel()
         self.param_panel = self.create_param_panel()
         self.canvas_panel = self.create_canvas_panel()
+        # 「数据比较」变量下拉框按当前说明.xlsx 初始化（v4.37）：
+        # 还没加载文件夹时应显示「未找到说明.xlsx」并禁用按钮
+        try:
+            self._refresh_compare_combos()
+        except Exception:
+            pass
 
         # ---- 三栏折叠状态与宽度记忆（v4.26 建立；v4.29 起由 QDockWidget 承载）----
         # 索引与下面三个 dock 一一对应：0=目录树 1=数据 2=参数
@@ -871,10 +877,13 @@ class UiMixin:
                 "或多列 xlsx（时间 + 各样品列 + IRF，自动按列拆成多个数据集）</li>"
                 "<li><b>主操作</b>：面板底部固定的「▶ 开始拟合」"
                 "（单文件 MEM/SESM 拟合，约 1–2 分钟/文件）</li>"
-                "<li><b>批量与导出</b>：「叠加分布」按钮（并行拟合全部文件后叠加对比）、"
+                "<li><b>批量与导出</b>：「叠加分布」按钮（并行拟合后叠加对比）、"
                 "「导出」菜单里的——导出当前拟合结果（PNG + 拟合结果 json）、"
                 "跨样品汇总图、导出 PDF 报告；<b>菜单里的批量动作会复用已拟合的结果</b>，"
                 "不会把同一批样品重复拟合</li>"
+                "<li><b>勾选＝统计范围</b>：数据栏的勾选框现在也出现在寿命模式，"
+                "「叠加分布 / 跨样品汇总图 / PDF 报告」<b>只处理勾选的样品</b>——"
+                "想看部分样品的对比就只勾它们；点一下某个文件名仍是单独拟合查看它</li>"
                 "<li><b>参数固化</b>：「存为默认值」把当前拟合参数"
                 "固定为下次启动的默认值</li>"
                 "<li><b>参数</b>：拟合方法（MEM 最大熵 / SESM 平滑指数序列）、"
@@ -902,6 +911,10 @@ class UiMixin:
                 "标注激发波长 (EX)</li>"
                 "<li><b>通用功能</b>：合并图 / 单独图、峰检测、显示范围、"
                 "光谱减法、光谱积分</li>"
+                "<li><b>数据比较</b>：文件夹里有 <b>说明.xlsx</b> 时，"
+                "按某个变量（如 RB浓度）画「峰强度 / 峰面积 / 指定波长强度」"
+                "点线图，可再用一个变量分组；图在「数据比较」标签页。"
+                "只统计左侧勾选的样品，说明.xlsx 里为空的变量不参与（该样品自动跳过）</li>"
                 "<li><b>F5 行为</b>：实时预览（重新绘制，不拟合）</li></ul>")
         return (
             "<p><b>吸收光谱（UV-Vis）模式</b></p><ul>"
@@ -909,6 +922,9 @@ class UiMixin:
             "带仪器元数据头也能自动跳过）</li>"
             "<li><b>专属功能</b>：合并图 / 单独图、峰检测（最小峰高 / 最小峰距）、"
             "显示范围、光谱减法（A − B 差谱或各减本底）、光谱积分（数据输出区）</li>"
+            "<li><b>数据比较</b>：文件夹里有 <b>说明.xlsx</b> 时，"
+            "按某个变量（如浓度）画「最大吸收 / 吸收峰面积 / 指定波长吸光度」"
+            "点线图，可再用一个变量分组；图在「数据比较」标签页</li>"
             "<li><b>F5 行为</b>：实时预览（重新绘制，不拟合）</li></ul>")
 
     def show_help(self):
@@ -938,6 +954,9 @@ class UiMixin:
             "<li><b>三栏折叠</b>：最左侧的「目/数/参」开关条可折叠目录树、数据、"
             "参数栏——折叠后画布变宽（三栏全折可到 1300px 左右，看大图/出图很实用）；"
             "栏宽与折叠状态会记住</li>"
+            "<li><b>勾选＝统计范围</b>：光谱积分结果表、寿命模式的"
+            "「叠加分布 / 跨样品汇总图 / PDF 报告」、「数据比较」点线图"
+            "都只统计左侧<b>勾选</b>的样品——图上没有的样品不会再出现在结果里</li>"
             "<li><b>找样品</b>：数据栏顶部搜索框按文件名过滤，"
             "「全选」只勾当前筛选出来的结果，「全不选」再点一次即可</li>"
             "<li>把文件夹直接拖到窗口上也可以加载；目录树单击展开、"
@@ -1644,6 +1663,102 @@ class UiMixin:
         self.subtract_group = subtract_group
         param_layout.addWidget(subtract_group)
 
+        # 数据比较（v4.37）：按说明.xlsx 里某个变量的值画「指标-变量」点线图。
+        # 只在吸收/发射模式显示（寿命/3D 没有"波长-强度"曲线也无变量可比）。
+        compare_group = QGroupBox("数据比较（说明.xlsx）")
+        compare_layout = QVBoxLayout()
+        compare_layout.setSpacing(4)
+
+        compare_layout.addWidget(QLabel("横轴变量:"))
+        self.compare_x_combo = QComboBox()
+        self._style_combo(self.compare_x_combo)
+        self.compare_x_combo.setToolTip("说明.xlsx 中的数值列（如 RB浓度）；横轴用它的值")
+        compare_layout.addWidget(self.compare_x_combo)
+
+        compare_layout.addWidget(QLabel("分组变量 (可选):"))
+        self.compare_group_combo = QComboBox()
+        self._style_combo(self.compare_group_combo)
+        self.compare_group_combo.setToolTip(
+            "再选一个变量分组：每组画一条点线\n"
+            "（例如横轴 RB浓度、按 L8i浓度 分组 → 每个 L8i 浓度一条曲线）")
+        compare_layout.addWidget(self.compare_group_combo)
+
+        compare_layout.addWidget(QLabel("纵轴指标:"))
+        self.compare_metric_combo = QComboBox()
+        self._style_combo(self.compare_metric_combo)
+        self.compare_metric_combo.addItems(["峰强度", "峰面积", "指定波长处的值"])
+        self.compare_metric_combo.setToolTip(
+            "峰强度：指定区间内的最大强度\n"
+            "峰面积：指定区间的梯形积分（复用下方「光谱积分」的起止波长）\n"
+            "指定波长：该波长处线性插值取值")
+        self.compare_metric_combo.currentIndexChanged.connect(
+            self._on_compare_metric_changed)
+        compare_layout.addWidget(self.compare_metric_combo)
+
+        peak_row = QHBoxLayout()
+        peak_row.setSpacing(4)
+        peak_row.addWidget(QLabel("区间下限:"))
+        self.compare_peak_lo_spin = QDoubleSpinBox()
+        self.compare_peak_hi_spin = QDoubleSpinBox()
+        for sp in (self.compare_peak_lo_spin, self.compare_peak_hi_spin):
+            sp.setRange(0, 3000)
+            sp.setDecimals(1)
+            sp.setSuffix(" nm")
+            sp.setSingleStep(10)
+            sp.setValue(0.0)
+            sp.setMinimumWidth(80)
+        # v4.37：两行各一个 spin（而不是一行两个），否则本组最小宽度会把
+        # 参数栏撑到 360px+，默认 285px 下 spin 的后缀「 nm」会被挤掉
+        peak_row.addWidget(self.compare_peak_lo_spin)
+        peak_row.addStretch()
+        compare_layout.addLayout(peak_row)
+        peak_row2 = QHBoxLayout()
+        peak_row2.setSpacing(4)
+        peak_row2.addWidget(QLabel("区间上限:"))
+        peak_row2.addWidget(self.compare_peak_hi_spin)
+        peak_row2.addStretch()
+        compare_layout.addLayout(peak_row2)
+        for sp in (self.compare_peak_lo_spin, self.compare_peak_hi_spin):
+            sp.setToolTip("峰强度 / 峰面积的波长区间；两个都填 0 = 峰强度用全谱\n"
+                          "（峰面积必须有区间，填 0 时自动复用下方「光谱积分」的起止波长）")
+
+        wl_row = QHBoxLayout()
+        wl_row.setSpacing(4)
+        wl_row.addWidget(QLabel("指定波长:"))
+        self.compare_wl_spin = QDoubleSpinBox()
+        self.compare_wl_spin.setRange(0, 3000)
+        self.compare_wl_spin.setDecimals(1)
+        self.compare_wl_spin.setSuffix(" nm")
+        self.compare_wl_spin.setSingleStep(5)
+        self.compare_wl_spin.setValue(0.0)
+        self.compare_wl_spin.setMinimumWidth(78)
+        self.compare_wl_spin.setToolTip("纵轴选「指定波长处的值」时用这个波长")
+        wl_row.addWidget(self.compare_wl_spin)
+        wl_row.addStretch()
+        compare_layout.addLayout(wl_row)
+
+        compare_btns = QHBoxLayout()
+        compare_btns.setSpacing(4)
+        self.compare_btn = QPushButton("数据比较")
+        self.compare_btn.setProperty("variant", "primary")
+        self.compare_btn.setCursor(Qt.PointingHandCursor)
+        self.compare_btn.setToolTip(
+            "按说明.xlsx 的变量画点线图（只统计左侧勾选的样品）\n"
+            "图在「数据比较」标签页")
+        self.compare_btn.clicked.connect(self._run_compare)
+        compare_btns.addWidget(self.compare_btn)
+        self.compare_csv_btn = QPushButton("⤓ CSV")
+        self.compare_csv_btn.setProperty("variant", "secondary")
+        self.compare_csv_btn.setCursor(Qt.PointingHandCursor)
+        self.compare_csv_btn.setToolTip("把点线图的取点结果导出为 CSV（UTF-8 BOM）")
+        self.compare_csv_btn.clicked.connect(self._export_compare_csv)
+        compare_btns.addWidget(self.compare_csv_btn)
+        compare_layout.addLayout(compare_btns)
+
+        compare_group.setLayout(compare_layout)
+        self.compare_group = compare_group
+        param_layout.addWidget(compare_group)
+
         layout.addWidget(param_group)
 
         # 参数内容放进可滚动区域（伸展吃满滚动区上方剩余空间）
@@ -1820,6 +1935,33 @@ class UiMixin:
         self.diag_tab = diag_tab
         self._set_diag_tab_visible(False)
 
+        # 数据比较标签页（v4.37）：按说明.xlsx 变量画「指标-变量」点线图，
+        # 只在吸收/发射模式下显示
+        compare_tab = QWidget()
+        compare_tab_layout = QVBoxLayout(compare_tab)
+        compare_tab_layout.setContentsMargins(0, 0, 0, 0)
+        compare_tab_layout.setSpacing(0)
+        self.compare_canvas = MplCanvas(self, width=8, height=5, dpi=100)
+        self.compare_canvas.on_after_fit = lambda: self._refit_canvas_margins(
+            self.compare_canvas)
+        self.compare_toolbar = NavigationToolbar(self.compare_canvas, self)
+        self._decorate_nav_toolbar(self.compare_toolbar)
+        compare_tab_layout.addWidget(self.compare_toolbar)
+        compare_tab_layout.addWidget(self.compare_canvas, 1)
+        self.compare_canvas.clear_fig()
+        self.compare_canvas.axes = self.compare_canvas.fig.add_subplot(111)
+        self._placeholder_texts.append(self.compare_canvas.axes.text(
+            0.5, 0.5,
+            "点参数栏「数据比较」按钮，按说明.xlsx 的变量画强度-变量点线图",
+            transform=self.compare_canvas.axes.transAxes,
+            ha='center', va='center', fontsize=15,
+            color=self.theme_palette()['MUTED']))
+        self.compare_canvas.axes.set_axis_off()
+        self.compare_canvas.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        self.tab_widget.addTab(compare_tab, "数据比较")
+        self.compare_tab = compare_tab
+        self._set_compare_tab_visible(False)
+
         # 信息标签页（v4.27 卡片化）：文件信息 / 拟合摘要（分量表 + 质量徽标）。
         # 原来是一整页纯文本 QLabel，字号一致、没有层级，一大片看不出重点；
         # 现在拆成两张卡片放进滚动区：上面是文件元数据（原文案原样保留），
@@ -1993,6 +2135,27 @@ class UiMixin:
         """「拟合诊断」选项卡的显隐：只在荧光寿命模式下显示。"""
         self._set_tab_visible(getattr(self, 'diag_tab', None), "拟合诊断", 2, visible)
 
+    def _set_compare_tab_visible(self, visible):
+        """「数据比较」选项卡的显隐：只在吸收/发射模式下显示。"""
+        self._set_tab_visible(getattr(self, 'compare_tab', None), "数据比较", 3, visible)
+
+    def _on_compare_metric_changed(self):
+        """纵轴指标切换时，只启用对应需要的输入框。"""
+        try:
+            metric = self.compare_metric_combo.currentText()
+            is_peak = metric.startswith('峰强')
+            is_area = metric.startswith('峰面积')
+            is_wl = metric.startswith('指定波长')
+            for sp in (getattr(self, 'compare_peak_lo_spin', None),
+                       getattr(self, 'compare_peak_hi_spin', None)):
+                if sp is not None:
+                    sp.setEnabled(is_peak or is_area)
+            wl_spin = getattr(self, 'compare_wl_spin', None)
+            if wl_spin is not None:
+                wl_spin.setEnabled(is_wl)
+        except Exception:
+            pass
+
     @staticmethod
     def _load_style_icons():
         """加载预生成的 QSS 小图标（icons/ 目录下的静态 PNG，打包时随 --add-data 带上）。
@@ -2126,7 +2289,7 @@ class UiMixin:
                 mpl.rcParams[k] = v
             except Exception:
                 pass
-        for attr in ('canvas', 'lifetime_canvas', 'diag_canvas'):
+        for attr in ('canvas', 'lifetime_canvas', 'diag_canvas', 'compare_canvas'):
             cv = getattr(self, attr, None)
             if cv is None:
                 continue
