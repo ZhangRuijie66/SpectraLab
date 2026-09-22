@@ -1911,16 +1911,18 @@ class PlotMixin:
         ltu = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
         lts = getattr(self, 'lifetime_unit_symbol', 'ns')
         time_d = time / ltu                     # 显示用时间轴
-        irf_d = irf_shifted / ltu
         fit_time_d = fit_time / ltu
         qshift_disp = qshift_ns / ltu
+        # 注意：**只换算"时间"量**（横轴 / qshift / τ）。IRF 与衰减、拟合曲线都是
+        # 强度（counts），绝不能除以单位因子——否则 log 轴下曲线会掉到 ylim 以下
+        # 整条看不见（v4.39 初版把 irf_shifted 也除了 1000，μs 模式下 IRF 消失）。
 
         fig = self.canvas.fig
         gs = GridSpec(2, 1, height_ratios=[7, 3])
         ax1 = fig.add_subplot(gs[0])
         ax1.scatter(time_d, decay, s=2, alpha=0.6, marker='o',
                     edgecolors='none', color="#66ccee", label='实验数据')
-        ax1.plot(time_d, irf_d, linewidth=0.8, color="#ccbb44",
+        ax1.plot(time_d, irf_shifted, linewidth=0.8, color="#ccbb44",
                  label=f'IRF（平移 {qshift_disp:.2g} {lts}）')
         ax1.plot(fit_time_d, y_fitted, linewidth=max(1.0, linewidth),
                  color="#ee6677", label=f"{info.get('method', 'MEM')} 拟合")

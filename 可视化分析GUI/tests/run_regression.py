@@ -450,6 +450,77 @@ def t_gui_lifetime_unit_restore():
         s.sync()
 
 
+@check("GUI：μs 单位只换时间轴，IRF/衰减/拟合的**强度**不被换算（v4.40）")
+def t_gui_lifetime_unit_irf_not_scaled():
+    """回归：v4.39 初版在 μs 模式下把 IRF 的**强度**也除以 1000，整条 IRF 掉到
+    log 轴 ylim 以下 → 用户看到"IRF 无法显示"（y 0–0.64 vs ylim≥1）。
+    时间量（横轴 / qshift / τ）该换算，强度量（counts）绝不能动。
+    """
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)
+
+    # 合成一份真实拟合结果（SESM 很快，不用等 MEM）
+    rng = np.random.default_rng(11)
+    dt = 0.05
+    t = np.arange(0, 60, dt)
+    irf = np.exp(-0.5 * ((t - 2.0) / 0.15) ** 2)
+    irf = irf / irf.sum()
+    truth = np.zeros_like(t)
+    for a, tau in ((0.7, 3.0), (0.3, 12.0)):
+        truth += a * np.convolve(irf, np.exp(-t / tau), mode='full')[:len(t)]
+    truth *= 20000.0 / truth.max()
+    decay = np.maximum(rng.poisson(truth).astype(float), 0.0)
+    # IRF 按**计数刻度**给（真实仪器数据就是计数），否则 log 轴上 IRF 本来就在
+    # ylim 之下，测不出"单位换算把 IRF 压没了"这件事
+    irf_counts = irf / irf.max() * 20000.0
+    import plot_lifetime as pl
+    f = pl.MEMFitter(verbose=False, name='unit_probe')
+    f.load(t, decay, irf_counts)
+    f.preprocess()
+    f.fit(method='SESM', n_rates=101)
+    f.postprocess()
+    res = f.serialize(None)
+
+    def _plot_and_read(unit_idx):
+        w.lifetime_unit_combo.setCurrentIndex(unit_idx)
+        w._last_lifetime_result = res
+        w._render_lifetime_result(res, 1.5, 'unit-probe')
+        ax = w.canvas.fig.axes[0]
+        out = {}
+        for ln in ax.get_lines():
+            lab = ln.get_label()
+            if lab.startswith('IRF'):
+                out['irf'] = (np.asarray(ln.get_xdata(), float),
+                              np.asarray(ln.get_ydata(), float))
+            elif '拟合' in lab:
+                out['fit'] = (np.asarray(ln.get_xdata(), float),
+                              np.asarray(ln.get_ydata(), float))
+        out['scatter'] = [(np.asarray(c.get_offsets())[:, 0],
+                           np.asarray(c.get_offsets())[:, 1])
+                          for c in ax.collections
+                          if '实验数据' in str(c.get_label())]
+        out['ylim'] = ax.get_ylim()
+        out['xlabel'] = ax.figure.axes[1].get_xlabel()
+        return out
+
+    ns = _plot_and_read(0)
+    us = _plot_and_read(1)
+    assert 'irf' in ns and 'irf' in us, "IRF 曲线应画在拟合图上"
+    # ① 强度逐点相同（只允许横轴换算）
+    assert np.allclose(ns['irf'][1], us['irf'][1]), "μs 模式下 IRF 强度被误改"
+    assert np.allclose(ns['fit'][1], us['fit'][1]), "μs 模式下拟合曲线强度被误改"
+    assert ns['scatter'] and us['scatter'], "实验数据散点应存在"
+    assert np.allclose(ns['scatter'][0][1], us['scatter'][0][1]), \
+        "μs 模式下实验数据强度被误改"
+    # ② 横轴按 1000 倍换算
+    assert abs(us['irf'][0].max() * 1000.0 - ns['irf'][0].max()) < 1e-6
+    # ③ IRF 必须留在 y 轴范围内（这正是"IRF 无法显示"的直接判据）
+    assert us['irf'][1].max() >= us['ylim'][0], \
+        f"IRF 峰值 {us['irf'][1].max():.4g} 低于 y 轴下限 {us['ylim'][0]:.4g}"
+    assert abs(us['ylim'][1] - ns['ylim'][1]) < 1e-6, "μs 模式不应改变 y 轴范围"
+    assert 'μs' in us['xlabel'] and 'ns' in ns['xlabel'], (us['xlabel'], ns['xlabel'])
+
+
 @check("GUI：寿命拟合参数「存为默认值」下次启动生效")
 def t_gui_lifetime_defaults():
     app, w = _make_gui()

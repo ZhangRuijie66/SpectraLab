@@ -69,6 +69,19 @@ dist_ax = w.lifetime_canvas.fig.axes[0]
 print('寿命分布轴标签:', dist_ax.get_xlabel())
 assert 'μs' in dist_ax.get_xlabel(), dist_ax.get_xlabel()
 
+# IRF 必须真的画出来（v4.39 初版在 μs 模式把 IRF 强度也除以 1000 → 整条看不见）
+ax1 = w.canvas.fig.axes[0]
+irf_line = next((ln for ln in ax1.get_lines()
+                 if ln.get_label().startswith('IRF')), None)
+assert irf_line is not None, '拟合图上没有 IRF 曲线'
+irf_y = np.asarray(irf_line.get_ydata(), float)
+irf_ns = np.asarray(info['irf_shifted'], float)
+print('IRF: ymax = %.4g（原始 %d 点，ymax=%.4g）, ylim = %s'
+      % (np.nanmax(irf_y), irf_ns.size, np.nanmax(irf_ns),
+         tuple(round(v, 2) for v in ax1.get_ylim())))
+assert np.allclose(irf_y, irf_ns), 'µs 模式下 IRF 强度被误换算'
+assert np.nanmax(irf_y) >= ax1.get_ylim()[0] * 1.5, 'IRF 掉到 y 轴范围外（看不见）'
+
 # 信息页：τ 与寿命范围都应是 μs
 w._show_lifetime_fit_info()
 info_lines = [ln for ln in w.info_label.text().splitlines()
