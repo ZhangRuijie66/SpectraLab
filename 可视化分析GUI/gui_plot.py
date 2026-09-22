@@ -934,23 +934,30 @@ class PlotMixin:
             log_exception("读取绘图参数失败", e)
         # 寿命参数（v4.38：界面输入的是寿命 τ 范围，这里换算成 plot_lifetime
         # 使用的速率网格 k = 1/τ：k_min = 1/τ_max、k_max = 1/τ_min）
+        # v4.39：输入框里的数值单位由「时间单位」下拉框决定（ns / μs），这里统一
+        # 换算回 ns —— 拟合与结果字典**始终是 ns**，单位只影响输入与显示。
         try:
             method = ("SESM" if "SESM" in self.lifetime_method_combo.currentText()
                       else "MEM")
-            tau_min = float(self.lifetime_taumin_spin.value())
-            tau_max = float(self.lifetime_taumax_spin.value())
-            if not (0 < tau_min < tau_max):
+            unit_factor = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+            unit_symbol = getattr(self, 'lifetime_unit_symbol', 'ns')
+            tau_min_in = float(self.lifetime_taumin_spin.value())
+            tau_max_in = float(self.lifetime_taumax_spin.value())
+            if not (0 < tau_min_in < tau_max_in):
                 # 界面已用 _sync_lifetime_tau_range 保证 τ_min < τ_max，这里是
                 # 兜底（例如设置里存了坏值）：回退默认范围，但**要说出来**，
                 # 不能静默拟合出用户没要的范围。
                 logging.getLogger('qls').warning(
-                    "寿命范围非法（τ_min=%s ≥ τ_max=%s），本次按默认 0.01–100 ns 拟合",
-                    tau_min, tau_max)
+                    "寿命范围非法（τ_min=%s ≥ τ_max=%s %s），本次按默认 0.01–100 ns 拟合",
+                    tau_min_in, tau_max_in, unit_symbol)
                 if hasattr(self, 'status_bar'):
                     self.status_bar.showMessage(
                         "⚠️ 寿命范围需满足 τ_min < τ_max，本次按默认 0.01–100 ns 拟合",
                         8000)
-                tau_min, tau_max = 0.01, 100.0
+                tau_min_in, tau_max_in = 0.01, 100.0
+                unit_factor = 1.0
+            tau_min = tau_min_in * unit_factor      # ns（内部规范单位）
+            tau_max = tau_max_in * unit_factor
             k_min = 1.0 / tau_max
             k_max = 1.0 / tau_min
             fixed_taus = []
@@ -958,7 +965,7 @@ class PlotMixin:
                 raw = self.lifetime_fixed_taus_edit.text().replace('，', ',')
                 fixed_taus = [float(x) for x in raw.replace(' ', '').split(',')
                               if x.strip()]
-                fixed_taus = [t for t in fixed_taus if t > 0]
+                fixed_taus = [t * unit_factor for t in fixed_taus if t > 0]
             except Exception:
                 fixed_taus = []
             P.update({
@@ -967,8 +974,10 @@ class PlotMixin:
                 'lifetime_lambda': float(self.lifetime_lambda_spin.value()),
                 'lifetime_auto_lambda': bool(
                     self.lifetime_auto_lambda_check.isChecked()),
-                'lifetime_taumin': tau_min,
-                'lifetime_taumax': tau_max,
+                'lifetime_taumin': tau_min_in,
+                'lifetime_taumax': tau_max_in,
+                'lifetime_unit': getattr(self, 'lifetime_unit', 'ns'),
+                'lifetime_unit_factor': float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0),
                 'lifetime_kmin': k_min,
                 'lifetime_kmax': k_max,
                 'lifetime_fixed_taus': fixed_taus,
@@ -1472,11 +1481,14 @@ class PlotMixin:
         if not results:
             raise RuntimeError("没有成功拟合的样品（请检查数据与拟合参数）")
         save_dir = params.get('save_dir') or '.'
+        # v4.39：汇总图 / PDF 报告的 τ 与时间轴跟随「时间单位」全局设置
+        unit = getattr(self, 'lifetime_unit', 'ns')
         if params.get('kind') == 'pdf':
             path = _pl.export_report_pdf(results, save_dir=save_dir,
-                                         verbose=False)
+                                         verbose=False, time_unit=unit)
         else:
-            path = _pl.plot_summary(results, save_dir=save_dir, verbose=False)
+            path = _pl.plot_summary(results, save_dir=save_dir, verbose=False,
+                                    time_unit=unit)
         detail = (f"复用 {n_reused} 个已有拟合结果"
                   if n_fitted == 0 else
                   f"复用 {n_reused} + 新拟合 {n_fitted}")
@@ -1522,12 +1534,15 @@ class PlotMixin:
         fig.clf()
         ax = fig.add_subplot(111)
         entries = []        # (tau, dist, amp, name)
+        # v4.39：叠加分布横轴按「时间单位」全局设置显示（内部仍是 ns）
+        ltu = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        lts = getattr(self, 'lifetime_unit_symbol', 'ns')
         for r in results:
             if not r:
                 continue
             k = np.asarray(r['k'], dtype=float)
             dist = np.asarray(r['k_distribution'], dtype=float)
-            tau = 1.0 / np.maximum(k, 1e-12)
+            tau = 1.0 / np.maximum(k, 1e-12) / ltu
             amp = float(np.max(dist)) if dist.size else 0.0
             entries.append((tau, dist, amp, str(r.get('name', ''))))
         scale = max((e[2] for e in entries), default=0.0)
@@ -1537,7 +1552,7 @@ class PlotMixin:
                     label=name)
             ok += 1
         ax.set_xscale('log')
-        ax.set_xlabel(r'$\tau$ (ns)')
+        ax.set_xlabel(rf'$\tau$ ({lts})')
         ylab = '分布强度（同刻度，未逐条归一）'
         # 有样品的输入是归一化数据（preprocess 自动还原到各自 1e4 刻度）时，
         # 各曲线的绝对刻度并不统一 → 纵向刻度不可跨样品直接比较。
@@ -1843,6 +1858,35 @@ class PlotMixin:
         self._render_lifetime_result(result, linewidth, custom_title)
         return self.canvas.fig
 
+    def _rerender_lifetime_cosmetic(self):
+        """寿命模式：只把**上一次的拟合结果**重画一遍，不重新拟合（v4.39）。
+
+        背景：寿命模式的实时更新被整体关掉（重算 1–2 分钟），于是用户改「绘图标题」
+        后画布毫无变化——连导出的 PNG 也还是旧标题（用户实际反馈）。
+        标题 / 线宽 / 颜色这类**纯外观**参数不需要重算，直接复用缓存结果重画，
+        耗时几十毫秒。
+        """
+        if getattr(self, 'spectrum_type', None) != "lifetime":
+            return
+        if getattr(self, '_plotting', False) or getattr(self, '_long_task', False):
+            return                      # 正在拟合：别和后台线程抢画布
+        result = getattr(self, '_last_lifetime_result', None)
+        if not result:
+            return
+        try:
+            self._render_lifetime_result(
+                result, float(self.linewidth_spin.value()),
+                self.title_edit.text().strip())
+            self.canvas._fit_to_widget()
+            self.canvas.draw()
+            self.lifetime_canvas._fit_to_widget()
+            self.lifetime_canvas.draw()
+            if hasattr(self, 'diag_canvas'):
+                self.diag_canvas._fit_to_widget()
+                self.diag_canvas.draw()
+        except Exception as e:
+            log_exception("按外观参数重画寿命拟合结果失败", e)
+
     def _render_lifetime_result(self, result, linewidth, custom_title=""):
         """把一份拟合结果（serialize dict）画到主画布（拟合+残差）与「寿命分布」标签页"""
         self._last_lifetime_result = result  # 供信息页/导出使用
@@ -1863,14 +1907,22 @@ class PlotMixin:
         qshift_ns = info['qshift_suggested'] * dt
         chi2 = info['chi_sqr']
 
+        # v4.39：时间轴与 τ 按「时间单位」全局设置显示（内部仍是 ns）
+        ltu = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        lts = getattr(self, 'lifetime_unit_symbol', 'ns')
+        time_d = time / ltu                     # 显示用时间轴
+        irf_d = irf_shifted / ltu
+        fit_time_d = fit_time / ltu
+        qshift_disp = qshift_ns / ltu
+
         fig = self.canvas.fig
         gs = GridSpec(2, 1, height_ratios=[7, 3])
         ax1 = fig.add_subplot(gs[0])
-        ax1.scatter(time, decay, s=2, alpha=0.6, marker='o',
+        ax1.scatter(time_d, decay, s=2, alpha=0.6, marker='o',
                     edgecolors='none', color="#66ccee", label='实验数据')
-        ax1.plot(time, irf_shifted, linewidth=0.8, color="#ccbb44",
-                 label=f'IRF（平移 {qshift_ns:.2g} ns）')
-        ax1.plot(fit_time, y_fitted, linewidth=max(1.0, linewidth),
+        ax1.plot(time_d, irf_d, linewidth=0.8, color="#ccbb44",
+                 label=f'IRF（平移 {qshift_disp:.2g} {lts}）')
+        ax1.plot(fit_time_d, y_fitted, linewidth=max(1.0, linewidth),
                  color="#ee6677", label=f"{info.get('method', 'MEM')} 拟合")
         ax1.set_yscale('log')
         ax1.set_ylim(bottom=1)
@@ -1879,9 +1931,9 @@ class PlotMixin:
         ax1.set_title(custom_title or f"荧光寿命拟合 - {file_name}", fontsize=13)
 
         ax2 = fig.add_subplot(gs[1], sharex=ax1)
-        ax2.plot(fit_time, residuals, linewidth=0.3, color="#ee6677")
+        ax2.plot(fit_time_d, residuals, linewidth=0.3, color="#ee6677")
         ax2.axhline(0, color=self._mpl_colors()['zero'], linewidth=0.5)
-        ax2.set_xlabel('Time (ns)')
+        ax2.set_xlabel(f'Time ({lts})')
         ax2.set_ylabel('残差')
         # 数值框底色随主题（原为白底：深色主题下浅色文字压在白底上看不见）
         _C = self._mpl_colors()
@@ -1903,15 +1955,17 @@ class PlotMixin:
         k = np.asarray(result['k'], dtype=float)
         dist = np.asarray(result['k_distribution'], dtype=float)
         tau = 1.0 / np.maximum(k, 1e-12)
+        tau_d = tau / ltu                       # 显示单位下的 τ 轴
         # 曲线颜色随主题（原为黑色：深色主题下黑线压在深底上完全看不见）
-        ax3.plot(tau, dist, linewidth=0.8, color=self._mpl_colors()['fg'],
+        ax3.plot(tau_d, dist, linewidth=0.8, color=self._mpl_colors()['fg'],
                  label='MEM 分布')
         ax3.set_xscale('log')
         if dist.max() > 0:
             ax3.set_ylim(top=dist.max() * 1.4)
-        ax3.set_xlabel(r'$\tau$ (ns)')
+        ax3.set_xlabel(rf'$\tau$ ({lts})')
         ax3.set_ylabel('分布强度')
-        ax3.set_title(f"寿命分布 - {file_name}", fontsize=12)
+        ax3.set_title(f"{custom_title} - 寿命分布" if custom_title
+                      else f"寿命分布 - {file_name}", fontsize=12)
         peak_fit = info.get('peak_fit')
         peak_result = result.get('peak_result') or []
         if peak_fit is not None and len(peak_result) > 0:
@@ -1925,8 +1979,9 @@ class PlotMixin:
                 amps = pf[:, 0] / max(float(np.max(pf[:, 0])), 1e-12)
             for n, peak in enumerate(np.asarray(peak_fit)):
                 comp = peak[0] * np.exp(-((k - peak[1]) / peak[2]) ** 2)
-                ax3.fill_between(tau, 0, comp, alpha=0.5,
-                                 label=(fr'$\tau_{{{n + 1}}} = {1 / peak[1]:.3g}$ ns, '
+                ax3.fill_between(tau_d, 0, comp, alpha=0.5,
+                                 label=(fr'$\tau_{{{n + 1}}} = '
+                                        fr'{1 / peak[1] / ltu:.3g}$ {lts}, '
                                         fr'振幅 {amps[n] * 100:.1f}%, '
                                         fr'强度 {weights[n] * 100:.1f}%'))
             ax3.legend(fontsize=8)
@@ -1997,6 +2052,11 @@ class PlotMixin:
         qshift = float(info.get('qshift_suggested', 0.0))
         metrics = self._fit_quality_metrics(result)
 
+        # v4.39：诊断页的时间轴同样跟随「时间单位」全局设置
+        ltu = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        lts = getattr(self, 'lifetime_unit_symbol', 'ns')
+        time_d = time / ltu
+
         fig = self.diag_canvas.fig
         fig.clf()
         gs = GridSpec(2, 1, height_ratios=[3, 2], hspace=0.35)
@@ -2019,24 +2079,25 @@ class PlotMixin:
 
         if irf.size:
             irf_s = _n(irf)
-            ax1.plot(time[:len(irf)], irf_s, linewidth=0.9, color=c_irf_raw,
+            ax1.plot(time_d[:len(irf)], irf_s, linewidth=0.9, color=c_irf_raw,
                      label='IRF（原始）')
         if irf_shifted.size:
-            ax1.plot(time[:len(irf_shifted)], _n(irf_shifted), linewidth=0.9,
+            ax1.plot(time_d[:len(irf_shifted)], _n(irf_shifted), linewidth=0.9,
                      color='#ccbb44',
-                     label=f'IRF（平移 {qshift:.3g} ch = {qshift * dt:.3g} ns）')
-        ax1.plot(time, _n(decay), linewidth=0.8, color='#66ccee', label='衰减数据')
+                     label=f'IRF（平移 {qshift:.3g} ch = '
+                           f'{qshift * dt / ltu:.3g} {lts}）')
+        ax1.plot(time_d, _n(decay), linewidth=0.8, color='#66ccee', label='衰减数据')
         if y_fitted.size:
-            ax1.plot(time[fit_start:fit_start + len(y_fitted)], _n(y_fitted),
+            ax1.plot(time_d[fit_start:fit_start + len(y_fitted)], _n(y_fitted),
                      linewidth=1.1, color='#ee6677', label='拟合')
-        for x, lab, ha in ((time[fit_start], '拟合起点', 'left'),
-                           (time[min(fit_end, len(time) - 1)], '拟合终点', 'right')):
+        for x, lab, ha in ((time_d[fit_start], '拟合起点', 'left'),
+                           (time_d[min(fit_end, len(time) - 1)], '拟合终点', 'right')):
             ax1.axvline(x, color=c_marker, linestyle='--', linewidth=0.8)
             ax1.annotate(lab, xy=(x, 0.94), xycoords=('data', 'axes fraction'),
                          xytext=(4 if ha == 'left' else -4, 0),
                          textcoords='offset points',
                          ha=ha, va='top', fontsize=9, color=c_marker)
-        ax1.set_xlabel('Time (ns)')
+        ax1.set_xlabel(f'Time ({lts})')
         ax1.set_ylabel('归一化强度')
         ax1.set_title('IRF / 拟合区间诊断', fontsize=12)
         ax1.legend(fontsize=8, loc='upper right')
@@ -2073,6 +2134,9 @@ class PlotMixin:
             return
         info = result['info']
         lines = [f"文件名: {result.get('name', '')}", ""]
+        # v4.39：信息页里的时间/寿命数值按「时间单位」显示（内部仍是 ns）
+        ltu = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        lts = getattr(self, 'lifetime_unit_symbol', 'ns')
         lines.append(f"拟合方法: {info.get('method', 'MEM')}")
         lines.append(f"简化卡方 χ²R = {info['chi_sqr']:.4g}")
         # v4.32：数据被归一化过时，程序会自动还原到计数刻度再拟合。
@@ -2096,8 +2160,8 @@ class PlotMixin:
         dt = (np.asarray(result['time'])[1] - np.asarray(result['time'])[0]
               if len(result['time']) > 1 else 1.0)
         lines.append(f"IRF 位移 qshift = {info['qshift_suggested']:.4g} ch"
-                     f"（{info['qshift_suggested'] * dt:.4g} ns）")
-        lines.append(f"IRF FWHM = {info.get('irf_FWHM', float('nan')):.4g} ns")
+                     f"（{info['qshift_suggested'] * dt / ltu:.4g} {lts}）")
+        lines.append(f"IRF FWHM = {info.get('irf_FWHM', float('nan')) / ltu:.4g} {lts}")
         lines.append("")
         peaks = result.get('peak_result') or []
         if peaks:
@@ -2106,8 +2170,8 @@ class PlotMixin:
                 tau, area = float(p[0]), float(p[1])
                 amp = (float(p[4]) if len(p) > 4 else float('nan'))
                 amp_txt = f"，振幅占比 = {amp * 100:.2f}%" if np.isfinite(amp) else ""
-                lines.append(f"  τ{n} = {tau:.4g} ns, 强度占比 = {area * 100:.2f}%"
-                             f"{amp_txt}")
+                lines.append(f"  τ{n} = {tau / ltu:.4g} {lts}, "
+                             f"强度占比 = {area * 100:.2f}%{amp_txt}")
             lines.append("（强度占比 = 发光强度贡献，各分量和 100%；"
                          "振幅占比 = 分量峰高，按最大者归一）")
         else:
@@ -2118,7 +2182,7 @@ class PlotMixin:
             lines.append("")
             lines.append("固定分量（不受熵约束，幅度自动求解）:")
             for t, a in zip(fixed, amps):
-                lines.append(f"  τ = {t:.4g} ns，幅度 = {a:.4g} counts")
+                lines.append(f"  τ = {t / ltu:.4g} {lts}，幅度 = {a:.4g} counts")
         lines.append("")
         # ---- 拟合质量报告（C5）----
         m = self._fit_quality_metrics(result)
@@ -2149,8 +2213,8 @@ class PlotMixin:
                          "落在寿命范围两端（可能为边界堆积，建议放宽 τ 范围复算）")
         kmin, kmax = info.get('k_min'), info.get('k_max')
         if kmin and kmax:
-            lines.append(f"寿命范围 τ = {info.get('tau_max_ns', 0):.4g}–"
-                         f"{info.get('tau_min_ns', 0):.4g} ns"
+            lines.append(f"寿命范围 τ = {info.get('tau_max_ns', 0) / ltu:.4g}–"
+                         f"{info.get('tau_min_ns', 0) / ltu:.4g} {lts}"
                          f"（速率网格 k = {kmin:g}–{kmax:g} /ns），"
                          f"{info.get('n_rates', 0)} 点")
         lines.append("IRF 平移 / 拟合区间 / 残差自相关见「拟合诊断」标签页")
@@ -2203,16 +2267,18 @@ class PlotMixin:
 
             peaks = result.get('peak_result') or []
             fixed = info.get('fixed_taus') or []
+            # v4.39：卡片里的 τ 数值按「时间单位」显示（表头见 _update_info_fit_card 的调用方）
+            ltu = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
 
             def _amp_of(p):
                 """振幅占比：第 5 项（v4.33 新增）；旧结果没有 → nan。"""
                 return float(p[4]) * 100.0 if len(p) > 4 else float('nan')
 
-            rows = [(f"τ{n}", float(p[0]), float(p[1]) * 100.0, _amp_of(p))
+            rows = [(f"τ{n}", float(p[0]) / ltu, float(p[1]) * 100.0, _amp_of(p))
                     for n, p in enumerate(peaks, 1)]
             for t in fixed:                      # 固定分量单独标注，避免与分离峰混看
-                rows.append((f"固定 τ = {t:.4g}", float(t), float('nan'),
-                             float('nan')))
+                rows.append((f"固定 τ = {t / ltu:.4g}", float(t) / ltu,
+                             float('nan'), float('nan')))
 
             table = getattr(self, 'fit_table', None)
             if table is not None:
@@ -2258,8 +2324,9 @@ class PlotMixin:
             if not save_dir:
                 return
 
-            written = _pl.export_fit_results(results, save_dir,
-                                            name="lifetime_fit_results")
+            written = _pl.export_fit_results(
+                results, save_dir, name="lifetime_fit_results",
+                time_unit=getattr(self, 'lifetime_unit', 'ns'))
             if not written:
                 QMessageBox.warning(self, "提示", "没有可导出的拟合结果")
                 return

@@ -81,6 +81,13 @@ class AbsorptionGUI(UiMixin, DataMixin, PlotMixin, QMainWindow):
         except Exception as e:
             from gui_log import log_exception
             log_exception("套用默认值失败", e)
+        # v4.39：按会话记住的「时间单位」刷新 τ 输入框的单位文案/量程
+        # （数值本身就是按该单位存的，只刷新缓存与标签，不换算）
+        try:
+            self._apply_lifetime_unit()
+        except Exception as e:
+            from gui_log import log_exception
+            log_exception("应用时间单位设置失败", e)
         # 入口界面选择的模块优先；未指定则沿用上次模式
         if initial_mode in self.MODE_INDEX:
             idx = self.MODE_INDEX[initial_mode]

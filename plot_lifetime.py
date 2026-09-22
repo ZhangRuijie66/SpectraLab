@@ -53,8 +53,15 @@ MEMFitter._rescale_if_normalized），否则整个衰减会被判成噪声、窗
       results, save_dir="./plots", name="lifetime_fit_results")
   # 字段：文件名 / 方法 / χ²R / qshift(ch,ns) / IRF_FWHM(ns) / 各 τ_i(ns) / 占比_i(%)
 
+【时间单位（v4.39）】
+  所有绘图 / 报告 / 汇总表接口都有 time_unit 关键字参数（'ns' 或 'us'，默认 'ns'）。
+  它**只影响显示与坐标轴/表头标签**：选 'us' 时以 ns 为单位的数值会除以 1000、标签换成 μs；
+  内部一切计算、结果 dict 与 json 输出始终用 ns（单位换算见 to_ns / from_ns）。
+  time_unit='ns' 时所有输出与旧版逐字一致。
+
 【命令行】
   python plot_lifetime.py -i "D:/.../Decay2.csv" [-o ./plots] [-m MEM] [--show]
+                          [--time-unit {ns,us}]   # 仅影响显示/输入，内部仍用 ns
                           [--export]            # 拟合后额外导出 CSV/XLSX 汇总表 + md 报告
 
 依赖：numpy, scipy, pandas, matplotlib
@@ -104,6 +111,59 @@ def _safe_print(*args):
         print(*args)
     except Exception:
         pass
+
+
+# ---- v4.39：时间单位（仅影响显示/输入；内部计算始终用 ns）----
+# 说明：time_unit 只用于「数值显示」与「坐标轴 / 表头标签」，所有内部计算、
+# 数据结构与 json 输出仍然一律使用 ns；time_unit='ns' 时结果与旧版逐字一致。
+TIME_UNIT_KEYS = ('ns', 'us')
+TIME_UNIT_SYMBOLS = {'ns': 'ns', 'us': 'μs'}
+TIME_UNIT_FACTORS = {'ns': 1.0, 'us': 1000.0}      # 1 个显示单位 = 多少 ns
+TIME_UNIT_NAMES = {'ns': '纳秒 (ns)', 'us': '微秒 (μs)'}
+
+
+def _normalize_time_unit(time_unit):
+    """把 time_unit 归一化到 TIME_UNIT_KEYS 之一；未知值（含 None）一律回退 'ns'。"""
+    if time_unit is None:
+        return 'ns'
+    key = str(time_unit).strip().lower()
+    return key if key in TIME_UNIT_FACTORS else 'ns'
+
+
+def unit_symbol(time_unit='ns'):
+    """返回时间单位的显示符号：'ns' 或 'μs'（未知值一律回退 'ns'）。
+
+    time_unit 只影响显示/输入，内部计算始终用 ns。
+    """
+    return TIME_UNIT_SYMBOLS[_normalize_time_unit(time_unit)]
+
+
+def unit_factor(time_unit='ns'):
+    """返回换算因子：1 个显示单位等于多少 ns（'ns'→1.0，'us'→1000.0）。
+
+    未知值一律回退 'ns'（即 1.0）。time_unit 只影响显示/输入，内部计算始终用 ns。
+    """
+    return float(TIME_UNIT_FACTORS[_normalize_time_unit(time_unit)])
+
+
+def to_ns(value, time_unit='ns'):
+    """显示单位 → ns（内部单位）。支持 float / list / numpy 数组。
+
+    标量输入返回 float，数组 / 列表输入返回 np.ndarray；
+    time_unit 只影响显示/输入，内部计算始终用 ns。
+    """
+    out = np.asarray(value, dtype=float) * unit_factor(time_unit)
+    return float(out) if np.ndim(out) == 0 else out
+
+
+def from_ns(value, time_unit='ns'):
+    """ns（内部单位）→ 显示单位。支持 float / list / numpy 数组。
+
+    标量输入返回 float，数组 / 列表输入返回 np.ndarray；
+    time_unit 只影响显示/输入，内部计算始终用 ns。
+    """
+    out = np.asarray(value, dtype=float) / unit_factor(time_unit)
+    return float(out) if np.ndim(out) == 0 else out
 
 
 def setup_chinese_font():
@@ -1520,13 +1580,18 @@ def _scalar(x, default=float('nan')):
         return default
 
 
-def build_summary_table(results):
+def build_summary_table(results, time_unit='ns'):
     """把一批拟合结果（serialize() dict 列表）整理成汇总表（pandas DataFrame）。
 
-    每行一个文件，列：文件名、方法、拟合区间起/止(ns)、χ²R、qshift(ch/ns)、
-    IRF_FWHM(ns)、分量数，以及各寿命分量 τ_i(ns) / 占比_i(%)。
+    每行一个文件，列：文件名、方法、拟合区间起/止(时间单位)、χ²R、qshift(ch)、
+    qshift(时间单位)、IRF_FWHM(时间单位)、分量数，以及各寿命分量 τ_i / 占比_i(%)。
     分量数不一致的，少的分量列填 NaN。
+
+    time_unit 只影响显示（'ns' / 'us'，默认 'ns'）：以 ns 为单位的列会换算成该单位，
+    列名里的 (ns) 也随之变成 (unit_symbol)；qshift(ch) 是通道数，不换算不改名。
+    内部计算始终用 ns；time_unit='ns' 时列名与数值与旧版完全一致。
     """
+    sym = unit_symbol(time_unit)
     rows, max_peaks = [], 0
     for r in results:
         info = r.get('info', {})
@@ -1543,22 +1608,24 @@ def build_summary_table(results):
             'λ模式': ('自动' if info.get('lambda_auto') else '手动'),
             'λ(熵权重)': _scalar(info.get('lambda_coeff_used',
                                          info.get('lambda_coeff'))),
-            '拟合区间起(ns)': fit_lo,
-            '拟合区间止(ns)': fit_hi,
+            f'拟合区间起({sym})': from_ns(fit_lo, time_unit),
+            f'拟合区间止({sym})': from_ns(fit_hi, time_unit),
             'χ²R': _scalar(info.get('chi_sqr')),
             'qshift(ch)': _scalar(info.get('qshift_suggested')),
-            'qshift(ns)': _scalar(info.get('qshift_suggested')) * dt,
-            'IRF_FWHM(ns)': _scalar(info.get('irf_FWHM')),
+            f'qshift({sym})': from_ns(
+                _scalar(info.get('qshift_suggested')) * dt, time_unit),
+            f'IRF_FWHM({sym})': from_ns(_scalar(info.get('irf_FWHM')), time_unit),
             '分量数': len(peaks),
         }
         for i, p in enumerate(peaks):
-            row[f'τ{i + 1}(ns)'] = float(p[0])
+            row[f'τ{i + 1}({sym})'] = from_ns(float(p[0]), time_unit)
             row[f'占比{i + 1}(%)'] = float(p[1]) * 100.0
         rows.append(row)
-    cols = ['文件名', '方法', 'λ模式', 'λ(熵权重)', '拟合区间起(ns)', '拟合区间止(ns)',
-            'χ²R', 'qshift(ch)', 'qshift(ns)', 'IRF_FWHM(ns)', '分量数']
+    cols = ['文件名', '方法', 'λ模式', 'λ(熵权重)',
+            f'拟合区间起({sym})', f'拟合区间止({sym})',
+            'χ²R', 'qshift(ch)', f'qshift({sym})', f'IRF_FWHM({sym})', '分量数']
     for i in range(1, max_peaks + 1):
-        cols.append(f'τ{i}(ns)')
+        cols.append(f'τ{i}({sym})')
         cols.append(f'占比{i}(%)')
     df = pd.DataFrame(rows)
     for c in cols:                      # 补缺失的分量列（部分文件分量更少）
@@ -1567,8 +1634,13 @@ def build_summary_table(results):
     return df[cols]
 
 
-def _format_report(r):
-    """单个拟合结果的 Markdown 报告文本。"""
+def _format_report(r, time_unit='ns'):
+    """单个拟合结果的 Markdown 报告文本。
+
+    time_unit 只影响显示（'ns' / 'us'，默认 'ns'）：所有时间数值按该单位换算，
+    标签用它对应的符号；内部计算始终用 ns。
+    """
+    sym = unit_symbol(time_unit)
     info = r.get('info', {})
     peaks = r.get('peak_result') or []
     time = np.asarray(r.get('time', []), dtype=float)
@@ -1579,23 +1651,29 @@ def _format_report(r):
     lam_mode = '自动拟合' if info.get('lambda_auto') else '手动'
     lines.append(f"- 熵权重 λ = {_scalar(info.get('lambda_coeff_used', info.get('lambda_coeff'))):.5g}（{lam_mode}）")
     lines.append(f"- 简化卡方 χ²R = {_scalar(info.get('chi_sqr')):.4g}")
-    lines.append(f"- IRF 位移 qshift = {q:.4g} ch ({q * dt:.4g} ns)")
-    lines.append(f"- IRF FWHM = {_scalar(info.get('irf_FWHM')):.4g} ns")
+    lines.append(f"- IRF 位移 qshift = {q:.4g} ch "
+                 f"({from_ns(q * dt, time_unit):.4g} {sym})")
+    lines.append(f"- IRF FWHM = "
+                 f"{from_ns(_scalar(info.get('irf_FWHM')), time_unit):.4g} {sym}")
     fs, fe = int(info.get('fit_start', 0)), int(info.get('fit_end', 0))
     if len(time) > 1:
-        lines.append(f"- 拟合区间: {time[fs]:.3g} ~ {time[min(fe, len(time) - 1)]:.3g} ns")
+        lines.append(f"- 拟合区间: "
+                     f"{from_ns(time[fs], time_unit):.3g} ~ "
+                     f"{from_ns(time[min(fe, len(time) - 1)], time_unit):.3g} {sym}")
     lines.append("")
     if peaks:
         lines.append(f"## 寿命分量（共 {len(peaks)} 个）")
         for i, p in enumerate(peaks, 1):
-            lines.append(f"- τ{i} = {float(p[0]):.4g} ns, 强度占比 = {float(p[1]) * 100:.2f}%")
+            lines.append(f"- τ{i} = {from_ns(float(p[0]), time_unit):.4g} {sym}, "
+                         f"强度占比 = {float(p[1]) * 100:.2f}%")
     else:
         lines.append("未分离出明显寿命分量（分布过宽）。")
     return "\n".join(lines)
 
 
 def export_fit_results(results, save_dir, name="lifetime_fit_results",
-                       write_csv=True, write_xlsx=True, write_report=True):
+                       write_csv=True, write_xlsx=True, write_report=True,
+                       time_unit='ns'):
     """导出荧光寿命拟合结果。
 
     Args:
@@ -1604,6 +1682,8 @@ def export_fit_results(results, save_dir, name="lifetime_fit_results",
         name: 文件名字前缀。
         write_csv / write_xlsx / write_report: 分别控制输出
             {name}_summary.csv、{name}_summary.xlsx、{name}_{文件名}_report.md。
+        time_unit: 只影响显示（'ns' / 'us'，默认 'ns'）：汇总表列名/数值与 md 报告
+            中的时间量按该单位换算；内部计算始终用 ns。
 
     Returns:
         list[str]：实际写出的文件路径。
@@ -1615,7 +1695,7 @@ def export_fit_results(results, save_dir, name="lifetime_fit_results",
     if not results:
         return written
 
-    df = build_summary_table(results)
+    df = build_summary_table(results, time_unit=time_unit)
     if write_csv:
         csv_path = out / f"{name}_summary.csv"
         df.to_csv(csv_path, index=False, encoding='utf-8-sig')
@@ -1633,7 +1713,7 @@ def export_fit_results(results, save_dir, name="lifetime_fit_results",
             nm = r.get('name', 'fit')
             rp = out / f"{name}_{nm}_report.md"
             with open(rp, 'w', encoding='utf-8') as f:
-                f.write(_format_report(r))
+                f.write(_format_report(r, time_unit=time_unit))
             written.append(str(rp))
     return written
 
@@ -1642,7 +1722,7 @@ def export_fit_results(results, save_dir, name="lifetime_fit_results",
 
 def plot_summary(results, save_dir='./plots', name='lifetime_summary',
                  x=None, xlabel='样品序号', show=False, dpi=200, fmt='.png',
-                 verbose=True):
+                 verbose=True, time_unit='ns'):
     """跨样品汇总图（v4.22 新增）：把一批拟合结果画成「参数 vs 样品」曲线。
 
     三个面板（共享横轴）：
@@ -1656,10 +1736,13 @@ def plot_summary(results, save_dir='./plots', name='lifetime_summary',
         results: serialize() dict 列表（可含 None，会被跳过）
         x: 横轴数值（如浓度）；默认用 1..N
         xlabel: 横轴标题
+        time_unit: 只影响显示（'ns' / 'us'，默认 'ns'）：τ 轴标签与数值按该单位换算
+            （内部计算与结果数据始终用 ns）；time_unit='ns' 时与旧版完全一致。
     Returns:
         写出的图片路径（str）
     """
     import matplotlib.pyplot as plt
+    sym = unit_symbol(time_unit)
     results = [r for r in (results or []) if r and r.get('peak_result')]
     if not results:
         raise ValueError("没有可汇总的拟合结果（peak_result 为空）")
@@ -1678,11 +1761,12 @@ def plot_summary(results, save_dir='./plots', name='lifetime_summary',
         taus, alphas = [], []
         for r in results:
             pk = r['peak_result']
-            taus.append(pk[i][0] if i < len(pk) else np.nan)
+            # τ 存的是 ns，画图前换算到显示单位（ns 时数值不变）
+            taus.append(from_ns(pk[i][0], time_unit) if i < len(pk) else np.nan)
             alphas.append(pk[i][1] * 100 if i < len(pk) else np.nan)
         ax_tau.plot(xs, taus, 'o-', color=cmap(i % 10), label=f'τ{i + 1}')
         ax_alpha.plot(xs, alphas, 's-', color=cmap(i % 10), label=f'α{i + 1}')
-    ax_tau.set_ylabel('寿命 τ (ns)')
+    ax_tau.set_ylabel(f'寿命 τ ({sym})')
     ax_tau.set_yscale('log')
     ax_tau.set_title('各寿命分量 vs ' + xlabel)
     ax_tau.legend(fontsize=9, ncol=min(n_max, 4))
@@ -1714,7 +1798,7 @@ def plot_summary(results, save_dir='./plots', name='lifetime_summary',
 
 
 def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
-                      title=None, dpi=150, verbose=True):
+                      title=None, dpi=150, verbose=True, time_unit='ns'):
     """把一批拟合结果导出成**多页 PDF 报告**（v4.22 新增）。
 
     第 1 页：汇总表（文件名 / 方法 / χ²R / 拟合区间 / 各分量 τ 与占比）+ χ²R 柱状图；
@@ -1722,11 +1806,14 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
 
     Args:
         results: serialize() dict 列表
+        time_unit: 只影响显示（'ns' / 'us'，默认 'ns'）：汇总表表头/数值与样品页里
+            以 ns 为单位的坐标轴（τ 轴）按该单位换算；内部计算始终用 ns。
     Returns:
         写出的 PDF 路径（str）
     """
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
+    sym = unit_symbol(time_unit)
     results = [r for r in (results or []) if r]
     if not results:
         raise ValueError("没有可导出的拟合结果")
@@ -1742,8 +1829,8 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
         ax_t = fig.add_axes([0.06, 0.52, 0.88, 0.40])
         ax_t.axis('off')
         n_max = max(len(r.get('peak_result') or []) for r in results)
-        head = ['样品', '方法', 'χ²R', '拟合区间(ns)']
-        head += [f'τ{i + 1} (ns)' for i in range(n_max)]
+        head = ['样品', '方法', 'χ²R', f'拟合区间({sym})']
+        head += [f'τ{i + 1} ({sym})' for i in range(n_max)]
         head += [f'α{i + 1} (%)' for i in range(n_max)]
         rows = []
         for r in results:
@@ -1754,8 +1841,10 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
             fs, fe = int(info.get('fit_start', 0)), int(info.get('fit_end', 0))
             row = [str(r.get('name', '')), str(info.get('method', '')),
                    f"{info.get('chi_sqr', float('nan')):.3g}",
-                   f"{t[fs]:.2f}–{t[min(fe, len(t) - 1)]:.2f}" if len(t) else '-']
-            row += [f"{pk[i][0]:.3g}" if i < len(pk) else '-'
+                   f"{from_ns(t[fs], time_unit):.2f}–"
+                   f"{from_ns(t[min(fe, len(t) - 1)], time_unit):.2f}"
+                   if len(t) else '-']
+            row += [f"{from_ns(pk[i][0], time_unit):.3g}" if i < len(pk) else '-'
                     for i in range(n_max)]
             row += [f"{pk[i][1] * 100:.1f}" if i < len(pk) else '-'
                     for i in range(n_max)]
@@ -1796,34 +1885,40 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
             fig, axes = plt.subplots(2, 1, figsize=(8.27, 11.69),
                                      gridspec_kw={'height_ratios': [2, 1]})
             ax = axes[0]
-            ax.semilogy(time, np.maximum(decay, 0.5), '.', ms=2, alpha=0.5,
+            # 时间轴同样按显示单位绘制（v4.39：time_unit='ns' 时数值与旧版一致）
+            time_disp = from_ns(time, time_unit)
+            ax.semilogy(time_disp, np.maximum(decay, 0.5), '.', ms=2, alpha=0.5,
                         color='#66ccee', label='实验数据')
-            ax.semilogy(time[fs:fs + len(y_fit)], np.maximum(y_fit, 0.5),
+            ax.semilogy(time_disp[fs:fs + len(y_fit)], np.maximum(y_fit, 0.5),
                         '-', lw=1.4, color='#ee6677', label='拟合')
             irf_s = np.asarray(info.get('irf_shifted', []), dtype=float)
             if irf_s.size:
                 sc = decay.max() / max(irf_s.max(), 1e-9) * 0.9
-                ax.semilogy(time[:len(irf_s)], np.maximum(irf_s * sc, 0.5),
+                ax.semilogy(time_disp[:len(irf_s)], np.maximum(irf_s * sc, 0.5),
                             '-', lw=0.8, color='#ccbb44', label='IRF（平移后）')
-            ax.axvline(time[fs], color='#16A34A', ls='--', lw=0.8)
-            ax.axvline(time[min(fe, len(time) - 1)], color='#16A34A', ls='--', lw=0.8)
-            pk_txt = "，".join(f"τ{i + 1}={p[0]:.3g} ns ({p[1] * 100:.1f}%)"
+            ax.axvline(time_disp[fs], color='#16A34A', ls='--', lw=0.8)
+            ax.axvline(time_disp[min(fe, len(time) - 1)], color='#16A34A', ls='--',
+                       lw=0.8)
+            pk_txt = "，".join(
+                f"τ{i + 1}={from_ns(p[0], time_unit):.3g} {sym} ({p[1] * 100:.1f}%)"
                               for i, p in enumerate(r.get('peak_result') or []))
             ax.set_title(f"{r.get('name', '')} — {info.get('method', '')}"
                          f"，χ²R={info.get('chi_sqr', float('nan')):.3g}\n{pk_txt}",
                          fontsize=11)
             ax.set_ylabel('计数（对数）')
+            ax.set_xlabel(f'时间 ({sym})')
             ax.legend(fontsize=8)
             ax.grid(True, which='both', alpha=0.25)
             ax2 = axes[1]
-            ax2.semilogx(1.0 / np.maximum(k, 1e-12), dist, '-', color='#1e293b',
-                         label='寿命分布')
+            ax2.semilogx(from_ns(1.0 / np.maximum(k, 1e-12), time_unit), dist,
+                         '-', color='#1e293b', label='寿命分布')
             for p in (r.get('peak_result') or []):
-                ax2.axvline(p[0], color='#ee6677', ls='--', lw=0.8, alpha=0.8)
-                ax2.annotate(f"τ={p[0]:.3g} ns\n{p[1] * 100:.1f}%",
-                             xy=(p[0], dist.max() * 0.9 if dist.size else 1),
+                tau_disp = from_ns(p[0], time_unit)
+                ax2.axvline(tau_disp, color='#ee6677', ls='--', lw=0.8, alpha=0.8)
+                ax2.annotate(f"τ={tau_disp:.3g} {sym}\n{p[1] * 100:.1f}%",
+                             xy=(tau_disp, dist.max() * 0.9 if dist.size else 1),
                              fontsize=8, color='#ee6677', ha='center')
-            ax2.set_xlabel('τ (ns)')
+            ax2.set_xlabel(f'τ ({sym})')
             ax2.set_ylabel('分布强度')
             ax2.legend(fontsize=8)
             ax2.grid(True, alpha=0.25)
@@ -1840,17 +1935,21 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
 
 
 def plot_result(result, save_dir='./plots', name=None, show=False,
-                dpi=600, fmt='png'):
+                dpi=600, fmt='png', time_unit='ns'):
     """
     画拟合结果的两张图：
       1) {name}_decay.png : 衰减曲线 + 移动后 IRF + 拟合曲线（log 轴）+ 残差
       2) {name}_peaks.png : 寿命分布 + 各高斯分量（对数 tau 轴）
     result 可为 MEMFitter.serialize() 返回的 dict，或一个这样的 dict 组成的列表。
+
+    time_unit 只影响显示（'ns' / 'us'，默认 'ns'）：时间轴刻度、IRF 平移量与 τ 数值
+    按该单位换算；内部计算与结果数据始终用 ns，time_unit='ns' 时与旧版完全一致。
     """
     results = result if isinstance(result, (list, tuple)) else [result]
     saved = []
     for res in results:
-        _plot_one(res, save_dir, name or res.get('name'), show, dpi, fmt)
+        _plot_one(res, save_dir, name or res.get('name'), show, dpi, fmt,
+                  time_unit=time_unit)
         saved.append(save_dir)
     if show:
         plt.show()
@@ -1858,7 +1957,9 @@ def plot_result(result, save_dir='./plots', name=None, show=False,
     return saved
 
 
-def _plot_one(res, save_dir, name, show, dpi, fmt):
+def _plot_one(res, save_dir, name, show, dpi, fmt, time_unit='ns'):
+    """画单个结果的两张图；time_unit 只影响显示，内部数据始终是 ns。"""
+    sym = unit_symbol(time_unit)
     info = res['info']
     time = np.asarray(res['time'])
     decay = np.asarray(res['decay'])
@@ -1868,16 +1969,19 @@ def _plot_one(res, save_dir, name, show, dpi, fmt):
     fit_time = time[info['fit_start']:info['fit_end']]
     dt = time[1] - time[0] if len(time) > 1 else 1.0
     qshift_ns = info['qshift_suggested'] * dt
+    # 绘图用的时间轴：ns → 显示单位（time_unit='ns' 时数值不变）
+    time_disp = from_ns(time, time_unit)
+    fit_time_disp = from_ns(fit_time, time_unit)
 
     # ---- 图 1：衰减 + 拟合 + 残差 ----
     fig = plt.figure(figsize=(6, 5))
     gs = GridSpec(2, 1, height_ratios=[7, 3])
     ax1 = fig.add_subplot(gs[0])
-    ax1.scatter(time, decay, s=2, alpha=0.6, marker='o',
+    ax1.scatter(time_disp, decay, s=2, alpha=0.6, marker='o',
                 edgecolors='none', color="#66ccee", label='实验数据')
-    ax1.plot(time, irf_shifted, linewidth=0.8, color="#ccbb44",
-             label=f'IRF（平移 {qshift_ns:.2g} ns）')
-    ax1.plot(fit_time, y_fitted, linewidth=1.5, color="#ee6677", label='MEM 拟合')
+    ax1.plot(time_disp, irf_shifted, linewidth=0.8, color="#ccbb44",
+             label=f'IRF（平移 {from_ns(qshift_ns, time_unit):.2g} {sym}）')
+    ax1.plot(fit_time_disp, y_fitted, linewidth=1.5, color="#ee6677", label='MEM 拟合')
     ax1.set_yscale('log')
     ax1.set_ylim(bottom=1)
     ax1.set_ylabel('Counts (log)')
@@ -1885,9 +1989,9 @@ def _plot_one(res, save_dir, name, show, dpi, fmt):
     ax1.set_title(name or '')
 
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    ax2.plot(fit_time, residuals, linewidth=0.3, color="#ee6677")
+    ax2.plot(fit_time_disp, residuals, linewidth=0.3, color="#ee6677")
     ax2.axhline(0, color='gray', linewidth=0.5)
-    ax2.set_xlabel('Time (ns)')
+    ax2.set_xlabel(f'Time ({sym})')
     ax2.set_ylabel('残差')
     ax2.text(0.97, 0.9, r'$\chi_{\rm R}^2 = ' + f"{info['chi_sqr']:.4g}$",
              ha='right', va='top', transform=ax2.transAxes,
@@ -1906,12 +2010,13 @@ def _plot_one(res, save_dir, name, show, dpi, fmt):
     k = np.asarray(res['k'])
     dist = np.asarray(res['k_distribution'])
     tau = 1.0 / k
+    tau_disp = from_ns(tau, time_unit)      # 显示单位下的 τ（k 仍为 1/ns）
     fig2, ax = plt.subplots(figsize=(6, 2.8))
-    ax.set_xlabel(r'$\tau$ (ns)')
+    ax.set_xlabel(rf'$\tau$ ({sym})')
     ax.set_ylabel('分布强度')
     ax.set_xscale('log')
     ax.set_ylim(top=dist.max() * 1.4 if dist.max() > 0 else 1)
-    ax.plot(tau, dist, linewidth=0.8, color='black', label='MEM 分布')
+    ax.plot(tau_disp, dist, linewidth=0.8, color='black', label='MEM 分布')
 
     peak_fit = info.get('peak_fit')
     peak_result = res.get('peak_result') or []
@@ -1926,8 +2031,9 @@ def _plot_one(res, save_dir, name, show, dpi, fmt):
             amps = pf[:, 0] / max(float(np.max(pf[:, 0])), 1e-12)
         for n, peak in enumerate(np.asarray(peak_fit)):
             comp = peak[0] * np.exp(-((k - peak[1]) / peak[2]) ** 2)
-            ax.fill_between(tau, 0, comp, alpha=0.5,
-                            label=(fr'$\tau_{{{n + 1}}} = {1 / peak[1]:.3g}$ ns, '
+            ax.fill_between(tau_disp, 0, comp, alpha=0.5,
+                            label=(fr'$\tau_{{{n + 1}}} = '
+                                   fr'{from_ns(1 / peak[1], time_unit):.3g}$ {sym}, '
                                    fr'振幅 {amps[n] * 100:.1f}%, '
                                    fr'强度 {weights[n] * 100:.1f}%'))
         ax.legend(fontsize=8)
@@ -2532,7 +2638,7 @@ def fit_global_discrete(datasets, n_comp=2, tau_init=None, weight_mode='neyman',
 
 
 def fit_lifetime(files, save_dir='./plots', method='MEM', show=False,
-                 verbose=True, save_json=True, **fit_kwargs):
+                 verbose=True, save_json=True, time_unit='ns', **fit_kwargs):
     """
     一键批量拟合荧光寿命。
 
@@ -2543,6 +2649,8 @@ def fit_lifetime(files, save_dir='./plots', method='MEM', show=False,
         method: "MEM"（最大熵）或 "SESM"（平滑指数序列）
         show: 是否弹出图窗
         save_json: 是否保存拟合结果 json
+        time_unit: 只影响绘图显示（'ns' / 'us'，默认 'ns'），透传给 plot_result；
+            内部计算与保存的结果数据（含 json）始终用 ns。
         **fit_kwargs: 透传给 MEMFitter.fit()（如 n_rates, res_tol, lambda_coeff,
                       auto_lambda, lambda_scan_range, k_min, k_max, max_runs,
                       n_starts, seed）
@@ -2585,7 +2693,8 @@ def fit_lifetime(files, save_dir='./plots', method='MEM', show=False,
                 result = fitter.serialize(out_json)
                 result['file'] = str(fp)
                 results.append(result)
-                plot_result(result, save_dir=save_dir, name=name, show=False)
+                plot_result(result, save_dir=save_dir, name=name, show=False,
+                            time_unit=time_unit)
             except Exception as e:
                 _safe_print(f"  [错误] {fp}: {e}")
     if show and results:
@@ -2618,6 +2727,9 @@ def main():
     parser.add_argument('--show', action='store_true', help='显示图窗')
     parser.add_argument('--export', action='store_true',
                         help='拟合后额外导出 CSV/XLSX 汇总表与每文件 md 报告')
+    parser.add_argument('--time-unit', choices=TIME_UNIT_KEYS, default='ns',
+                        help='绘图与导出表格的时间单位（ns / us，默认 ns）；'
+                             '只影响显示，内部计算始终用 ns')
     parser.add_argument('-q', '--quiet', action='store_true', help='静默模式')
     args = parser.parse_args()
 
@@ -2631,9 +2743,12 @@ def main():
         res_tol=args.tol,
         lambda_coeff=args.lambda_coeff,
         auto_lambda=args.auto_lambda,
+        time_unit=args.time_unit,
     )
     if args.export and results:
-        written = export_fit_results(results, args.output, name="lifetime_fit_results")
+        written = export_fit_results(results, args.output,
+                                     name="lifetime_fit_results",
+                                     time_unit=args.time_unit)
         _safe_print(f"[导出] 写出 {len(written)} 个文件：")
         for w in written:
             _safe_print(f"  - {w}")

@@ -37,6 +37,7 @@ from gui_config import (
 from gui_components import (SliderSpin, ComboItemDelegate, MplCanvas,
                             resource_path, set_combo_palette)
 from gui_log import log_exception
+from plot_lifetime import TIME_UNIT_KEYS, TIME_UNIT_NAMES, unit_symbol, unit_factor
 
 
 class UiMixin:
@@ -887,9 +888,13 @@ class UiMixin:
                 "<li><b>参数固化</b>：「存为默认值」把当前拟合参数"
                 "固定为下次启动的默认值</li>"
                 "<li><b>参数</b>：拟合方法（MEM 最大熵 / SESM 平滑指数序列）、"
-                "速率网格点数、寿命范围 τ_min–τ_max（ns）、"
+                "速率网格点数、寿命范围 τ_min–τ_max、"
                 "「自动拟合 λ」（每次启动默认勾选，程序扫描最优熵权重）、"
                 "固定 τ（逗号分隔，作为不受熵约束的基函数）</li>"
+                "<li><b>时间单位（全局）</b>：单位下拉框可选 <b>ns / μs</b>——τ_min、"
+                "τ_max、固定 τ 都按所选单位填写，坐标轴与信息页的 τ 也按该单位显示；"
+                "内部拟合**始终按 ns 计算**，切换单位只换算输入框数值（保持物理范围不变）"
+                "并按新单位重画，<b>不会重新拟合</b>。设置随会话记住</li>"
                 "<li><b>F5 行为</b>：本模式下 F5 = <b>开始拟合</b>"
                 "（不是普通预览；拟合约 1–2 分钟，会弹出带「取消」的进度框）</li>"
                 "<li><b>拟合质量怎么看</b>：χ²R 的分母是拟合点数 M（不是自由度 ν）；"
@@ -980,6 +985,15 @@ class UiMixin:
 
     def _connect_live_update(self):
         """将所有参数控件连接到实时预览（防抖自动刷新）"""
+        # v4.39：寿命模式的「纯外观重绘」定时器——标题 / 线宽这类改动只重画上次的
+        # 拟合结果，不重新拟合（寿命模式刻意不做实时计算，见 _trigger_live_update）
+        if not hasattr(self, '_lifetime_cosmetic_timer'):
+            self._lifetime_cosmetic_timer = QTimer(self)
+            self._lifetime_cosmetic_timer.setSingleShot(True)
+            self._lifetime_cosmetic_timer.setInterval(250)
+            self._lifetime_cosmetic_timer.timeout.connect(
+                self._rerender_lifetime_cosmetic)
+
         # 数值类控件：valueChanged 信号
         try:
             self.linewidth_spin.valueChanged.connect(self._trigger_live_update)
@@ -987,6 +1001,25 @@ class UiMixin:
             self.peak_height_spin.valueChanged.connect(self._trigger_live_update)
             self.peak_distance_spin.valueChanged.connect(self._trigger_live_update)
             # 显示范围（波长上/下限已在控件创建处连接到实时预览）
+        except AttributeError:
+            pass
+
+        # v4.39：寿命模式中**会影响拟合结果**的参数 → 只给"需要重新拟合"的提示
+        # （不自动重算：一次 1–2 分钟）。这些控件以前在寿命模式下完全不接线，
+        # 用户改完既没提示也没变化，容易误以为程序坏了。
+        try:
+            self.lifetime_nrates_spin.valueChanged.connect(
+                self._on_lifetime_fit_param_changed)
+            self.lifetime_lambda_spin.valueChanged.connect(
+                self._on_lifetime_fit_param_changed)
+            self.lifetime_fixed_taus_edit.textChanged.connect(
+                self._on_lifetime_fit_param_changed)
+            self.lifetime_method_combo.currentIndexChanged.connect(
+                self._on_lifetime_fit_param_changed)
+            self.lifetime_taumin_spin.valueChanged.connect(
+                self._on_lifetime_fit_param_changed)
+            self.lifetime_taumax_spin.valueChanged.connect(
+                self._on_lifetime_fit_param_changed)
         except AttributeError:
             pass
 
@@ -1025,10 +1058,36 @@ class UiMixin:
         只有点击「实时预览」按钮才启动拟合。
         """
         if getattr(self, 'spectrum_type', None) == "lifetime":
+            # v4.39：**纯外观**参数（标题 / 线宽 / 颜色…）不该等下一次拟合——
+            # 直接拿上一次的拟合结果重画一遍（几十毫秒，不重算）。原实现这里
+            # 直接 return，导致用户在寿命模式改标题后画面毫无变化。
+            if (getattr(self, '_last_lifetime_result', None)
+                    and not getattr(self, '_plotting', False)
+                    and hasattr(self, '_lifetime_cosmetic_timer')):
+                self._lifetime_cosmetic_timer.start()
             return
         # 仅在有数据时才刷新
         if self.data_cache:
             self._live_timer.start()
+
+    def _on_lifetime_fit_param_changed(self, *args):
+        """寿命模式「会影响拟合结果」的参数被改动时的提示（v4.39）。
+
+        网格点数 / τ 范围 / λ / 固定 τ / 拟合方法一改，画布上的结果就过期了；
+        但重算要 1–2 分钟，必须由用户显式点「开始拟合」。这里只提示不计算，
+        避免用户以为"改了没反应"（配合 _trigger_live_update 的外观重绘）。
+        启动时恢复设置 / 还没拟合过时不提示。
+        """
+        if getattr(self, 'spectrum_type', None) != "lifetime":
+            return
+        if not getattr(self, '_last_lifetime_result', None):
+            return
+        if getattr(self, '_plotting', False):
+            return
+        if hasattr(self, 'status_bar'):
+            self.status_bar.showMessage(
+                "拟合参数已修改：画布还是上一次的结果，点「▶ 开始拟合」重新计算",
+                8000)
 
     def on_lifetime_method_changed(self, *args):
         """拟合方法切换联动：λ（熵权重）只在 MEM 方法下有意义，SESM 时禁用。"""
@@ -1406,6 +1465,33 @@ class UiMixin:
 
         # 荧光寿命专用选项（默认隐藏，切换到荧光寿命时显示）
         lifetime_options = QVBoxLayout()
+
+        # ---- 时间单位（v4.39，全局设置）----
+        # 寿命 τ 与时间轴的**输入/显示**单位：内部拟合始终按 ns 计算，切换单位只
+        # 影响输入框与图/表上看到的数值，不改变任何拟合结果。
+        # 对 μs 量级的样品（如 1O2 磷光，几十 μs）：选「微秒」后 τ_min/τ_max、
+        # 固定 τ 都按 μs 填，坐标轴与信息页也按 μs 显示，不用再数 0。
+        lifetime_options.addWidget(QLabel("时间单位:"))
+        self.lifetime_unit_combo = QComboBox()
+        self.lifetime_unit_combo.addItems(
+            [TIME_UNIT_NAMES[k] for k in TIME_UNIT_KEYS])
+        self._style_combo(self.lifetime_unit_combo)
+        self.lifetime_unit_combo.setToolTip(
+            "寿命 τ 与时间轴的**输入 / 显示**单位（全局设置，所有文件共用，"
+            "随会话记住）：\n"
+            "· 纳秒 (ns)：默认；\n"
+            "· 微秒 (μs)：τ_min / τ_max / 固定 τ 按 μs 填写，"
+            "坐标轴与 τ 数值也按 μs 显示；\n"
+            "内部拟合**始终按 ns 计算**，切换单位不改变拟合结果，"
+            "也不会改变当前 τ 范围的物理含义（1 μs 会自动换成 1000 ns）。")
+        self.lifetime_unit_combo.currentIndexChanged.connect(
+            self.on_lifetime_unit_changed)
+        lifetime_options.addWidget(self.lifetime_unit_combo)
+        # 单位缓存：worker 线程只读这三个属性（主线程统一维护）
+        self.lifetime_unit = TIME_UNIT_KEYS[0]
+        self.lifetime_unit_symbol = unit_symbol(self.lifetime_unit)
+        self.lifetime_unit_factor = unit_factor(self.lifetime_unit)
+
         lifetime_method_label = QLabel("拟合方法:")
         lifetime_options.addWidget(lifetime_method_label)
         self.lifetime_method_combo = QComboBox()
@@ -1435,7 +1521,8 @@ class UiMixin:
         # τ > 0（0.001 ns = 1 ps 是分辨率下限），上限给到 1e9 ns（= 1 s）纯粹是
         # QDoubleSpinBox 需要一个有限最大值，任何真实寿命都远在这个范围内：
         # 例如可以把 τ_min 设成 20 ns（只看 >20 ns 的长寿命成分）。
-        lifetime_options.addWidget(QLabel("τ_min (ns):"))
+        self.lifetime_taumin_label = QLabel("τ_min (ns):")
+        lifetime_options.addWidget(self.lifetime_taumin_label)
         self.lifetime_taumin_spin = QDoubleSpinBox()
         self.lifetime_taumin_spin.setRange(0.001, 1e9)       # → k_max = 1/τ_min
         self.lifetime_taumin_spin.setDecimals(3)
@@ -1446,10 +1533,11 @@ class UiMixin:
             "拟合范围里**最短**的寿命分量（默认 0.01 ns = 10 ps），\n"
             "内部换算为最高速率 k_max = 1/τ_min。\n"
             "要分辨更快的衰减就调小；只想看长寿命成分就调大（不限 10 ns）。\n"
-            "必须满足 τ_min < τ_max。")
+            "数值的单位跟随上方「时间单位」设置；必须满足 τ_min < τ_max。")
         lifetime_options.addWidget(self.lifetime_taumin_spin)
 
-        lifetime_options.addWidget(QLabel("τ_max (ns):"))
+        self.lifetime_taumax_label = QLabel("τ_max (ns):")
+        lifetime_options.addWidget(self.lifetime_taumax_label)
         self.lifetime_taumax_spin = QDoubleSpinBox()
         self.lifetime_taumax_spin.setRange(0.001, 1e9)       # → k_min = 1/τ_max
         self.lifetime_taumax_spin.setDecimals(3)
@@ -1460,7 +1548,7 @@ class UiMixin:
             "拟合范围里**最长**的寿命分量（默认 100 ns），\n"
             "内部换算为最低速率 k_min = 1/τ_max。\n"
             "要拟合更长的寿命（μs 级）就调大，例如 10000 ns = 10 μs；不限上限。\n"
-            "必须满足 τ_min < τ_max。")
+            "数值的单位跟随上方「时间单位」设置；必须满足 τ_max > τ_min。")
         lifetime_options.addWidget(self.lifetime_taumax_spin)
 
         # 两个框互相约束：谁被填到越界，另一个自动让开（保持 τ_min < τ_max）。
@@ -1472,10 +1560,14 @@ class UiMixin:
             self._sync_lifetime_tau_range)
 
         # 固定寿命分量（不受熵约束的额外基函数）
-        lifetime_options.addWidget(QLabel("固定 τ:"))
+        self.lifetime_fixed_tau_label = QLabel("固定 τ (ns):")
+        lifetime_options.addWidget(self.lifetime_fixed_tau_label)
         self.lifetime_fixed_taus_edit = QLineEdit()
         self.lifetime_fixed_taus_edit.setPlaceholderText(
             "留空 = 不固定；例：3.6 或 0.5, 3.6")
+        self.lifetime_fixed_taus_edit.setToolTip(
+            "已知的固定寿命分量（逗号分隔），作为不受熵约束的基函数一起拟合，\n"
+            "幅度自动求解。单位跟随上方「时间单位」设置。")
         lifetime_options.addWidget(self.lifetime_fixed_taus_edit)
 
         # 熵权重 λ（MEM 目标函数 chi² - λ·S 中的 λ）：可手动修改，
@@ -1502,6 +1594,7 @@ class UiMixin:
         self.lifetime_save_defaults_btn.setToolTip(
             "把当前荧光寿命拟合参数存为默认值，下次启动自动套用：\n"
             "拟合方法、速率网格点数、τ 范围、固定 τ、λ 与自动拟合 λ。\n"
+            "（「时间单位」是全局显示设置，随会话记住，不放进默认值。）\n"
             "临时改动不会自动变成默认值——想改默认值就再点一次本按钮。")
         self.lifetime_save_defaults_btn.clicked.connect(
             self._save_lifetime_defaults)
@@ -2062,6 +2155,7 @@ class UiMixin:
         fit_card_layout.addLayout(head_row)
 
         self.fit_table = QTableWidget(0, 4)
+        # 表头里的单位随「时间单位」全局设置刷新（见 DataMixin._refresh_lifetime_unit）
         self.fit_table.setHorizontalHeaderLabels(
             ["分量", "τ (ns)", "强度占比 (%)", "振幅占比 (%)"])
         self.fit_table.verticalHeader().setVisible(False)

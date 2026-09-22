@@ -19,7 +19,8 @@ from gui_config import DEFAULT_WORKSPACE, THEMES
 from gui_log import log_exception, log_file_path, setup_logging
 from plot_absorption import load_absorption_spectra, find_absorption_peaks
 from plot_emission import load_spectra as load_emission_spectra
-from plot_lifetime import parse_decay_csv, parse_decay_xlsx
+from plot_lifetime import (parse_decay_csv, parse_decay_xlsx,
+                           TIME_UNIT_KEYS, unit_symbol, unit_factor)
 from read_xlsx_info import load_xlsx_info, match_number
 
 # 将父目录加入 Python 路径，便于独立导入绘图模块
@@ -165,6 +166,9 @@ class DataMixin:
         ("param/export_white", "export_white_check", "bool"),
         ("param/lifetime_method", "lifetime_method_combo", "combo"),
         ("param/lifetime_nrates", "lifetime_nrates_spin", "int"),
+        # 单位必须排在这两个 τ 键**前面**：恢复顺序决定"先切单位再读数值"，
+        # 否则会话里按 μs 存的 τ 会先被当成 ns 读进来、再被单位切换换算一次（v4.39）
+        ("param/lifetime_unit", "lifetime_unit_combo", "combo"),
         ("param/lifetime_taumin", "lifetime_taumin_spin", "float"),
         ("param/lifetime_taumax", "lifetime_taumax_spin", "float"),
         ("param/lifetime_fixed_taus", "lifetime_fixed_taus_edit", "str"),
@@ -217,6 +221,143 @@ class DataMixin:
             s.sync()
         except Exception as e:
             log_exception("换算旧版寿命范围设置失败", e)
+
+    # ---------- v4.39：寿命时间单位（全局设置：τ / 时间轴的输入与显示单位） ----------
+    # 设计要点：**内部拟合永远按 ns 计算**，单位只作用于「用户输入」与「界面显示」。
+    # 因此切换单位只换算输入框里的数值（保持物理量不变）并按新单位重画，
+    # 不重新拟合、也不改变任何拟合结果。
+
+    def _lifetime_unit_key(self):
+        """当前「时间单位」下拉框对应的键（'ns' / 'us'），异常时回退 'ns'。"""
+        combo = getattr(self, 'lifetime_unit_combo', None)
+        if combo is None:
+            return TIME_UNIT_KEYS[0]
+        try:
+            idx = int(combo.currentIndex())
+        except Exception:
+            return TIME_UNIT_KEYS[0]
+        return TIME_UNIT_KEYS[idx] if 0 <= idx < len(TIME_UNIT_KEYS) \
+            else TIME_UNIT_KEYS[0]
+
+    def _apply_lifetime_tau_spin_ranges(self):
+        """按当前单位设置 τ 输入框的小数位与量程（物理范围恒为 1 ps – 1e9 ns）。"""
+        f = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        # μs 下需要 6 位小数才能表示下限 0.001 ns = 1e-6 μs
+        dec = 3 if f <= 1.0 else 6
+        for name in ('lifetime_taumin_spin', 'lifetime_taumax_spin'):
+            spin = getattr(self, name, None)
+            if spin is None:
+                continue
+            spin.setDecimals(dec)
+            spin.setRange(0.001 / f, 1e9 / f)
+
+    def _refresh_lifetime_unit(self, convert=False):
+        """同步单位缓存 + 界面文案；convert=True 时把 τ 输入框数值换算到新单位。
+
+        τ(新单位) = τ(旧单位) × 旧因子 ÷ 新因子 —— 保证物理量不变
+        （ns → μs：100 ns 变成 0.1 μs）。
+        """
+        key = self._lifetime_unit_key()
+        old_factor = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        new_factor = unit_factor(key)
+        self.lifetime_unit = key
+        self.lifetime_unit_symbol = unit_symbol(key)
+        self.lifetime_unit_factor = new_factor
+        sym = self.lifetime_unit_symbol
+        try:
+            if hasattr(self, 'lifetime_taumin_label'):
+                self.lifetime_taumin_label.setText(f"τ_min ({sym}):")
+            if hasattr(self, 'lifetime_taumax_label'):
+                self.lifetime_taumax_label.setText(f"τ_max ({sym}):")
+            if hasattr(self, 'lifetime_fixed_tau_label'):
+                self.lifetime_fixed_tau_label.setText(f"固定 τ ({sym}):")
+            # 信息页「拟合摘要」卡片的 τ 列表头
+            if hasattr(self, 'fit_table'):
+                self.fit_table.setHorizontalHeaderLabels(
+                    ["分量", f"τ ({sym})", "强度占比 (%)", "振幅占比 (%)"])
+        except Exception as e:
+            log_exception("更新时间单位标签失败", e)
+        if not convert or new_factor == old_factor:
+            return
+        ratio = old_factor / new_factor
+        spin_lo = getattr(self, 'lifetime_taumin_spin', None)
+        spin_hi = getattr(self, 'lifetime_taumax_spin', None)
+        if spin_lo is None or spin_hi is None:
+            return
+        # 先算好换算后的数值（此时控件还是旧量程，不能让 setRange 提前夹掉旧值）
+        lo_new = float(spin_lo.value()) * ratio
+        hi_new = float(spin_hi.value()) * ratio
+        self._tau_range_syncing = True          # 换算期间不让"越界让路"掺和
+        try:
+            self._apply_lifetime_tau_spin_ranges()
+            spin_lo.setValue(lo_new)
+            spin_hi.setValue(hi_new)
+            # 固定 τ 文本同步换算
+            try:
+                raw = self.lifetime_fixed_taus_edit.text().replace('，', ',')
+                vals = [float(x) for x in raw.replace(' ', '').split(',')
+                        if x.strip()]
+                if vals:
+                    self.lifetime_fixed_taus_edit.setText(
+                        ", ".join(f"{v * ratio:g}" for v in vals))
+            except Exception:
+                pass
+        finally:
+            self._tau_range_syncing = False
+        # 换算后若越界（极端量程边界）直接兜底，不借用"发送者"判断
+        try:
+            lo = float(spin_lo.value())
+            hi = float(spin_hi.value())
+            if not 0 < lo < hi:
+                spin_hi.setValue(lo * 10.0)
+        except Exception:
+            pass
+
+    def on_lifetime_unit_changed(self, *args):
+        """「时间单位」切换（v4.39）：换算输入数值 → 刷新标签 → 用缓存结果重画。
+
+        重画走 `_rerender_lifetime_cosmetic`（纯显示），**不触发重新拟合**。
+        启动恢复会话时会连本槽一起触发（此时是"把面板默认值从旧单位换算到会话单位"，
+        紧接着会话里的 τ 数值会覆盖它），所以恢复期间不弹状态栏提示。
+        """
+        old_sym = getattr(self, 'lifetime_unit_symbol', 'ns')
+        self._refresh_lifetime_unit(convert=True)
+        sym = self.lifetime_unit_symbol
+        if getattr(self, '_restoring_session', False):
+            return                      # 启动恢复阶段：不提示、不重画（也没有结果可重画）
+        has_result = bool(getattr(self, '_last_lifetime_result', None))
+        if has_result:
+            try:
+                self._rerender_lifetime_cosmetic()
+            except Exception as e:
+                log_exception("切换时间单位后重画失败", e)
+        if hasattr(self, 'status_bar'):
+            tail = ("图/信息页已按新单位刷新，拟合结果本身不变"
+                    if has_result else "τ 输入框与坐标轴单位已切换")
+            self.status_bar.showMessage(
+                f"时间单位：{old_sym} → {sym}（{tail}）", 8000)
+
+    def _apply_lifetime_unit(self):
+        """启动时按会话记住的单位刷新缓存与标签。
+
+        （数值本来就是按该单位存的，所以**不换算**，只刷新缓存/文案/量程。）
+        """
+        self._refresh_lifetime_unit(convert=False)
+        try:
+            self._apply_lifetime_tau_spin_ranges()
+        except Exception as e:
+            log_exception("按时间单位设置 τ 量程失败", e)
+
+    def tau_disp(self, tau_ns, fmt='.4g'):
+        """ns 的寿命值 → 当前单位下的字符串（不含单位符号）。"""
+        try:
+            return format(float(tau_ns) / float(self.lifetime_unit_factor), fmt)
+        except Exception:
+            return "nan"
+
+    def tau_unit_symbol(self):
+        """当前单位符号（'ns' / 'μs'）。"""
+        return getattr(self, 'lifetime_unit_symbol', 'ns')
 
     def _save_session(self):
         """保存会话：模式 / 文件夹 / 窗口几何 / 白名单参数（D2 + E1）。"""
@@ -277,6 +418,14 @@ class DataMixin:
         s = self.settings
         # v4.38：先把旧版（k 单位）的寿命范围设置换算成 τ，再走正常恢复流程
         self._migrate_lifetime_range_keys(s)
+        # v4.39：恢复期间抑制「时间单位」切换的提示/重画（见 on_lifetime_unit_changed）
+        self._restoring_session = True
+        try:
+            self._restore_session_body(s)
+        finally:
+            self._restoring_session = False
+
+    def _restore_session_body(self, s):
 
         def _flag(key, default):
             v = s.value(key, default)
@@ -406,13 +555,35 @@ class DataMixin:
         ("lifetime_auto_lambda", "lifetime_auto_lambda_check", "bool"),
     )
 
+    @staticmethod
+    def _convert_taus_text(text, factor):
+        """把「逗号分隔的 τ 文本」整体乘 factor（解析不了的项原样保留）。
+
+        v4.39：用于「固定 τ」在 当前时间单位 ↔ ns 之间换算。
+        """
+        out = []
+        for tok in str(text or '').replace('，', ',').split(','):
+            s = tok.strip()
+            if not s:
+                continue
+            try:
+                out.append(f"{float(s) * factor:g}")
+            except ValueError:
+                out.append(s)
+        return ", ".join(out)
+
     def _save_lifetime_defaults(self):
         """把当前荧光寿命拟合参数存为默认值（QSettings defaults/*）。
 
         与「上次会话」的区别：会话是每次关闭自动覆盖的，而默认值只有点这个
         按钮才更新，因此临时试参数不会把默认值改掉。
+
+        v4.39：τ 范围与固定 τ 一律**按 ns 存**（内部规范单位），这样默认值的物理
+        含义与「时间单位」无关——用户把显示单位从 ns 换成 μs 后，默认值仍然是
+        同一段寿命范围，不会悄悄变 1000 倍。
         """
         s = self.settings
+        uf = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
         try:
             for key, attr, kind in self._LIFETIME_DEFAULT_SPECS:
                 w = getattr(self, attr, None)
@@ -426,7 +597,14 @@ class DataMixin:
                     elif kind == "int":
                         s.setValue("defaults/" + key, int(w.value()))
                     elif kind == "float":
-                        s.setValue("defaults/" + key, float(w.value()))
+                        val = float(w.value())
+                        if key in ("lifetime_taumin", "lifetime_taumax"):
+                            val *= uf                     # 显示单位 → ns
+                        s.setValue("defaults/" + key, val)
+                    elif key == "lifetime_fixed_taus":
+                        # 固定 τ 也按 ns 存（与 τ 范围同一口径）
+                        s.setValue("defaults/" + key,
+                                   self._convert_taus_text(w.text(), uf))
                     else:
                         s.setValue("defaults/" + key, str(w.text()))
                 except Exception:
@@ -437,9 +615,10 @@ class DataMixin:
             auto = bool(self.lifetime_auto_lambda_check.isChecked())
             lam = "自动" if auto else f"{float(self.lifetime_lambda_spin.value()):g}"
             taus = self.lifetime_fixed_taus_edit.text().strip() or "无"
+            sym = getattr(self, 'lifetime_unit_symbol', 'ns')
             msg = (f"已存为默认值：{method} / {int(self.lifetime_nrates_spin.value())} 点"
                    f" / τ {float(self.lifetime_taumin_spin.value()):g}"
-                   f"–{float(self.lifetime_taumax_spin.value()):g} ns"
+                   f"–{float(self.lifetime_taumax_spin.value()):g} {sym}"
                    f" / λ {lam} / 固定 τ {taus}")
             if hasattr(self, 'status_bar'):
                 self.status_bar.showMessage(msg, 6000)
@@ -482,7 +661,15 @@ class DataMixin:
                 elif kind == "int":
                     w.setValue(int(float(v)))
                 elif kind == "float":
-                    w.setValue(float(v))
+                    val = float(v)
+                    if key in ("lifetime_taumin", "lifetime_taumax"):
+                        # 默认值按 ns 存（v4.39）→ 换算到当前「时间单位」
+                        val /= float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+                    w.setValue(val)
+                elif key == "lifetime_fixed_taus":
+                    # 默认值按 ns 存 → 换算回当前「时间单位」
+                    w.setText(self._convert_taus_text(
+                        str(v), 1.0 / float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)))
                 else:
                     w.setText(str(v))
                 applied += 1

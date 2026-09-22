@@ -377,13 +377,86 @@ def t_gui_lifetime_tau_migration():
         s.sync()
 
 
+@check("GUI：寿命时间单位 ns/μs 切换只换显示、不换物理范围（v4.39）")
+def t_gui_lifetime_unit_switch():
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)          # 荧光寿命模式
+    # 用户场景：1O2 磷光（几十 μs）——先用 ns 填 1000–1e6 ns
+    w.lifetime_taumin_spin.setValue(1000.0)
+    w.lifetime_taumax_spin.setValue(1e6)
+    w.lifetime_fixed_taus_edit.setText("60, 100")
+    p_ns = w._collect_plot_params()
+
+    w.lifetime_unit_combo.setCurrentIndex(1)          # → 微秒
+    assert w.lifetime_unit == 'us', w.lifetime_unit
+    assert abs(w.lifetime_unit_factor - 1000.0) < 1e-9
+    assert w.lifetime_taumin_label.text() == 'τ_min (μs):', w.lifetime_taumin_label.text()
+    assert w.lifetime_taumax_label.text() == 'τ_max (μs):', w.lifetime_taumax_label.text()
+    assert w.lifetime_fixed_tau_label.text() == '固定 τ (μs):', \
+        w.lifetime_fixed_tau_label.text()
+    # 数值按单位换算：1000 ns → 1 μs，1e6 ns → 1000 μs，固定 τ 60/100 ns → 0.06/0.1 μs
+    assert abs(w.lifetime_taumin_spin.value() - 1.0) < 1e-9, w.lifetime_taumin_spin.value()
+    assert abs(w.lifetime_taumax_spin.value() - 1000.0) < 1e-9, w.lifetime_taumax_spin.value()
+    assert w.lifetime_fixed_taus_edit.text() == '0.06, 0.1', \
+        w.lifetime_fixed_taus_edit.text()
+    p_us = w._collect_plot_params()
+    # 物理范围与固定 τ 完全不变（内部始终按 ns 拟合）
+    assert abs(p_us['lifetime_kmin'] - p_ns['lifetime_kmin']) < 1e-18, (p_us, p_ns)
+    assert abs(p_us['lifetime_kmax'] - p_ns['lifetime_kmax']) < 1e-15, (p_us, p_ns)
+    assert p_us['lifetime_fixed_taus'] == p_ns['lifetime_fixed_taus'] == [60.0, 100.0], \
+        (p_us.get('lifetime_fixed_taus'), p_ns.get('lifetime_fixed_taus'))
+
+    # 切回 ns：数值回到原样、标签也回来
+    w.lifetime_unit_combo.setCurrentIndex(0)
+    assert w.lifetime_unit == 'ns' and abs(w.lifetime_unit_factor - 1.0) < 1e-12
+    assert abs(w.lifetime_taumin_spin.value() - 1000.0) < 1e-6, w.lifetime_taumin_spin.value()
+    assert abs(w.lifetime_taumax_spin.value() - 1e6) < 1.0, w.lifetime_taumax_spin.value()
+    assert w.lifetime_taumin_label.text() == 'τ_min (ns):', w.lifetime_taumin_label.text()
+    assert w.lifetime_fixed_taus_edit.text() == '60, 100', w.lifetime_fixed_taus_edit.text()
+
+
+@check("GUI：时间单位随会话恢复且 τ 数值不被二次换算（v4.39）")
+def t_gui_lifetime_unit_restore():
+    app, w = _make_gui()
+    s = w.settings
+    if not s.isWritable():
+        raise Skip("QSettings 不可写，注册表被限制")
+    keys = ["param/lifetime_unit", "param/lifetime_taumin", "param/lifetime_taumax",
+            "defaults/lifetime_saved"]
+    old = {k: s.value(k, None) for k in keys}
+    try:
+        for k in keys:
+            s.remove(k)
+        s.setValue("param/lifetime_unit", 1)          # 会话里存的是"微秒"
+        s.setValue("param/lifetime_taumin", 1.0)      # 1 μs
+        s.setValue("param/lifetime_taumax", 1000.0)   # 1000 μs
+        s.sync()
+        app2, w2 = _make_gui()
+        assert w2.lifetime_unit == 'us', w2.lifetime_unit
+        # 关键：单位先恢复、τ 再读入，所以数值**不能**被再换算一次
+        assert abs(w2.lifetime_taumin_spin.value() - 1.0) < 1e-9, \
+            w2.lifetime_taumin_spin.value()
+        assert abs(w2.lifetime_taumax_spin.value() - 1000.0) < 1e-9, \
+            w2.lifetime_taumax_spin.value()
+        p = w2._collect_plot_params()
+        assert abs(p['lifetime_kmax'] - 1e-3) < 1e-18, p['lifetime_kmax']   # 1/1000 ns
+        assert abs(p['lifetime_kmin'] - 1e-6) < 1e-21, p['lifetime_kmin']   # 1/1e6 ns
+    finally:
+        for k in keys:
+            s.remove(k)
+        for k, v in old.items():
+            if v is not None:
+                s.setValue(k, v)
+        s.sync()
+
+
 @check("GUI：寿命拟合参数「存为默认值」下次启动生效")
 def t_gui_lifetime_defaults():
     app, w = _make_gui()
     if not w.settings.isWritable():
         raise Skip("QSettings 不可写，注册表被限制")
     keys = ["defaults/" + k for k, _, _ in w._LIFETIME_DEFAULT_SPECS]
-    keys.append("defaults/lifetime_saved")
+    keys += ["defaults/lifetime_saved", "param/lifetime_unit"]
     old = {k: w.settings.value(k, None) for k in keys}
     try:
         w.lifetime_method_combo.setCurrentIndex(0)          # MEM（λ 才有意义）
@@ -397,14 +470,31 @@ def t_gui_lifetime_defaults():
         w.lifetime_fixed_taus_edit.setText("3.6, 0.5")
         w.lifetime_lambda_spin.setValue(0.01)
         w.lifetime_auto_lambda_check.setChecked(False)
+        # v4.39：切到「微秒」再存一次 → 默认值必须**按 ns 存**（与显示单位无关）
+        w.lifetime_unit_combo.setCurrentIndex(1)
+        w.lifetime_taumin_spin.setValue(0.2)        # 0.2 μs = 200 ns
+        w.lifetime_taumax_spin.setValue(0.5)        # 0.5 μs = 500 ns
+        w.lifetime_fixed_taus_edit.setText("3.6, 0.5")   # 3.6/0.5 μs
         assert w._save_lifetime_defaults(), "保存默认值失败"
+        s = w.settings
+        assert abs(float(s.value("defaults/lifetime_taumin")) - 200.0) < 1e-9, \
+            s.value("defaults/lifetime_taumin")
+        assert abs(float(s.value("defaults/lifetime_taumax")) - 500.0) < 1e-9, \
+            s.value("defaults/lifetime_taumax")
+        assert str(s.value("defaults/lifetime_fixed_taus")) == "3600, 500", \
+            s.value("defaults/lifetime_fixed_taus")
+        # 模拟"会话里也是微秒"：单位随会话恢复后，默认值应换算回微秒显示
+        s.setValue("param/lifetime_unit", 1)
+        s.sync()
         app2, w2 = _make_gui()
+        assert w2.lifetime_unit == 'us', w2.lifetime_unit
         assert w2.lifetime_nrates_spin.value() == 123, "网格点数未套用默认值"
-        assert abs(w2.lifetime_taumin_spin.value() - 200.0) < 1e-9, \
+        assert abs(w2.lifetime_taumin_spin.value() - 0.2) < 1e-9, \
             w2.lifetime_taumin_spin.value()
-        assert abs(w2.lifetime_taumax_spin.value() - 500.0) < 1e-9, \
+        assert abs(w2.lifetime_taumax_spin.value() - 0.5) < 1e-9, \
             w2.lifetime_taumax_spin.value()
-        assert w2.lifetime_fixed_taus_edit.text() == "3.6, 0.5"
+        assert w2.lifetime_fixed_taus_edit.text() == "3.6, 0.5", \
+            w2.lifetime_fixed_taus_edit.text()
         assert abs(w2.lifetime_lambda_spin.value() - 0.01) < 1e-9
         assert not w2.lifetime_auto_lambda_check.isChecked(), "自动拟合 λ 应恢复为不勾选"
         assert w2.lifetime_lambda_spin.isEnabled(), "MEM + 手动 λ 时 λ 输入框应可用"
