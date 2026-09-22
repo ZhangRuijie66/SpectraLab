@@ -932,14 +932,27 @@ class PlotMixin:
             P['subtract'] = self._get_subtract_config()
         except Exception as e:
             log_exception("读取绘图参数失败", e)
-        # 寿命参数
+        # 寿命参数（v4.38：界面输入的是寿命 τ 范围，这里换算成 plot_lifetime
+        # 使用的速率网格 k = 1/τ：k_min = 1/τ_max、k_max = 1/τ_min）
         try:
             method = ("SESM" if "SESM" in self.lifetime_method_combo.currentText()
                       else "MEM")
-            k_min = float(self.lifetime_kmin_spin.value())
-            k_max = float(self.lifetime_kmax_spin.value())
-            if k_max <= k_min:
-                k_min, k_max = 0.01, 100.0
+            tau_min = float(self.lifetime_taumin_spin.value())
+            tau_max = float(self.lifetime_taumax_spin.value())
+            if not (0 < tau_min < tau_max):
+                # 界面已用 _sync_lifetime_tau_range 保证 τ_min < τ_max，这里是
+                # 兜底（例如设置里存了坏值）：回退默认范围，但**要说出来**，
+                # 不能静默拟合出用户没要的范围。
+                logging.getLogger('qls').warning(
+                    "寿命范围非法（τ_min=%s ≥ τ_max=%s），本次按默认 0.01–100 ns 拟合",
+                    tau_min, tau_max)
+                if hasattr(self, 'status_bar'):
+                    self.status_bar.showMessage(
+                        "⚠️ 寿命范围需满足 τ_min < τ_max，本次按默认 0.01–100 ns 拟合",
+                        8000)
+                tau_min, tau_max = 0.01, 100.0
+            k_min = 1.0 / tau_max
+            k_max = 1.0 / tau_min
             fixed_taus = []
             try:
                 raw = self.lifetime_fixed_taus_edit.text().replace('，', ',')
@@ -954,6 +967,8 @@ class PlotMixin:
                 'lifetime_lambda': float(self.lifetime_lambda_spin.value()),
                 'lifetime_auto_lambda': bool(
                     self.lifetime_auto_lambda_check.isChecked()),
+                'lifetime_taumin': tau_min,
+                'lifetime_taumax': tau_max,
                 'lifetime_kmin': k_min,
                 'lifetime_kmax': k_max,
                 'lifetime_fixed_taus': fixed_taus,
@@ -2131,12 +2146,12 @@ class PlotMixin:
             lines.append(f"⚠️ 有 {info['peaks_dropped']} 个分量因超出 max_peaks 被丢弃")
         if info.get('intensity_share_grid_edges', 0) > 0.05:
             lines.append(f"⚠️ {info['intensity_share_grid_edges'] * 100:.1f}% 的发光强度"
-                         "落在速率网格两端（可能为边界堆积，建议放宽 k 范围复算）")
+                         "落在寿命范围两端（可能为边界堆积，建议放宽 τ 范围复算）")
         kmin, kmax = info.get('k_min'), info.get('k_max')
         if kmin and kmax:
-            lines.append(f"速率网格 k = {kmin:g}–{kmax:g} /ns"
-                         f"（τ {info.get('tau_max_ns', 0):.4g}–"
-                         f"{info.get('tau_min_ns', 0):.4g} ns），"
+            lines.append(f"寿命范围 τ = {info.get('tau_max_ns', 0):.4g}–"
+                         f"{info.get('tau_min_ns', 0):.4g} ns"
+                         f"（速率网格 k = {kmin:g}–{kmax:g} /ns），"
                          f"{info.get('n_rates', 0)} 点")
         lines.append("IRF 平移 / 拟合区间 / 残差自相关见「拟合诊断」标签页")
         lines.append("")

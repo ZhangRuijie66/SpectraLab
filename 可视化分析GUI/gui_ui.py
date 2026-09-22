@@ -887,7 +887,7 @@ class UiMixin:
                 "<li><b>参数固化</b>：「存为默认值」把当前拟合参数"
                 "固定为下次启动的默认值</li>"
                 "<li><b>参数</b>：拟合方法（MEM 最大熵 / SESM 平滑指数序列）、"
-                "速率网格点数、k 范围（τ = 1/k）、"
+                "速率网格点数、寿命范围 τ_min–τ_max（ns）、"
                 "「自动拟合 λ」（每次启动默认勾选，程序扫描最优熵权重）、"
                 "固定 τ（逗号分隔，作为不受熵约束的基函数）</li>"
                 "<li><b>F5 行为</b>：本模式下 F5 = <b>开始拟合</b>"
@@ -1041,6 +1041,36 @@ class UiMixin:
         """「自动拟合 λ」勾选联动：自动拟合时 λ 输入框禁用（扫描代替手动值）。"""
         self.lifetime_lambda_spin.setEnabled(
             not checked and "MEM" in self.lifetime_method_combo.currentText())
+
+    def _sync_lifetime_tau_range(self, *args):
+        """保证寿命范围满足 τ_min < τ_max（v4.38）。
+
+        两个框都不设实际上限，用户完全可能把 τ_min 填到比当前 τ_max 还大
+        （或反过来）。这里让**被动的那一个框自动让路**，而不是留给
+        `_collect_plot_params` 静默回退默认范围——否则用户会觉得"填了没生效"。
+        谁被改动谁的信号触发本槽，用 sender() 判断主动方。
+        """
+        if getattr(self, '_tau_range_syncing', False):
+            return
+        try:
+            lo = float(self.lifetime_taumin_spin.value())
+            hi = float(self.lifetime_taumax_spin.value())
+            if lo < hi:
+                return
+            self._tau_range_syncing = True
+            try:
+                if self.sender() is self.lifetime_taumax_spin:
+                    self.lifetime_taumin_spin.setValue(hi / 10.0)
+                else:
+                    self.lifetime_taumax_spin.setValue(lo * 10.0)
+            finally:
+                self._tau_range_syncing = False
+            if hasattr(self, 'status_bar'):
+                self.status_bar.showMessage(
+                    f"寿命范围已自动调整：τ_min = {self.lifetime_taumin_spin.value():g} ns"
+                    f" < τ_max = {self.lifetime_taumax_spin.value():g} ns", 6000)
+        except Exception:
+            pass
 
     def create_tree_panel(self):
         """创建目录树面板：直接浏览电脑目录并点击选取文件夹"""
@@ -1396,25 +1426,50 @@ class UiMixin:
         self.lifetime_nrates_spin.setValue(201)
         lifetime_options.addWidget(self.lifetime_nrates_spin)
 
-        # 速率网格范围 k_min–k_max（k = 1/τ，单位 1/ns）
+        # 寿命范围 τ_min–τ_max（v4.38：界面直接输入寿命 τ，单位 ns；
+        # 内部按 k = 1/τ 换算成 plot_lifetime 的速率网格 k_min = 1/τ_max、
+        # k_max = 1/τ_min，因此 τ_min 对应最快分量、τ_max 对应最慢分量）。
         # 上下排列（v4.22 修订）：并排一行最小宽度 188 px，是参数栏收不窄的主因。
-        lifetime_options.addWidget(QLabel("k_min (1/ns):"))
-        self.lifetime_kmin_spin = QDoubleSpinBox()
-        self.lifetime_kmin_spin.setRange(1e-5, 10.0)
-        self.lifetime_kmin_spin.setDecimals(5)
-        self.lifetime_kmin_spin.setValue(0.01)
-        self.lifetime_kmin_spin.setSingleStep(0.01)
-        self.lifetime_kmin_spin.setMinimumWidth(84)
-        lifetime_options.addWidget(self.lifetime_kmin_spin)
+        #
+        # v4.38 修订（用户反馈）：τ 的上下界**不设实际的上限**——两个框都只要
+        # τ > 0（0.001 ns = 1 ps 是分辨率下限），上限给到 1e9 ns（= 1 s）纯粹是
+        # QDoubleSpinBox 需要一个有限最大值，任何真实寿命都远在这个范围内：
+        # 例如可以把 τ_min 设成 20 ns（只看 >20 ns 的长寿命成分）。
+        lifetime_options.addWidget(QLabel("τ_min (ns):"))
+        self.lifetime_taumin_spin = QDoubleSpinBox()
+        self.lifetime_taumin_spin.setRange(0.001, 1e9)       # → k_max = 1/τ_min
+        self.lifetime_taumin_spin.setDecimals(3)
+        self.lifetime_taumin_spin.setValue(0.01)
+        self.lifetime_taumin_spin.setSingleStep(0.01)
+        self.lifetime_taumin_spin.setMinimumWidth(84)
+        self.lifetime_taumin_spin.setToolTip(
+            "拟合范围里**最短**的寿命分量（默认 0.01 ns = 10 ps），\n"
+            "内部换算为最高速率 k_max = 1/τ_min。\n"
+            "要分辨更快的衰减就调小；只想看长寿命成分就调大（不限 10 ns）。\n"
+            "必须满足 τ_min < τ_max。")
+        lifetime_options.addWidget(self.lifetime_taumin_spin)
 
-        lifetime_options.addWidget(QLabel("k_max (1/ns):"))
-        self.lifetime_kmax_spin = QDoubleSpinBox()
-        self.lifetime_kmax_spin.setRange(0.1, 1000.0)
-        self.lifetime_kmax_spin.setDecimals(2)
-        self.lifetime_kmax_spin.setValue(100.0)
-        self.lifetime_kmax_spin.setSingleStep(1.0)
-        self.lifetime_kmax_spin.setMinimumWidth(84)
-        lifetime_options.addWidget(self.lifetime_kmax_spin)
+        lifetime_options.addWidget(QLabel("τ_max (ns):"))
+        self.lifetime_taumax_spin = QDoubleSpinBox()
+        self.lifetime_taumax_spin.setRange(0.001, 1e9)       # → k_min = 1/τ_max
+        self.lifetime_taumax_spin.setDecimals(3)
+        self.lifetime_taumax_spin.setValue(100.0)
+        self.lifetime_taumax_spin.setSingleStep(10.0)
+        self.lifetime_taumax_spin.setMinimumWidth(84)
+        self.lifetime_taumax_spin.setToolTip(
+            "拟合范围里**最长**的寿命分量（默认 100 ns），\n"
+            "内部换算为最低速率 k_min = 1/τ_max。\n"
+            "要拟合更长的寿命（μs 级）就调大，例如 10000 ns = 10 μs；不限上限。\n"
+            "必须满足 τ_min < τ_max。")
+        lifetime_options.addWidget(self.lifetime_taumax_spin)
+
+        # 两个框互相约束：谁被填到越界，另一个自动让开（保持 τ_min < τ_max）。
+        # 用绑定方法而不是 lambda，避免闭包引用 self 造成的引用环（v4.29 的坑）。
+        self._tau_range_syncing = False
+        self.lifetime_taumin_spin.valueChanged.connect(
+            self._sync_lifetime_tau_range)
+        self.lifetime_taumax_spin.valueChanged.connect(
+            self._sync_lifetime_tau_range)
 
         # 固定寿命分量（不受熵约束的额外基函数）
         lifetime_options.addWidget(QLabel("固定 τ:"))
@@ -1446,7 +1501,7 @@ class UiMixin:
         self.lifetime_save_defaults_btn.setCursor(Qt.PointingHandCursor)
         self.lifetime_save_defaults_btn.setToolTip(
             "把当前荧光寿命拟合参数存为默认值，下次启动自动套用：\n"
-            "拟合方法、速率网格点数、k 范围、固定 τ、λ 与自动拟合 λ。\n"
+            "拟合方法、速率网格点数、τ 范围、固定 τ、λ 与自动拟合 λ。\n"
             "临时改动不会自动变成默认值——想改默认值就再点一次本按钮。")
         self.lifetime_save_defaults_btn.clicked.connect(
             self._save_lifetime_defaults)

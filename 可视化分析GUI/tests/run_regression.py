@@ -295,6 +295,88 @@ def t_gui_auto_lambda_default():
     assert not w.lifetime_lambda_spin.isEnabled(), "勾选自动后 λ 输入框应禁用"
 
 
+@check("GUI：寿命范围 τ(ns) 输入正确换算为速率网格 k = 1/τ（v4.38）")
+def t_gui_lifetime_tau_range():
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)      # 荧光寿命模式
+    w.lifetime_taumin_spin.setValue(0.01)         # → k_max = 100 /ns
+    w.lifetime_taumax_spin.setValue(100.0)        # → k_min = 0.01 /ns
+    p = w._collect_plot_params()
+    assert abs(p['lifetime_kmax'] - 100.0) < 1e-9, p.get('lifetime_kmax')
+    assert abs(p['lifetime_kmin'] - 0.01) < 1e-9, p.get('lifetime_kmin')
+    # μs 级长寿命：τ_max = 10 μs → k_min = 1e-4 /ns
+    w.lifetime_taumax_spin.setValue(10000.0)
+    p = w._collect_plot_params()
+    assert abs(p['lifetime_kmin'] - 1e-4) < 1e-12, p.get('lifetime_kmin')
+    # 亚 ns 快分量：τ_min = 0.001 ns = 1 ps → k_max = 1000 /ns
+    w.lifetime_taumin_spin.setValue(0.001)
+    p = w._collect_plot_params()
+    assert abs(p['lifetime_kmax'] - 1000.0) < 1e-9, p.get('lifetime_kmax')
+    # v4.38 修订（用户反馈）：τ 的上下界不设实际上限——τ_min 允许 > 10 ns
+    w.lifetime_taumax_spin.setValue(200.0)
+    w.lifetime_taumin_spin.setValue(50.0)          # 旧版会被夹到 10 ns
+    assert abs(w.lifetime_taumin_spin.value() - 50.0) < 1e-9, \
+        f"τ_min 不应被上限夹住：{w.lifetime_taumin_spin.value()}"
+    p = w._collect_plot_params()
+    assert abs(p['lifetime_kmin'] - 1.0 / 200.0) < 1e-12, p.get('lifetime_kmin')
+    assert abs(p['lifetime_kmax'] - 1.0 / 50.0) < 1e-12, p.get('lifetime_kmax')
+    # 更大的 τ 也要能填（1e6 ns = 1 ms），不再有 1e5 这种上限
+    w.lifetime_taumax_spin.setValue(1e6)
+    assert abs(w.lifetime_taumax_spin.value() - 1e6) < 1.0, \
+        f"τ_max 不应被上限夹住：{w.lifetime_taumax_spin.value()}"
+    # 越界自动让路：改动 τ_max 到 τ_min 以下 → τ_min 自动退到 τ_max/10
+    w.lifetime_taumin_spin.setValue(50.0)
+    w.lifetime_taumax_spin.setValue(20.0)
+    assert w.lifetime_taumin_spin.value() < w.lifetime_taumax_spin.value(), \
+        f"越界后应自动满足 τ_min < τ_max：{w.lifetime_taumin_spin.value()} / " \
+        f"{w.lifetime_taumax_spin.value()}"
+    p = w._collect_plot_params()
+    assert abs(p['lifetime_kmax'] - p['lifetime_kmin'] * 10.0) < 1e-12, p
+    # 反方向：改动 τ_min 到 τ_max 以上 → τ_max 自动抬到 τ_min×10
+    w.lifetime_taumax_spin.setValue(20.0)
+    w.lifetime_taumin_spin.setValue(500.0)
+    assert w.lifetime_taumin_spin.value() < w.lifetime_taumax_spin.value(), \
+        f"越界后应自动满足 τ_min < τ_max：{w.lifetime_taumin_spin.value()} / " \
+        f"{w.lifetime_taumax_spin.value()}"
+    p = w._collect_plot_params()
+    assert abs(p['lifetime_kmax'] - 1.0 / 500.0) < 1e-12, p.get('lifetime_kmax')
+
+
+@check("GUI：旧版 k 范围设置自动换算成 τ（v4.38 迁移）")
+def t_gui_lifetime_tau_migration():
+    app, w = _make_gui()
+    s = w.settings
+    if not s.isWritable():
+        raise Skip("QSettings 不可写，注册表被限制")
+    keys = ["param/lifetime_kmin", "param/lifetime_kmax",
+            "param/lifetime_taumin", "param/lifetime_taumax",
+            w._TAU_RANGE_MIGRATION_FLAG]
+    old = {k: s.value(k, None) for k in keys}
+    try:
+        for k in keys:
+            s.remove(k)
+        s.setValue("param/lifetime_kmin", 0.005)     # 旧值 → τ_max = 200 ns
+        s.setValue("param/lifetime_kmax", 50.0)      # 旧值 → τ_min = 0.02 ns
+        s.sync()
+        w._migrate_lifetime_range_keys(s)
+        assert abs(float(s.value("param/lifetime_taumin")) - 0.02) < 1e-9, \
+            s.value("param/lifetime_taumin")
+        assert abs(float(s.value("param/lifetime_taumax")) - 200.0) < 1e-9, \
+            s.value("param/lifetime_taumax")
+        # 幂等：迁移过之后不再改写用户新填的 τ
+        s.setValue("param/lifetime_taumin", 0.5)
+        w._migrate_lifetime_range_keys(s)
+        assert abs(float(s.value("param/lifetime_taumin")) - 0.5) < 1e-9, \
+            "迁移不应覆盖已有 τ 值"
+    finally:
+        for k in keys:
+            s.remove(k)
+        for k, v in old.items():
+            if v is not None:
+                s.setValue(k, v)
+        s.sync()
+
+
 @check("GUI：寿命拟合参数「存为默认值」下次启动生效")
 def t_gui_lifetime_defaults():
     app, w = _make_gui()
@@ -306,16 +388,22 @@ def t_gui_lifetime_defaults():
     try:
         w.lifetime_method_combo.setCurrentIndex(0)          # MEM（λ 才有意义）
         w.lifetime_nrates_spin.setValue(123)
-        w.lifetime_kmin_spin.setValue(0.005)
-        w.lifetime_kmax_spin.setValue(50.0)
+        w.lifetime_taumin_spin.setValue(0.02)
+        w.lifetime_taumax_spin.setValue(50.0)
+        # v4.38：再存一次"下界 > 默认 τ_max（100 ns）"的组合——既验证 τ 无上限，
+        # 也验证「存为默认值 → 启动套用」时两个框的自动让路不会把这对值改坏
+        w.lifetime_taumin_spin.setValue(200.0)      # 旧版会被夹到 10 ns
+        w.lifetime_taumax_spin.setValue(500.0)
         w.lifetime_fixed_taus_edit.setText("3.6, 0.5")
         w.lifetime_lambda_spin.setValue(0.01)
         w.lifetime_auto_lambda_check.setChecked(False)
         assert w._save_lifetime_defaults(), "保存默认值失败"
         app2, w2 = _make_gui()
         assert w2.lifetime_nrates_spin.value() == 123, "网格点数未套用默认值"
-        assert abs(w2.lifetime_kmin_spin.value() - 0.005) < 1e-9
-        assert abs(w2.lifetime_kmax_spin.value() - 50.0) < 1e-9
+        assert abs(w2.lifetime_taumin_spin.value() - 200.0) < 1e-9, \
+            w2.lifetime_taumin_spin.value()
+        assert abs(w2.lifetime_taumax_spin.value() - 500.0) < 1e-9, \
+            w2.lifetime_taumax_spin.value()
         assert w2.lifetime_fixed_taus_edit.text() == "3.6, 0.5"
         assert abs(w2.lifetime_lambda_spin.value() - 0.01) < 1e-9
         assert not w2.lifetime_auto_lambda_check.isChecked(), "自动拟合 λ 应恢复为不勾选"

@@ -29,6 +29,7 @@ python tests\run_regression.py
 | `test_lifetime_diag_smoke.py` | 拟合诊断页 + 质量指标（C4/C5） |
 | `test_lifetime_fixed_smoke.py` | 固定寿命分量（C6） |
 | `test_lifetime_parallel_smoke.py` | 并行拟合 + 分布叠加（C1/C8） |
+| `test_tau_range_smoke.py` | 寿命范围 τ 输入 → 速率网格 k = 1/τ 的端到端换算（v4.38，真实数据拟合；默认 τ 与 μs 级 τ_max 各跑一次） |
 | `test_pub_peaklabel_smoke.py` | 出版图预设 + 峰位标注开关（D6/D7） |
 | `test_session_theme_smoke.py` | 会话恢复 / 主题 / 快捷键 / 最近文件夹（D2–D5） |
 | `shot_dark_theme.py` | 深色主题**视觉**验收（原生平台截图，输出 `plots\_diag3d\dark_theme.png`） |

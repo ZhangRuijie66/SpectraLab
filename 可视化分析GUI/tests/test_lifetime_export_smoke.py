@@ -22,10 +22,10 @@ folder = r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光\20260724lifetime\202
 w.load_data_from_folder(folder)
 print('loaded:', list(w.data_cache))
 
-# --- C7: 自定义 k 网格范围 + C2: 本底中位数 ---
+# --- C7: 自定义寿命范围 τ（→ k 网格）+ C2: 本底中位数 ---
 w.lifetime_nrates_spin.setValue(201)
-w.lifetime_kmin_spin.setValue(0.01)
-w.lifetime_kmax_spin.setValue(100.0)
+w.lifetime_taumin_spin.setValue(0.01)     # → k_max = 100 /ns
+w.lifetime_taumax_spin.setValue(100.0)    # → k_min = 0.01 /ns
 fig = w._do_lifetime_plot()
 r = w._last_lifetime_result
 info = r['info']

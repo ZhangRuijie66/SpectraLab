@@ -165,8 +165,8 @@ class DataMixin:
         ("param/export_white", "export_white_check", "bool"),
         ("param/lifetime_method", "lifetime_method_combo", "combo"),
         ("param/lifetime_nrates", "lifetime_nrates_spin", "int"),
-        ("param/lifetime_kmin", "lifetime_kmin_spin", "float"),
-        ("param/lifetime_kmax", "lifetime_kmax_spin", "float"),
+        ("param/lifetime_taumin", "lifetime_taumin_spin", "float"),
+        ("param/lifetime_taumax", "lifetime_taumax_spin", "float"),
         ("param/lifetime_fixed_taus", "lifetime_fixed_taus_edit", "str"),
         ("param/scan3d_plot", "scan3d_plot_combo", "combo"),
         ("param/scan3d_comb", "scan3d_comb_combo", "combo"),
@@ -183,6 +183,40 @@ class DataMixin:
         ("param/integ_min", "integ_min_spin", "float"),
         ("param/integ_max", "integ_max_spin", "float"),
     )
+
+    # v4.38：寿命拟合范围的输入从速率 k(1/ns) 改成寿命 τ(ns)。旧设置里存的是 k，
+    # 这里做一次性换算（τ_min = 1/k_max、τ_max = 1/k_min），否则老用户升级后
+    # 会把 k 的数值直接当 τ 用（例如 k_min=0.005 会被当成 τ_max=0.005 ns）。
+    _TAU_RANGE_MIGRATION_FLAG = "migrated/tau_range_v438"
+
+    def _migrate_lifetime_range_keys(self, s):
+        """把旧版存在 QSettings 里的 lifetime_kmin/kmax 换算成 τ 键（只做一次）。
+
+        同时处理 param/*（上次会话）与 defaults/*（存为默认值）两套键；
+        只要新键已存在就跳过，避免覆盖用户升级后新填的 τ。
+        """
+        try:
+            if s.value(self._TAU_RANGE_MIGRATION_FLAG, False, bool):
+                return
+            for prefix in ("param/", "defaults/"):
+                if (s.value(prefix + "lifetime_taumin", None) is not None
+                        or s.value(prefix + "lifetime_taumax", None) is not None):
+                    continue                       # 已经存过 τ，不动
+                try:
+                    k_lo = float(s.value(prefix + "lifetime_kmin", None))
+                    k_hi = float(s.value(prefix + "lifetime_kmax", None))
+                except (TypeError, ValueError):
+                    continue
+                if 0 < k_lo < k_hi:
+                    s.setValue(prefix + "lifetime_taumin", 1.0 / k_hi)
+                    s.setValue(prefix + "lifetime_taumax", 1.0 / k_lo)
+                    logging.getLogger('qls').info(
+                        "寿命范围设置已从 k 换算为 τ：%s %.6g–%.6g 1/ns → "
+                        "%.6g–%.6g ns", prefix, k_lo, k_hi, 1.0 / k_hi, 1.0 / k_lo)
+            s.setValue(self._TAU_RANGE_MIGRATION_FLAG, True)
+            s.sync()
+        except Exception as e:
+            log_exception("换算旧版寿命范围设置失败", e)
 
     def _save_session(self):
         """保存会话：模式 / 文件夹 / 窗口几何 / 白名单参数（D2 + E1）。"""
@@ -241,6 +275,8 @@ class DataMixin:
     def _restore_session(self):
         """恢复上次会话（D2/E1）。异常一律忽略，保证启动不因旧配置失败。"""
         s = self.settings
+        # v4.38：先把旧版（k 单位）的寿命范围设置换算成 τ，再走正常恢复流程
+        self._migrate_lifetime_range_keys(s)
 
         def _flag(key, default):
             v = s.value(key, default)
@@ -363,8 +399,8 @@ class DataMixin:
     _LIFETIME_DEFAULT_SPECS = (
         ("lifetime_method", "lifetime_method_combo", "combo"),
         ("lifetime_nrates", "lifetime_nrates_spin", "int"),
-        ("lifetime_kmin", "lifetime_kmin_spin", "float"),
-        ("lifetime_kmax", "lifetime_kmax_spin", "float"),
+        ("lifetime_taumin", "lifetime_taumin_spin", "float"),
+        ("lifetime_taumax", "lifetime_taumax_spin", "float"),
         ("lifetime_fixed_taus", "lifetime_fixed_taus_edit", "str"),
         ("lifetime_lambda", "lifetime_lambda_spin", "float"),
         ("lifetime_auto_lambda", "lifetime_auto_lambda_check", "bool"),
@@ -402,8 +438,8 @@ class DataMixin:
             lam = "自动" if auto else f"{float(self.lifetime_lambda_spin.value()):g}"
             taus = self.lifetime_fixed_taus_edit.text().strip() or "无"
             msg = (f"已存为默认值：{method} / {int(self.lifetime_nrates_spin.value())} 点"
-                   f" / k {float(self.lifetime_kmin_spin.value()):g}"
-                   f"–{float(self.lifetime_kmax_spin.value()):g}"
+                   f" / τ {float(self.lifetime_taumin_spin.value()):g}"
+                   f"–{float(self.lifetime_taumax_spin.value()):g} ns"
                    f" / λ {lam} / 固定 τ {taus}")
             if hasattr(self, 'status_bar'):
                 self.status_bar.showMessage(msg, 6000)
