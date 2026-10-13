@@ -56,17 +56,20 @@ check('状态栏确认读到了说明.xlsx',
       None if w.xlsx_info is None else w.xlsx_info.numbers)
 
 print('== 3. 图例标签带上浓度信息 ==')
-w.xlsx_info = w.xlsx_info or None
+# 浓度期望值**从工作簿现读**（这张表用户会改；本脚本初版写死 50，
+# 用户 2026-10-13 14:10 把 R1/R3 的 RB 浓度对调后就误报了）
+_EXP_R1 = w.xlsx_info.label_for('R1')
+_EXP_S1 = w.xlsx_info.label_for('S1')
 for key in ('R1', 'S1'):
-    if key not in w.data_cache:
-        continue
-    lab = w._build_legend_label(key, w.data_cache[key]['data'], show_all=False)
-    print(f'   {key} -> {lab!r}')
-check('R1 图例 = RB浓度=50, L8i浓度=1000',
-      'RB浓度=50' in w._build_legend_label('R1', w.data_cache['R1']['data']),
+    if key in w.data_cache:
+        print(f'   {key} -> '
+              f'{w._build_legend_label(key, w.data_cache[key]["data"])!r}')
+check(f'R1 图例 = {_EXP_R1}',
+      w._build_legend_label('R1', w.data_cache['R1']['data']) == _EXP_R1,
       w._build_legend_label('R1', w.data_cache['R1']['data']))
-check('S1 图例带 Ce6浓度=50',
-      'Ce6浓度=50' in w._build_legend_label('S1', w.data_cache['S1']['data']),
+check(f'S1 图例 = {_EXP_S1}（带 Ce6浓度）',
+      w._build_legend_label('S1', w.data_cache['S1']['data']) == _EXP_S1
+      and 'Ce6浓度=' in _EXP_S1,
       w._build_legend_label('S1', w.data_cache['S1']['data']))
 
 print('== 4. 「数据比较」变量下拉框可用 ==')
@@ -110,11 +113,14 @@ check('当前模式 = emission', w.spectrum_type == 'emission', w.spectrum_type)
 w.load_data_from_folder(str(DATA))
 check('发射模式加载 26 个 CSV（不含 20261010.xlsx）',
       w.file_list.count() == 26, w.file_list.count())
-check('发射模式图例仍带浓度信息',
-      'RB浓度=50' in w._build_legend_label('R1 (Emission)',
-                                            w.data_cache['R1 (Emission)']['data'])
-      if 'R1 (Emission)' in w.data_cache else True,
-      list(w.data_cache.keys())[:3])
+if 'R1 (Emission)' in w.data_cache:
+    _lab = w._build_legend_label('R1 (Emission)',
+                                 w.data_cache['R1 (Emission)']['data'])
+    print('   R1 (Emission) ->', repr(_lab))
+    check('发射模式图例仍带浓度信息',
+          _lab == f'{w.xlsx_info.label_for("R1")} (EX=520 nm)', _lab)
+else:
+    check('发射模式图例仍带浓度信息', False, list(w.data_cache.keys())[:3])
 
 print()
 if fails:

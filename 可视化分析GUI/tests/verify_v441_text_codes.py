@@ -41,15 +41,28 @@ check('信息列 = RB浓度 / Ce6浓度 / L8i浓度',
       info.columns == ['RB浓度', 'Ce6浓度', 'L8i浓度'], info.columns)
 check('数值列三个', info.numeric_columns() == ['RB浓度', 'Ce6浓度', 'L8i浓度'],
       info.numeric_columns())
-check('R1: RB浓度=50, L8i浓度=1000, 无 Ce6',
-      info.value_for('R1', 'RB浓度') == 50 and info.value_for('R1', 'L8i浓度') == 1000
+
+# 浓度值**从工作簿现读**做期望值——这张表用户会改（本脚本初版写死 50，
+# 用户 2026-10-13 14:10 把 R1/R3 的 RB 浓度对调后就误报了），
+# 所以这里只校验「读出来的值 == 工作簿里的值 + 空值仍是空」。
+_RAW = pd.read_excel(DATA / '说明.xlsx', header=0).set_index('编号')
+
+
+def _raw(code, col):
+    v = _RAW.loc[code, col]
+    return None if pd.isna(v) else (int(v) if float(v).is_integer() else float(v))
+
+
+check('R1 的 RB浓度/L8i浓度与工作簿一致、Ce6 为空',
+      info.value_for('R1', 'RB浓度') == _raw('R1', 'RB浓度')
+      and info.value_for('R1', 'L8i浓度') == _raw('R1', 'L8i浓度')
       and info.value_for('R1', 'Ce6浓度') is None, info.info.get('R1'))
-check('S1: Ce6浓度=50, 无 RB浓度',
-      info.value_for('S1', 'Ce6浓度') == 50 and info.value_for('S1', 'RB浓度') is None,
-      info.info.get('S1'))
-print('   label_for(R1) =', info.label_for('R1'))
-check('label_for(R1) 串正确', info.label_for('R1') == 'RB浓度=50, L8i浓度=1000',
-      info.label_for('R1'))
+check('S1 的 Ce6浓度与工作簿一致、RB 为空',
+      info.value_for('S1', 'Ce6浓度') == _raw('S1', 'Ce6浓度')
+      and info.value_for('S1', 'RB浓度') is None, info.info.get('S1'))
+_expect_r1 = f"RB浓度={_raw('R1', 'RB浓度')}, L8i浓度={_raw('R1', 'L8i浓度')}"
+print('   label_for(R1) =', info.label_for('R1'), '   (工作簿期望:', _expect_r1 + ')')
+check('label_for(R1) 串正确', info.label_for('R1') == _expect_r1, info.label_for('R1'))
 
 print('== 2. 文件名 -> 编号 匹配（含重复测量的 -2 / -3 / -4） ==')
 files = sorted(p.name for p in DATA.glob('*.csv'))
@@ -59,7 +72,7 @@ expect = {'R1.csv': 'R1', 'R1-2.csv': 'R1', 'R1-6.csv': 'R1',
 for fn, want in expect.items():
     got = match_number(fn, info.numbers)
     check(f'{fn} -> {want}', got == want, got)
-check('目录里 27 个 csv 全部能匹配到编号',
+check('目录里 26 个 csv 全部能匹配到编号',
       all(match_number(f, info.numbers) is not None for f in files),
       [f for f in files if match_number(f, info.numbers) is None])
 check('R1 与 S1 不会互相串台（旧方案会都命中 1）',
@@ -69,11 +82,12 @@ check('文本码不做子串匹配：R1 不命中 R10',
       match_number('R10.csv', ['R1', 'R10']))
 
 print('== 3. 图例标签 ==')
-check('基础标签=R1 -> #R1 RB浓度=50, L8i浓度=1000',
-      build_enriched_label('R1', info, 'R1') == '#R1 RB浓度=50, L8i浓度=1000',
+check(f'基础标签=R1 -> #R1 {_expect_r1}',
+      build_enriched_label('R1', info, 'R1') == f'#R1 {_expect_r1}',
       build_enriched_label('R1', info, 'R1'))
-check('enrich_label_from_name("S2-1.csv") 带上 Ce6浓度=20',
-      'Ce6浓度=20' in enrich_label_from_name('S2-1', 'S2-1.csv', info),
+_expect_s2 = f"Ce6浓度={_raw('S2', 'Ce6浓度')}"
+check(f'enrich_label_from_name("S2-1.csv") 带上 {_expect_s2}',
+      _expect_s2 in enrich_label_from_name('S2-1', 'S2-1.csv', info),
       enrich_label_from_name('S2-1', 'S2-1.csv', info))
 
 print('== 4. plot_compare：真实 CSV + 说明.xlsx 取点 ==')
@@ -88,8 +102,10 @@ check('R* 的 12 次测量都命中 R1/R2/R3（同一编号的重复测量共享
       sorted(p[4] for p in res['points']))
 check('图上有 12 个点', len(res['points']) == 12, len(res['points']))
 check('编号集合 = R1/R2/R3', nums == ['R1', 'R2', 'R3'], nums)
-check('x 值只取 50 / 20 / 10', sorted(set(p[1] for p in res['points'])) == [10.0, 20.0, 50.0],
-      sorted(set(p[1] for p in res['points'])))
+_expect_rb = sorted(float(_raw(c, 'RB浓度')) for c in ('R1', 'R2', 'R3'))
+check('x 值就是工作簿里 R1/R2/R3 的 RB浓度',
+      sorted(set(p[1] for p in res['points'])) == _expect_rb,
+      (sorted(set(p[1] for p in res['points'])), _expect_rb))
 check('跳过的 14 个 S* 样品理由都是「为空」',
       len(res['skipped']) == 14 and all('为空' in r for _, r in res['skipped']),
       (len(res['skipped']), res['skipped'][:3]))

@@ -950,7 +950,8 @@ class UiMixin:
             "<li><b>F5</b> — 实时预览（寿命模式为开始拟合）</li>"
             "<li><b>Ctrl+R</b> — 重新加载数据</li>"
             "<li><b>Ctrl+O</b> — 选择文件夹</li>"
-            "<li><b>Ctrl+E / Ctrl+S</b> — 导出当前图</li>"
+            "<li><b>Ctrl+E / Ctrl+S</b> — 导出当前图（<b>按当前标签页</b>：在「数据比较」页"
+            "导出的是点线图，在「预览」页导出的是光谱图）</li>"
             "<li><b>Ctrl+Shift+E</b> — 导出全部图片</li>"
             "<li><b>Ctrl+D</b> — 复制积分结果</li>"
             "<li><b>Ctrl+F</b> — 跳到文件搜索框（数据栏折叠时会自动展开）</li>"
@@ -1951,7 +1952,9 @@ class UiMixin:
         export_menu.setToolTipsVisible(True)
 
         self.act_export_current = QAction("导出当前图　(Ctrl+E)", self.export_menu_btn)
-        self.act_export_current.setToolTip("把当前画布上的图存成 PNG/PDF/SVG（按「导出格式」）")
+        self.act_export_current.setToolTip(
+            "把**当前标签页**上的图存成 PNG/PDF/SVG（按「导出格式」）\n"
+            "预览 / 数据比较 / 拟合诊断 / 寿命分布——在哪个页就导哪张")
         self.act_export_current.triggered.connect(self.export_plot)
         export_menu.addAction(self.act_export_current)
 
@@ -2033,6 +2036,7 @@ class UiMixin:
         preview_layout.addWidget(self.preview_stack, 1)  # stretch，吃满剩余空间
 
         self.tab_widget.addTab(preview_tab, "预览")
+        self.preview_tab = preview_tab      # v4.42：「导出当前图」要认出当前是哪个页
 
         # 寿命分布标签页：荧光寿命模式下单独显示寿命分布图（独立于拟合曲线画布）
         dist_tab = QWidget()

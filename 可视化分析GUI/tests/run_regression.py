@@ -2703,6 +2703,87 @@ def t_absorption_multicolumn_xlsx():
     assert len(res['skipped']) == 1 and '为空' in res['skipped'][0][1], res['skipped']
 
 
+@check("GUI：「导出当前图」跟着标签页走——数据比较页导出的是点线图（v4.42）")
+def t_export_current_tab():
+    """用户反馈：在「数据比较」页点「导出当前图」（Ctrl+E/S），导出的却是光谱全图。
+
+    原因是 export_plot 写死 self.canvas.fig。修好后按 currentWidget() 认页——
+    标签页会随模式显隐、索引会漂，所以必须按控件身份认。
+    """
+    import tempfile
+    from pathlib import Path as _Path
+    from PyQt5.QtWidgets import QFileDialog
+    from read_xlsx_info import XlsxInfo
+
+    app, w = _make_gui()
+    wl = np.arange(400.0, 601.0, 1.0)
+    y1 = 100.0 * np.exp(-((wl - 500.0) / 25.0) ** 2)
+    y2 = 50.0 * np.exp(-((wl - 500.0) / 25.0) ** 2)
+    _install_spectra(w, {'s-1 (Emission)': (wl, y1), 's-2 (Emission)': (wl, y2)})
+    w.xlsx_info = XlsxInfo(info={1: {'浓度': 5}, 2: {'浓度': 10}}, numbers=[1, 2],
+                           columns=['浓度'], path=_Path('说明.xlsx'))
+    w._refresh_compare_combos()
+    w.compare_x_combo.setCurrentText('浓度')
+    w.compare_group_combo.setCurrentIndex(0)
+    w.compare_metric_combo.setCurrentIndex(0)
+    res = w._do_compare_plot()
+    assert res['summary']['n_points'] == 2, res['summary']
+    w._do_plot()
+
+    tmp = tempfile.mkdtemp(prefix='v442_export_')
+    saved = []
+    real_save, real_dialog = w._savefig_pub, QFileDialog.getSaveFileName
+
+    def _fake_save(fig, path, dpi=None):
+        saved.append((fig, str(path)))
+        _Path(path).write_bytes(b'PNG')
+
+    try:
+        w._savefig_pub = _fake_save
+
+        # ①（回归点）数据比较页
+        suggested = []
+
+        def _fake_dialog(parent, title, path, *a, **k):
+            suggested.append(str(path))
+            return os.path.join(tmp, 'a.png'), ''
+
+        QFileDialog.getSaveFileName = staticmethod(_fake_dialog)
+        w.tab_widget.setCurrentWidget(w.compare_tab)
+        assert w._current_export_canvas() is w.compare_canvas, "数据比较页应认到 compare_canvas"
+        w.export_plot()
+        assert saved and saved[-1][0] is w.compare_canvas.fig, \
+            "数据比较页导出的必须是点线图画布，而不是光谱预览画布"
+        assert _Path(suggested[-1]).name.startswith('数据比较'), \
+            f"默认文件名应是数据比较图：{suggested[-1]}"
+        assert w._current_export_title().startswith('数据比较'), w._current_export_title()
+
+        # ② 预览页 → 还是光谱图
+        QFileDialog.getSaveFileName = staticmethod(
+            lambda *a, **k: (os.path.join(tmp, 'b.png'), ''))
+        w.tab_widget.setCurrentWidget(w.preview_tab)
+        w.export_plot()
+        assert saved[-1][0] is w.canvas.fig, "预览页应导出光谱画布"
+
+        # ③ 取消保存时不写文件、不抛异常
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: ('', ''))
+        n = len(saved)
+        w.export_plot()
+        assert len(saved) == n, "取消保存不应触发写文件"
+
+        # ④ 四个标签页都在映射表里（索引会随模式显隐漂移，必须按身份认）
+        pairs = dict(w._TAB_CANVAS_PAIRS)
+        for tab_attr, canvas_attr in (('preview_tab', 'canvas'),
+                                      ('compare_tab', 'compare_canvas'),
+                                      ('diag_tab', 'diag_canvas'),
+                                      ('dist_tab', 'lifetime_canvas')):
+            assert pairs.get(tab_attr) == canvas_attr, tab_attr
+            assert hasattr(w, tab_attr) and hasattr(w, canvas_attr), tab_attr
+    finally:
+        w._savefig_pub = real_save
+        QFileDialog.getSaveFileName = real_dialog
+
+
 def main():
     strict = '--strict' in sys.argv
 

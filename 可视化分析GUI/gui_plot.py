@@ -2722,8 +2722,51 @@ class PlotMixin:
             f"绘图失败: {error_msg}\n\n详细信息已写入日志：\n{log_file_path()}")
         self.progress_bar.setVisible(False)
 
+    # 标签页属性 → 该页画布属性（v4.42：「导出当前图」按当前页取图）
+    _TAB_CANVAS_PAIRS = (
+        ('compare_tab', 'compare_canvas'),
+        ('diag_tab', 'diag_canvas'),
+        ('dist_tab', 'lifetime_canvas'),
+        ('preview_tab', 'canvas'),
+    )
+
+    def _current_export_canvas(self):
+        """当前标签页对应的画布（预览 / 数据比较 / 拟合诊断 / 寿命分布）。
+
+        v4.42 修：以前 ``export_plot`` 写死 ``self.canvas.fig``——在「数据比较」
+        页点「导出当前图」导出的还是光谱预览图。这里按 `currentWidget()` 认页，
+        不按索引（标签页会随模式显隐，索引会漂）。
+        """
+        tw = getattr(self, 'tab_widget', None)
+        cur = tw.currentWidget() if tw is not None else None
+        for tab_attr, canvas_attr in self._TAB_CANVAS_PAIRS:
+            tab = getattr(self, tab_attr, None)
+            canvas = getattr(self, canvas_attr, None)
+            if tab is not None and cur is tab and canvas is not None:
+                return canvas
+        return getattr(self, 'canvas', None)
+
+    def _current_export_title(self, canvas=None):
+        """「导出当前图」的默认文件名（跟着当前标签页走）。"""
+        if canvas is None:
+            canvas = self._current_export_canvas()
+        if canvas is getattr(self, 'compare_canvas', None):
+            res = getattr(self, '_last_compare_result', None)
+            if res and res.get('points'):
+                return f"数据比较_{res.get('x_label', '')}_{res.get('metric', '')}"
+            return "数据比较"
+        if canvas is getattr(self, 'diag_canvas', None):
+            return "拟合诊断"
+        if canvas is getattr(self, 'lifetime_canvas', None):
+            return "寿命分布"
+        return self._current_plot_title()
+
     def export_plot(self):
-        """导出当前图表"""
+        """导出**当前标签页**的图（预览 / 数据比较 / 拟合诊断 / 寿命分布）。
+
+        v4.42：以前不管在哪个标签页都导出预览画布——「数据比较」页导出的
+        是光谱全图，而不是那张点线图。
+        """
         if not self.data_cache:
             QMessageBox.warning(self, "警告", "请先加载数据并生成图表！")
             return
@@ -2737,9 +2780,14 @@ class PlotMixin:
                 self._export_lifetime_plots(save_dir)
             return
 
+        canvas = self._current_export_canvas()
+        if canvas is None:
+            QMessageBox.warning(self, "警告", "当前没有可导出的画布")
+            return
+
         # 选择保存路径（默认指向当前数据文件夹；默认文件名 = 当前图表标题）
         default_dir = self._dialog_start_dir()
-        default_name = (f"{self._safe_filename(self._current_plot_title())}"
+        default_name = (f"{self._safe_filename(self._current_export_title(canvas))}"
                         f"{self._export_formats()[0]}")
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -2750,7 +2798,7 @@ class PlotMixin:
 
         if file_path:
             try:
-                self._savefig_pub(self.canvas.fig, file_path)
+                self._savefig_pub(canvas.fig, file_path)
                 QMessageBox.information(self, "成功", f"图片已保存到:\n{file_path}")
                 self.status_bar.showMessage(f"图片已保存: {file_path}")
             except Exception as e:
