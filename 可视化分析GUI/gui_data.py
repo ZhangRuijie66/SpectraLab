@@ -1034,11 +1034,20 @@ class DataMixin:
             # 寿命模式额外接受多列 xlsx（时间+样品列+IRF，自动按列拆分）
             if self.spectrum_type == "lifetime":
                 all_files += list(folder.glob("*.xlsx"))
+            # v4.41：吸收模式也接受多列光谱 xlsx（波长列 + 各样品列，自动按列拆成多条）。
+            # 「说明.xlsx」是信息表不是数据，排除掉；Excel 打开时生成的 ~$ 临时文件也排除。
+            elif self.spectrum_type == "absorption":
+                all_files += [f for f in folder.glob("*.xlsx")
+                              if '说明' not in f.stem and not f.name.startswith('~$')]
             # 按自然顺序排序（样品1、2、…、10、11），避免 "1,10,11,2" 这类字典序
             all_files = sorted(all_files, key=self._natural_key)
 
             if not all_files:
-                QMessageBox.warning(self, "警告", "未找到CSV或TXT文件！")
+                QMessageBox.warning(
+                    self, "警告",
+                    "未找到CSV或TXT文件！"
+                    + ("（本模式还支持多列光谱 xlsx）"
+                       if self.spectrum_type == "absorption" else ""))
                 self.progress_bar.setVisible(False)
                 return
 
@@ -1226,7 +1235,7 @@ class DataMixin:
                 matched = False
                 for key in cache:
                     try:
-                        if match_number(self._filename_for_match(key), info.numbers) is not None:
+                        if self._match_sample_number(key) is not None:
                             matched = True
                             break
                     except Exception:
@@ -1297,16 +1306,54 @@ class DataMixin:
             group_var = None      # 分组与横轴同列没有意义，按不分组处理
         return x_var, group_var
 
-    def _filename_for_match(self, cache_key):
-        """取用于编号匹配的文件名：优先数据缓存里的真实文件名，否则用缓存键。"""
+    # 这些 path 是"没有单一来源文件"的哨兵：此时编号匹配必须用缓存键
+    _PATH_SENTINELS = ('', '<emission>', '<xlsx>')
+
+    def _match_name_candidates(self, cache_key):
+        """编号匹配的候选名（按优先级）：数据缓存里的真实文件名 → 缓存键。
+
+        多列 xlsx（一个文件拆成多条光谱）没有各自的文件名，只能靠缓存键——
+        吸收模式 xlsx 的缓存键就是列名清洗后的样品名（``R1``）；发射模式本来就
+        以 label 当缓存键；寿命模式多列 xlsx 也同理。
+        """
+        cands = []
         try:
             entry = self.data_cache.get(cache_key, {})
             path = entry.get('path') if isinstance(entry, dict) else None
-            if path and str(path) not in ('', '<emission>'):
-                return Path(path).name
+            if path and str(path) not in self._PATH_SENTINELS:
+                cands.append(Path(str(path)).name)
         except Exception:
             pass
-        return str(cache_key)
+        cands.append(str(cache_key))
+        return cands
+
+    def _filename_for_match(self, cache_key):
+        """取该样品用于和 说明.xlsx 编号比对的名称（v4.41 起：**能对上的那个优先**）。
+
+        候选名里第一个能命中编号的就用它；都命中不了就退回第一个候选
+        （保持"没有 说明.xlsx 时也只是给个名字"的旧行为）。这样多列 xlsx
+        的样品名（在缓存键里）和普通 CSV 的文件名都走同一条规则。
+        """
+        cands = self._match_name_candidates(cache_key)
+        info = getattr(self, 'xlsx_info', None)
+        if info is not None and info.numbers:
+            for cand in cands:
+                try:
+                    if match_number(cand, info.numbers) is not None:
+                        return cand
+                except Exception:
+                    continue
+        return cands[0]
+
+    def _match_sample_number(self, cache_key):
+        """把候选名依次和 说明.xlsx 的编号对一遍，返回命中的编号；都没命中返回 None。"""
+        info = getattr(self, 'xlsx_info', None)
+        if info is None or not info.numbers:
+            return None
+        try:
+            return match_number(self._filename_for_match(cache_key), info.numbers)
+        except Exception:
+            return None
 
     def _sample_name(self, file_name, data=None):
         """样品显示名（不含类型标签与说明信息）。
@@ -1320,7 +1367,7 @@ class DataMixin:
         if not name:
             entry = self.data_cache.get(file_name) if hasattr(self, 'data_cache') else None
             path = entry.get('path') if isinstance(entry, dict) else None
-            if path and str(path) not in ('', '<emission>'):
+            if path and str(path) not in self._PATH_SENTINELS:
                 name = Path(str(path)).stem
             else:
                 name = str(file_name)
@@ -1334,8 +1381,10 @@ class DataMixin:
         """把某编号的说明信息格式化为简短字符串。
 
         「备注」列只显示其内容，不显示「备注=」字样；其余列保持「列名=值」。
+        v4.41：编号用 ``info.entry_for`` 取（以前写 ``int(num)``，编号是
+        ``R1`` / ``S1`` 这类文本码时 ``int('R1')`` 抛 ValueError，信息整个丢失）。
         """
-        entry = info.info.get(int(num), {})
+        entry = info.entry_for(num)
         parts = []
         for col, val in entry.items():
             if val == '' or val is None:
@@ -1356,7 +1405,7 @@ class DataMixin:
         if info is None or not info.numbers:
             return ''
         try:
-            num = match_number(self._filename_for_match(file_name), info.numbers)
+            num = self._match_sample_number(file_name)
         except Exception:
             return ''
         if num is None:
@@ -1383,7 +1432,7 @@ class DataMixin:
         info = getattr(self, 'xlsx_info', None)
         if info is not None and info.numbers:
             try:
-                num = match_number(self._filename_for_match(file_name), info.numbers)
+                num = self._match_sample_number(file_name)
                 if num is not None:
                     info_str = self._format_info_brief(info, num)
             except Exception as e:
@@ -1439,7 +1488,12 @@ class DataMixin:
             combo_a.blockSignals(False)
 
     def _load_absorption_files(self, all_files, progress_cb=None):
-        """加载吸收光谱。返回 (loaded, skipped, errors)，errors=[(文件名, 原因)]。"""
+        """加载吸收光谱。返回 (loaded, skipped, errors)，errors=[(文件名, 原因)]。
+
+        v4.41：一个**多列光谱 xlsx** 会返回多条数据集（每列一条），全部收进来；
+        这些数据集的缓存键就是样品名（如 R1），所以 path 记成 ``<xlsx>`` 哨兵，
+        让 ``_filename_for_match`` 回退到缓存键去和 说明.xlsx 的编号匹配。
+        """
         loaded_count = 0
         skipped = 0
         errors = []
@@ -1447,26 +1501,37 @@ class DataMixin:
             try:
                 data = load_absorption_spectra(file_path, skip_metadata=True, verbose=False)
                 if data and len(data) > 0:
-                    first_data = data[0]
-                    if isinstance(first_data, dict):
-                        if 'wl' in first_data and 'absorption' in first_data:
-                            first_data['wavelength'] = first_data['wl']
-                        elif 'wavelength' in first_data and 'absorption' in first_data:
+                    for ds in data:
+                        if not isinstance(ds, dict):
+                            skipped += 1
+                            continue
+                        if 'wl' in ds and 'absorption' in ds:
+                            ds['wavelength'] = ds['wl']
+                        elif 'wavelength' in ds and 'absorption' in ds:
                             pass
                         else:
                             skipped += 1
                             errors.append((file_path.name, "缺少 wavelength/absorption 列"))
                             continue
 
-                        label = str(first_data.get('label') or file_path.stem)
-                        self.data_cache[label] = {'path': file_path, 'data': first_data}
-                        item = QListWidgetItem(label)
+                        label = str(ds.get('label') or file_path.stem)
+                        base = label
+                        counter = 1
+                        while base in self.data_cache:
+                            counter += 1
+                            base = f"{label}_{counter}"
+                        # 多列 xlsx：一个文件出多条 —— path 用哨兵，匹配靠缓存键
+                        multi = (len(data) > 1
+                                 or file_path.suffix.lower() in ('.xlsx', '.xls'))
+                        self.data_cache[base] = {
+                            'path': Path('<xlsx>') if multi else file_path,
+                            'data': ds,
+                        }
+                        item = QListWidgetItem(base)
                         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                         item.setCheckState(Qt.Checked)
                         self.file_list.addItem(item)
                         loaded_count += 1
-                    else:
-                        skipped += 1
                 else:
                     skipped += 1
                     errors.append((file_path.name, "解析结果为空"))

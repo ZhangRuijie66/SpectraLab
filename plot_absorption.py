@@ -1,12 +1,14 @@
 """
-吸收光谱 CSV 批量绘图工具
+吸收光谱 CSV / 多列 xlsx 批量绘图工具
 适用格式：
   1. LabSolutions UV-Vis 输出的吸收光谱 CSV 文件
+  2. **多列光谱 xlsx**（v4.41）：一列波长(nm) + 若干样品列，按列拆成多条吸收光谱
+     （仪器的 Excel 多光谱导出，如 20261010.xlsx；见 read_xlsx_info.parse_spectrum_xlsx）
 功能：单图 + 合并图，自动提取样品信息等，支持多种吸收光谱数据处理
 
 【多光谱数据直接引用函数】
   具有多个光谱数据时，可直接引用以下函数：
-    - load_absorption_spectra(files)      ：批量解析多个 CSV → 全部光谱数据集（扁平列表）
+    - load_absorption_spectra(files)      ：批量解析多个 CSV/xlsx → 全部光谱数据集（扁平列表）
     - plot_absorption_spectra(files, ...) ：一键画出【每条单独图】+【合并图】，并返回数据集
     - plot_single_absorption(dataset, ...) ：传单个 dict 或 dict 列表，逐条画出单独图
     - plot_combined_absorption(datasets,.)：传 dict 列表，画一张合并对比图
@@ -26,6 +28,7 @@ import glob
 from scipy.signal import find_peaks
 from scipy.interpolate import CubicSpline
 from curve_colors import CurveColors
+from read_xlsx_info import parse_spectrum_xlsx
 
 
 # ======================== 0. 中文字体设置 ========================
@@ -285,15 +288,16 @@ def parse_absorption_csv(filepath):
 
 def load_absorption_spectra(files, skip_metadata=False, verbose=True):
     """
-    批量解析多个吸收光谱 CSV 文件
-    
+    批量解析多个吸收光谱文件（CSV，或多列光谱 xlsx）
+
     参数:
-        files: str/list/Path - 一个或多个 CSV 路径，支持通配符
+        files: str/list/Path - 一个或多个路径，支持通配符
         skip_metadata: bool - 是否跳过元数据解析，默认 False
         verbose: bool - 是否打印进度信息，默认 True
-    
+
     返回:
-        list[dict] - 每个 dict 含光谱数据
+        list[dict] - 每个 dict 一条吸收光谱。**一个多列 xlsx 会展开成多条**
+        （v4.41：列名清洗后作 label，如 '20261010R1 - RawData' -> 'R1'）。
     """
     if isinstance(files, str):
         # 支持通配符
@@ -305,6 +309,37 @@ def load_absorption_spectra(files, skip_metadata=False, verbose=True):
     datasets = []
     
     for file in files:
+        # v4.41：多列光谱 xlsx —— 一个文件拆成多条光谱
+        if Path(file).suffix.lower() in ('.xlsx', '.xls'):
+            try:
+                sheets = parse_spectrum_xlsx(file)
+            except Exception as e:
+                if verbose:
+                    print(f"   [ERROR] xlsx 解析失败: {e}")
+                continue
+            for sh in sheets:
+                ds = {
+                    'label': sh['label'],
+                    'sample_name': sh['label'],
+                    'analyst': '', 'creation_date': '', 'instrument': '',
+                    'start_wavelength': float(sh['wl'][0]),
+                    'end_wavelength': float(sh['wl'][-1]),
+                    'interval': (float(sh['wl'][1] - sh['wl'][0])
+                                 if len(sh['wl']) > 1 else 0.0),
+                    'wl': sh['wl'],
+                    'absorption': sh['y'],
+                    'filepath': str(file),
+                    'data_type': 'absorption',
+                    'format': 'xlsx-multicolumn',
+                    'source_column': sh.get('column', ''),
+                }
+                datasets.append(ds)
+                if verbose:
+                    print(f"   [OK] 样品: {ds['label']}"
+                          f"（{len(ds['wl'])} 点，"
+                          f"{ds['start_wavelength']:.1f}–{ds['end_wavelength']:.1f} nm）")
+            continue
+
         if verbose:
             print(f" [FILE] 正在解析: {Path(file).name}")
         

@@ -61,6 +61,8 @@ from read_xlsx_info import (
     format_info,
     build_enriched_label,
     enrich_label_from_name,
+    parse_spectrum_xlsx,
+    clean_xlsx_column_label,
 )
 
 __all__ = [
@@ -108,4 +110,6 @@ __all__ = [
     'format_info',
     'build_enriched_label',
     'enrich_label_from_name',
+    'parse_spectrum_xlsx',
+    'clean_xlsx_column_label',
 ]

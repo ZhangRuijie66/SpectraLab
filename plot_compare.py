@@ -257,7 +257,7 @@ def collect_points(samples, info, x_var, group_var=None, metric='peak_intensity'
             skipped.append((name, '说明.xlsx 中匹配不到编号'))
             continue
 
-        entry = info.info.get(int(num), {})
+        entry = info.entry_for(num)
         x_val = _clean_var_value(entry.get(x_var))
         if x_val is None:
             skipped.append((name, f'「{x_var}」为空'))
@@ -280,7 +280,7 @@ def collect_points(samples, info, x_var, group_var=None, metric='peak_intensity'
         if not np.isfinite(val):
             skipped.append((name, '该指标在当前波长范围内算不出'))
             continue
-        points.append((group, x_num, float(val), str(name), int(num)))
+        points.append((group, x_num, float(val), str(name), num))
 
     points.sort(key=lambda p: (str(p[0]) if p[0] is not None else '', p[1]))
     return {'points': points, 'skipped': skipped, 'x_var': x_var,

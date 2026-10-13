@@ -2571,6 +2571,138 @@ def t_gui_lifetime_checked_scope():
     assert not getattr(w, '_plotting', False), "没勾选时不应进入拟合/绘图状态"
 
 
+@check("说明.xlsx：编号列是文本码（R1/S1）也能读出并匹配（v4.41）")
+def t_xlsx_info_text_codes():
+    """20261010 批次踩到：说明.xlsx 的「编号」列写的是 R1/R2/S1…（文本码），
+    旧实现每行都走 int('R1') 抛错被丢掉 -> numbers 为空 -> load_xlsx_info 返回 None，
+    界面上表现成「有 说明.xlsx 但软件说未找到/读取失败」。"""
+    import tempfile
+    import pandas as pd
+    from pathlib import Path as _Path
+    from read_xlsx_info import (load_xlsx_info, match_number,
+                                build_enriched_label, enrich_label_from_name)
+
+    tmp = tempfile.mkdtemp(prefix='v441_codes_')
+    pd.DataFrame({
+        '编号': ['R1', 'R2', 'r3', 'S1', 'S2'],      # 故意混一个小写 + 文本码
+        'RB浓度': [50, 20, 10, None, None],
+        'Ce6浓度': [None, None, None, 50, 20],
+        'L8i浓度': [1000, 1000, 1000, 1000, 1000],
+    }).to_excel(os.path.join(tmp, '说明.xlsx'), index=False)
+
+    info = load_xlsx_info(tmp)
+    assert info is not None, "编号是文本码时 说明.xlsx 必须能读出来（旧版返回 None）"
+    assert info.numbers == ['R1', 'R2', 'R3', 'S1', 'S2'], \
+        f"编号应保持文本码并统一大写：{info.numbers}"
+    assert info.numeric_columns() == ['RB浓度', 'Ce6浓度', 'L8i浓度'], info.numeric_columns()
+    assert info.value_for('R1', 'RB浓度') == 50 and info.value_for('R1', 'Ce6浓度') is None
+    assert info.value_for('S1', 'Ce6浓度') == 50 and info.value_for('S1', 'RB浓度') is None
+    assert info.label_for('R1') == 'RB浓度=50, L8i浓度=1000', info.label_for('R1')
+
+    # 文件名 -> 编号：重复测量的 -2 / -3 尾数要忽略
+    for name, want in (('R1.csv', 'R1'), ('R1-6.csv', 'R1'), ('S2-3.csv', 'S2')):
+        got = match_number(name, info.numbers)
+        assert got == want, f"{name} 应命中 {want}，实际 {got}"
+    # R1 与 S1 不能串台（旧方案把两者都退化成整数 1）
+    assert match_number('R1.csv', info.numbers) != match_number('S1.csv', info.numbers), \
+        "R1 与 S1 必须区分开"
+    # 文本码不做子串匹配：R1 不该命中 R10
+    assert match_number('R10.csv', ['R1', 'R10']) == 'R10'
+
+    assert build_enriched_label('R1', info, 'R1') == '#R1 RB浓度=50, L8i浓度=1000'
+    assert 'Ce6浓度=50' in enrich_label_from_name('S1-1', 'S1-1.csv', info)
+
+    # 整数编号的老批次行为不变
+    assert match_number('RB-L8i-1.csv', [1, 2, 3]) == 1
+    assert match_number('20260825-2.csv', [1, 2]) == 2
+
+
+@check("多列光谱 xlsx：吸收模式按列拆成多条 + 说明.xlsx 图例（v4.41）")
+def t_absorption_multicolumn_xlsx():
+    import tempfile
+    import pandas as pd
+    from read_xlsx_info import parse_spectrum_xlsx, clean_xlsx_column_label
+    from plot_absorption import load_absorption_spectra
+    import plot_compare as pc
+
+    assert clean_xlsx_column_label('20261010R1 - RawData') == 'R1'
+    assert clean_xlsx_column_label('S1 - CorrectionData') == 'S1'
+    assert clean_xlsx_column_label('20261010R2') == 'R2'
+    assert clean_xlsx_column_label('备注') == '备注'
+    # 正常样品名不该被后缀正则误伤（v4.41 复核发现：以前 'Sample-absorption' -> 'Sample'）
+    assert clean_xlsx_column_label('Sample-absorption') == 'Sample-absorption', \
+        clean_xlsx_column_label('Sample-absorption')
+
+    tmp = tempfile.mkdtemp(prefix='v441_xlsx_')
+    wl = np.arange(400.0, 900.5, 0.5)[::-1]        # 仪器导出通常是降序
+    pd.DataFrame({
+        '波长(nm)': wl,
+        '20261010R1 - RawData': 3.0 * np.exp(-((wl - 400) / 60.0) ** 2),
+        '20261010S1 - RawData': 4.0 * np.exp(-((wl - 400) / 60.0) ** 2),
+        '备注': [''] * len(wl),                     # 非数值列要被跳过
+    }).to_excel(os.path.join(tmp, '20261010.xlsx'), index=False)
+    # 干扰项（v4.41 复核补的负例）：这几种表都不该被当成多列光谱表
+    pd.DataFrame({'time (ns)': np.arange(50.0),
+                  'A0': np.ones(50), 'IRF': np.ones(50)}).to_excel(
+        os.path.join(tmp, 'decay.xlsx'), index=False)
+    pd.DataFrame({'Time_ns': np.arange(50.0),          # 下划线写法也要拦住
+                  'A0': np.ones(50), 'IRF': np.ones(50)}).to_excel(
+        os.path.join(tmp, 'decay2.xlsx'), index=False)
+    pd.DataFrame({'编号': range(1, 14),                # 说明表样式（首列单调，别靠猜）
+                  'L8i浓度': range(13), 'CPC浓度': range(13)}).to_excel(
+        os.path.join(tmp, '汇总.xlsx'), index=False)
+    pd.DataFrame({'序号': range(1, 21),                # 波长列不在首位
+                  '波长(nm)': np.arange(400.0, 420.0),
+                  '强度': np.arange(20.0) * 100}).to_excel(
+        os.path.join(tmp, '序号在前.xlsx'), index=False)
+    pd.DataFrame({'编号': ['R1', 'S1'],
+                  'RB浓度': [50, None], 'Ce6浓度': [None, 50]}).to_excel(
+        os.path.join(tmp, '说明.xlsx'), index=False)
+
+    datasets = parse_spectrum_xlsx(os.path.join(tmp, '20261010.xlsx'))
+    assert [d['label'] for d in datasets] == ['R1', 'S1'], [d['label'] for d in datasets]
+    assert len(datasets[0]['wl']) == len(wl) and datasets[0]['wl'][0] < datasets[0]['wl'][-1], \
+        "波长应升序排好"
+    # 波长列左边的列一律不当样品列
+    front = parse_spectrum_xlsx(os.path.join(tmp, '序号在前.xlsx'))
+    assert [d['label'] for d in front] == ['强度'], \
+        f"波长列左边的「序号」不该被当成样品：{[d['label'] for d in front]}"
+    for bad in ('decay.xlsx', 'decay2.xlsx', '汇总.xlsx', '说明.xlsx'):
+        try:
+            parse_spectrum_xlsx(os.path.join(tmp, bad))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'{bad} 不该被当成多列光谱表')
+
+    loaded = load_absorption_spectra(os.path.join(tmp, '20261010.xlsx'), verbose=False)
+    assert [d['label'] for d in loaded] == ['R1', 'S1'] and \
+        all('absorption' in d and 'wl' in d for d in loaded), loaded
+
+    # GUI：吸收模式加载该文件夹（多列 xlsx 自动展开；衰减表/汇总表/说明表跳过）
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(0)
+    assert w.spectrum_type == 'absorption'
+    w.load_data_from_folder(tmp)
+    keys = list(w.data_cache.keys())
+    assert 'R1' in keys and 'S1' in keys, keys
+    assert not any('序号' in k or 'A0' in k or 'IRF' in k or '浓度' == k for k in keys), \
+        f"干扰表不该被收成样品：{keys}"
+    assert '强度' in keys, f"波长列右边的列应当收进来：{keys}"
+    assert w.xlsx_info is not None and w.xlsx_info.numbers == ['R1', 'S1']
+    assert 'RB浓度=50' in w._build_legend_label('R1', w.data_cache['R1']['data']), \
+        "多列 xlsx 的样品名要能对上 说明.xlsx 的编号"
+    assert w.compare_x_combo.isEnabled(), "有数值列时「数据比较」不该置灰"
+    res = pc.collect_points(
+        [('R1', 'R1', w.data_cache['R1']['data']['wl'],
+          w.data_cache['R1']['data']['absorption']),
+         ('S1', 'S1', w.data_cache['S1']['data']['wl'],
+          w.data_cache['S1']['data']['absorption'])],
+        w.xlsx_info, 'RB浓度', metric='peak_intensity')
+    assert [p[4] for p in res['points']] == ['R1'], res
+    assert len(res['skipped']) == 1 and '为空' in res['skipped'][0][1], res['skipped']
+
+
 def main():
     strict = '--strict' in sys.argv
 
