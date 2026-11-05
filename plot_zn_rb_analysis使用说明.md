@@ -20,7 +20,7 @@
 
 ```python
 import sys
-sys.path.insert(0, r'...\谱图\光谱\画图')   # 指向共享源码目录
+sys.path.insert(0, r'D:\北大\光谱工具')   # 项目根（plot_*.py 所在目录）
 from plot_zn_rb_analysis import analyze_zn_rb_folder, read_zn_info
 
 info = read_zn_info(r'...\20260731\说明.xlsx')   # 读取说明.xlsx 全部浓度/备注

@@ -20,7 +20,7 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-$G = "D:\北大\QLS Lab\SPC\1O2-luminol\谱图\光谱\画图\可视化分析GUI"
+$G = "D:\北大\光谱工具\可视化分析GUI"
 $R = Split-Path $G -Parent
 $LOG = Join-Path $G "tests\_diag\finish_v428.log"
 
