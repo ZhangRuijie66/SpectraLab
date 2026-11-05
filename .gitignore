@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 **/__pycache__/
 *.pyc
 .venv/
@@ -26,3 +26,7 @@ _quarantine/
 # macOS 杂物
 .DS_Store
 **/.DS_Store
+
+# 未公开的实验数据与技术文档（只在本地保留，不随仓库分发）
+示例数据/
+寿命拟合与占比计算原理（plot_lifetime 技术文档）.docx
