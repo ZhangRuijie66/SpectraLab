@@ -56,7 +56,7 @@
 
 ### 方法2：命令行
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\可视化分析GUI"
+cd "D:\北大\光谱工具\可视化分析GUI"
 python start_gui.py
 ```
 

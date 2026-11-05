@@ -16,12 +16,12 @@
 
 ### 方法1：双击批处理文件（推荐）
 ```
-双击：D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\run_gui.bat
+双击：D:\北大\光谱工具\run_gui.bat
 ```
 
 ### 方法2：Python命令（最可靠）
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python start_gui.py
 ```
 
@@ -52,7 +52,7 @@ python start_gui.py
 
 ## 📚 完整文档
 
-所有文档都在 `D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图` 目录下：
+所有文档都在 `D:\北大\光谱工具` 目录下：
 
 ### 快速开始
 - **LAUNCH_GUIDE.md** - 启动说明（刚刚创建）⭐

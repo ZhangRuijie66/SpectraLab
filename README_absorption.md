@@ -306,7 +306,7 @@ python absorption_gui.py
 ### run_plots.py 模板
 ```python
 import sys
-sys.path.insert(0, r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图')
+sys.path.insert(0, r'D:\北大\光谱工具')
 
 from plot_absorption import plot_absorption_spectra
 from pathlib import Path

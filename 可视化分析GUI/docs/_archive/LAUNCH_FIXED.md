@@ -63,7 +63,7 @@
 
 **命令**：
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python start_gui.py
 ```
 

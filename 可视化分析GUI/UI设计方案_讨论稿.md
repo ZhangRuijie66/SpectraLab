@@ -295,7 +295,7 @@ QPushButton[variant="export"]{ border-left: 3px solid ORANGE; }   /* 导出类 *
 ## 附：复现本文所有数据的命令
 
 ```powershell
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\可视化分析GUI"
+cd "D:\北大\光谱工具\可视化分析GUI"
 
 # 1) 现状截图（浅色/深色 整窗 + 入口界面）→ tests\_ui_review\
 python tests\shot_ui_review.py

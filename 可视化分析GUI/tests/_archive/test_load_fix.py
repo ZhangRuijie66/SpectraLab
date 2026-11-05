@@ -3,7 +3,7 @@
 """
 
 import sys
-sys.path.insert(0, r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图')
+sys.path.insert(0, r'D:\北大\光谱工具')
 
 from pathlib import Path
 from plot_absorption import load_absorption_spectra

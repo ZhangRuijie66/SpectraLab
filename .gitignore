@@ -22,3 +22,7 @@ _quarantine/
 
 # mac 副本（由 同步到mac文件夹.ps1 生成）
 **/mac打包文件夹/
+
+# macOS 杂物
+.DS_Store
+**/.DS_Store

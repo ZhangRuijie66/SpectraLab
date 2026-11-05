@@ -159,7 +159,7 @@ Python 把**脚本所在目录**（现在是 `tests\`）而非当前工作目录
 推荐运行方式（详见 `tests\README.md`）：
 
 ```powershell
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\可视化分析GUI"
+cd "D:\北大\光谱工具\可视化分析GUI"
 $env:PYTHONPATH = (Get-Location).Path
 python tests\test_gui.py
 ```

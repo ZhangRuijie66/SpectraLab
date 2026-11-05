@@ -24,7 +24,7 @@
 **解决**：
 - 从命令行运行查看错误信息：
   ```bash
-  cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+  cd "D:\北大\光谱工具"
   python debug_gui.py
   ```
 - 查看错误消息并解决
@@ -49,13 +49,13 @@
 
 ### 方法2：使用Python脚本
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python start_gui.py
 ```
 
 ### 方法3：从命令行运行
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python absorption_gui.py
 ```
 
@@ -63,7 +63,7 @@ python absorption_gui.py
 
 运行简单测试：
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python test_pyqt_simple.py
 ```
 
@@ -139,7 +139,7 @@ python absorption_gui.py
 
 ```python
 import sys
-sys.path.insert(0, r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图')
+sys.path.insert(0, r'D:\北大\光谱工具')
 
 from plot_absorption import plot_absorption_spectra
 from pathlib import Path

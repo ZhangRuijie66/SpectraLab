@@ -82,7 +82,7 @@ python plot_emission.py *.csv -o results --xlim 450 750 --normalize --peak-heigh
 
 ```python
 import sys
-sys.path.insert(0, r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图')
+sys.path.insert(0, r'D:\北大\光谱工具')
 
 from plot_emission import plot_spectra, load_spectra, plot_single, plot_combined
 ```

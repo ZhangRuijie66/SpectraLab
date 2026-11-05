@@ -8,7 +8,7 @@
 ## 0. 回归测试集（E3，2026-09-09 新增，推荐日常用这个）
 
 ```powershell
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\可视化分析GUI"
+cd "D:\北大\光谱工具\可视化分析GUI"
 python tests\run_regression.py
 ```
 
@@ -45,7 +45,7 @@ Python 会把**脚本所在目录**（即本 `tests\` 目录）放到 `sys.path[
 **推荐统一这样跑**（在 `可视化分析GUI` 根目录下打开 PowerShell）：
 
 ```powershell
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\可视化分析GUI"
+cd "D:\北大\光谱工具\可视化分析GUI"
 $env:PYTHONPATH = (Get-Location).Path      # 让脚本能 import 到 gui_*.py / absorption_gui.py
 python tests\test_gui.py
 ```

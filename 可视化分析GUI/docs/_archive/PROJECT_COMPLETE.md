@@ -51,7 +51,7 @@
 
 ### 核心程序
 ```
-D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\
+D:\北大\光谱工具\
 ├── absorption_gui.py      # GUI主程序（870行）
 ├── run_gui.bat            # Windows一键启动脚本
 └── test_gui.py            # 测试脚本
@@ -67,7 +67,7 @@ D:\北大\QLS Lab\SPC\1O2+luminol\谱图\画图\
 
 ### 文档文件
 ```
-D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图\
+D:\北大\光谱工具\
 ├── GUI_SUCCESS.md          # 启动成功指南
 ├── GUI_README.md           # 完整使用指南（400+行）
 ├── QUICKSTART.md           # 一分钟快速开始
@@ -95,7 +95,7 @@ pip install PyQt5
 双击：run_gui.bat
 
 # 方法2：命令行
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python absorption_gui.py
 ```
 
@@ -345,7 +345,7 @@ python absorption_gui.py
 
 **启动命令**：
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python absorption_gui.py
 ```
 

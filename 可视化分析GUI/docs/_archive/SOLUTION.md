@@ -55,7 +55,7 @@
 
 **命令**：
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python start_gui.py
 ```
 
@@ -72,7 +72,7 @@ python start_gui.py
 1. 右键点击桌面 -> 新建 -> 快捷方式
 2. 位置输入：
    ```
-   cmd /k "cd /d D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图 && python start_gui.py"
+   cmd /k "cd /d D:\北大\光谱工具 && python start_gui.py"
    ```
 3. 名称输入：`吸收光谱分析工具`
 4. 点击完成
@@ -87,7 +87,7 @@ python start_gui.py
 
 创建文件 `run_gui.ps1`：
 ```powershell
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 python start_gui.py
 ```
 

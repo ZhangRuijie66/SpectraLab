@@ -5,7 +5,7 @@
 
 ## 📁 正确的工作目录
 ```
-D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图
+D:\北大\光谱工具
 ```
 
 ## 🎯 启动方法
@@ -18,7 +18,7 @@ D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图
 ### 方法2：命令行启动
 ```bash
 # 进入正确目录
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\画图"
+cd "D:\北大\光谱工具"
 
 # 启动程序
 python absorption_gui.py
