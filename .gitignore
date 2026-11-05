@@ -30,3 +30,22 @@ _quarantine/
 # 未公开的实验数据与技术文档（只在本地保留，不随仓库分发）
 示例数据/
 寿命拟合与占比计算原理（plot_lifetime 技术文档）.docx
+
+# 早期调试脚本（功能已由 tests/ 覆盖，仅本地保留）
+/direct_test.py
+/direct_test_fixed.py
+/simple_test.py
+/plot_absorption_test.py
+/test_absorption.py
+/check_data.py
+/example_absorption.py
+
+# 参考算法的运行产物（只分发源码）
+代码（含注释）/data*.csv
+代码（含注释）/Decay2.csv
+代码（含注释）/fit_result.json
+代码（含注释）/result.json
+代码（含注释）/plots/
+
+# 过时的历史开发记录
+可视化分析GUI/docs/_archive/
