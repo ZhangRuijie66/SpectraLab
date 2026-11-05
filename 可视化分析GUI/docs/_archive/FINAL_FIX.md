@@ -48,7 +48,7 @@ elif 'wavelength' in first_data and 'absorption' in first_data:
 ### 测试步骤
 
 1. **点击"选择文件夹"**
-2. **选择**：`D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826`
+2. **选择**：`D:\北大\光谱工具\示例数据\测试数据\20260826`
 
 3. **应该看到**：
    - ✅ 左侧文件列表显示3个文件：
@@ -57,7 +57,7 @@ elif 'wavelength' in first_data and 'absorption' in first_data:
      - 20260826RBL8i.csv
    - ✅ 文件夹标签显示（更大更清晰）：
      ```
-     文件夹: D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826
+     文件夹: D:\北大\光谱工具\示例数据\测试数据\20260826
      已加载 3 个文件
      ```
    - ✅ 状态栏显示："成功加载 3 个文件"（12pt）

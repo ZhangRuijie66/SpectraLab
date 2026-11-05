@@ -1125,7 +1125,7 @@ class MEMFitter:
             np.arange(-q_final, len(self.irf) - q_final - 0.01))
 
         chi_sqr = _chi2(x_final, A_shifted)
-        if os.environ.get('QLS_DEBUG_CHI2'):
+        if os.environ.get('SPECTRA_DEBUG_CHI2'):
             _safe_print("[DEBUG] chi_sqr=%.6g  recompute=%.6g  npts=%d len(d1)=%d "
                         "dmax=%.6g bg=%.6g  x_sum=%.6g"
                         % (chi_sqr,

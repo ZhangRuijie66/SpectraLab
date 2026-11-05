@@ -2,6 +2,7 @@
 """C2/C7/B4 离屏冒烟测试（临时脚本）。"""
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.getcwd())
 sys.path.insert(0, os.path.dirname(os.getcwd()))
@@ -18,7 +19,7 @@ w = AbsorptionGUI()
 w.spectrum_type_combo.setCurrentIndex(2)
 print('mode =', w.spectrum_type)
 
-folder = r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光\20260724lifetime\20260724\esipt-1'
+folder = r'D:\北大\光谱工具\示例数据\测试数据\esipt-1'
 w.load_data_from_folder(folder)
 print('loaded:', list(w.data_cache))
 
@@ -45,7 +46,7 @@ for i in range(6):
     w.export_format_combo.setCurrentIndex(i)
     print(f'  {i} {w.export_format_combo.currentText():22s} -> {w._export_formats()}')
 
-tmp = r'D:\北大\QLS Lab\.dsh-tmp\exp_test'
+tmp = tempfile.mkdtemp(prefix='spectra_exp_')
 os.makedirs(tmp, exist_ok=True)
 for f in os.listdir(tmp):
     os.remove(os.path.join(tmp, f))

@@ -14,7 +14,7 @@ print("=" * 60)
 print()
 
 # 测试文件
-test_file = Path(r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826RB.csv')
+test_file = Path(r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826RB.csv')
 
 print(f"测试文件: {test_file}")
 print(f"文件存在: {test_file.exists()}")

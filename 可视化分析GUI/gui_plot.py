@@ -277,7 +277,7 @@ class PlotMixin:
         try:
             if getattr(ax, 'name', '') == '3d':
                 return
-            ax._qls_base_left = float(base)
+            ax._spectra_base_left = float(base)
             fig_w = float(fig.get_size_inches()[0]) * float(fig.get_dpi())
             if fig_w <= 0:
                 return
@@ -305,7 +305,7 @@ class PlotMixin:
             r = fig.canvas.get_renderer()
             left = 0.0
             for ax in fig.axes:
-                base = float(getattr(ax, '_qls_base_left', 0.09))
+                base = float(getattr(ax, '_spectra_base_left', 0.09))
                 left = max(left, min(0.45, max(base,
                                                self._needed_left_px(fig, ax, r) / fig_w)))
             if left > 0 and abs(left - fig.axes[0].get_position().x0) > 0.0015:
@@ -947,7 +947,7 @@ class PlotMixin:
                 # 界面已用 _sync_lifetime_tau_range 保证 τ_min < τ_max，这里是
                 # 兜底（例如设置里存了坏值）：回退默认范围，但**要说出来**，
                 # 不能静默拟合出用户没要的范围。
-                logging.getLogger('qls').warning(
+                logging.getLogger('spectra').warning(
                     "寿命范围非法（τ_min=%s ≥ τ_max=%s %s），本次按默认 0.01–100 ns 拟合",
                     tau_min_in, tau_max_in, unit_symbol)
                 if hasattr(self, 'status_bar'):

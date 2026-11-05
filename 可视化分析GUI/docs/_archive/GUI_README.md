@@ -54,7 +54,7 @@ install_dependencies.bat
 
 ### 方法2：Python命令行
 ```bash
-cd "D:\北大\QLS Lab\SPC\1O2+luminol\谱图\画图"
+cd "D:\北大\光谱工具"
 python absorption_gui.py
 ```
 

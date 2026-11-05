@@ -17,7 +17,7 @@ def main():
     print("开始简单测试...")
     
     # 测试数据路径
-    data_dir = r"D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826"
+    data_dir = r"D:\北大\光谱工具\示例数据\测试数据\20260826"
     print(f"数据目录: {data_dir}")
     
     # 检查数据文件是否存在

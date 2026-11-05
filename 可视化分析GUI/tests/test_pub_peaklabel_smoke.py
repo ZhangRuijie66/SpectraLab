@@ -39,7 +39,7 @@ def main():
     print('--- D7 peak labels ---')
     w.pub_preset_combo.setCurrentIndex(0)
     w.spectrum_type_combo.setCurrentIndex(1)       # 发射
-    folder = r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光\20260723-ESIPT-1-DMF'
+    folder = r'D:\北大\光谱工具\示例数据\测试数据\20260723-ESIPT-1-DMF'
     w.load_data_from_folder(folder)
     print('loaded:', list(w.data_cache))
     w.mark_peaks_check.setChecked(True)

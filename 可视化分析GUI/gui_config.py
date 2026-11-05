@@ -4,10 +4,10 @@ import sys
 from pathlib import Path
 
 # 默认工作区（目录树的初始根目录，用户可更改并记住）
-# Windows 用实验室数据目录；macOS/Linux 上该路径不存在，回退到用户目录
+# Windows 默认打开项目自带的示例数据；macOS/Linux 上该路径不存在，回退到用户目录
 # （gui_data._get_saved_workspace 对不存在的路径还会再兜底到 Path.home()）
 if sys.platform == 'win32':
-    DEFAULT_WORKSPACE = r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱'
+    DEFAULT_WORKSPACE = r'D:\北大\光谱工具\示例数据'
 else:
     DEFAULT_WORKSPACE = str(Path.home() / 'Documents')
 
@@ -20,13 +20,13 @@ else:
     UI_FONT_FAMILY = 'Microsoft YaHei'
 
 # QSettings 应用标识（用于记住工作区等设置）
-APP_ORG = "QLSLab"
+APP_ORG = "SpectraLab"
 APP_NAME = "光谱可视化分析工具"
 
 # 版本号（窗口标题 / 应用版本信息）
-APP_VERSION = "4.42"
+APP_VERSION = "4.43"
 # 最近一次更新的日期（入口界面"帮助"中显示）
-RELEASE_DATE = "2026-10-13"
+RELEASE_DATE = "2026-11-05"
 
 # ---- 全局设计主题（现代化浅色主题的统一色板）----
 # 中性色
@@ -60,8 +60,8 @@ NEUTRAL_PRESSED = "#1E293B"
 APP_ICON_FILENAME = "app_icon.ico"
 
 # ---- 日志（D6）：打包后 stdout 被丢弃，异常/警告统一落盘 ----
-# 位置：%LOCALAPPDATA%\QLSLab\logs\gui.log（单文件滚动，见 gui_log.py）
-LOG_APP_DIR = "QLSLab"          # %LOCALAPPDATA% 下的应用目录
+# 位置：%LOCALAPPDATA%\SpectraLab\logs\gui.log（单文件滚动，见 gui_log.py）
+LOG_APP_DIR = "SpectraLab"          # %LOCALAPPDATA% 下的应用目录
 LOG_DIR_NAME = "logs"           # 日志子目录
 LOG_FILE_NAME = "gui.log"       # 当天日志文件（跨天自动归档为 gui-YYYY-MM-DD.log）
 LOG_MAX_BYTES = 2 * 1024 * 1024  # 单文件上限 2 MB

@@ -181,7 +181,7 @@ def main():
     print("开始直接测试...")
     
     # 数据目录
-    data_dir = r"D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826"
+    data_dir = r"D:\北大\光谱工具\示例数据\测试数据\20260826"
     output_dir = os.path.join(data_dir, "plots")
     
     print(f"数据目录: {data_dir}")

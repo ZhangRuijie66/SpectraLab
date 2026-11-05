@@ -18,7 +18,7 @@ sys.path.insert(0, _GUI_DIR)                      # 可视化分析GUI
 sys.path.insert(0, os.path.dirname(_GUI_DIR))     # 画图（plot_lifetime 所在）
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-LIFE = r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\test2'
+LIFE = r'D:\北大\光谱工具\示例数据\测试数据\lifetime-test2'
 
 
 def main():

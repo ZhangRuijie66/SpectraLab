@@ -20,7 +20,7 @@ from read_xlsx_info import (load_xlsx_info, match_number, build_enriched_label,
                             enrich_label_from_name)
 import plot_compare as pc
 
-DATA = Path(r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\202610\20261010')
+DATA = Path(r'D:\北大\光谱工具\示例数据\05-数据比较-浓度梯度')
 fails = []
 
 
@@ -127,7 +127,7 @@ check('CSV 的「编号」列写的是 R1/R2/R3（不是 1/2/3，也不是空）
       sorted(set(r.split(',')[1] for r in head[1:])))
 
 print('== 5. 回归：整数编号批次（20260825）行为不变 ==')
-old = Path(r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\202608\20260825')
+old = Path(r'D:\北大\光谱工具\示例数据\测试数据\20260825')
 if old.is_dir():
     oi = load_xlsx_info(old)
     check('老批次仍读出整数编号', oi is not None and all(isinstance(n, int) for n in oi.numbers),

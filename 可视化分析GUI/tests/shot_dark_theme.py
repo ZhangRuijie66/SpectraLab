@@ -16,7 +16,7 @@ def main():
     w = AbsorptionGUI()
     w.resize(1500, 880)
     w.toggle_theme(True)
-    folder = r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光\20260723-ESIPT-1-DMF'
+    folder = r'D:\北大\光谱工具\示例数据\测试数据\20260723-ESIPT-1-DMF'
     w.spectrum_type_combo.setCurrentIndex(1)
     w.load_data_from_folder(folder)
     w.update_plot()

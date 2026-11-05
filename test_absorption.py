@@ -18,12 +18,12 @@ from pathlib import Path
 
 # 测试数据路径
 data_files = [
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826RB.csv',
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826Ce6.csv',
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826RBL8i.csv',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826RB.csv',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826Ce6.csv',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826RBL8i.csv',
 ]
 
-output_dir = Path(r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\plots_test')
+output_dir = Path(r'D:\北大\光谱工具\plots\plots_test')
 output_dir.mkdir(parents=True, exist_ok=True)
 
 print("测试吸收光谱绘图功能")

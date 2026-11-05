@@ -44,7 +44,7 @@ pip install numpy scipy pandas matplotlib
 ### 1. 命令行一键拟合
 
 ```bash
-python plot_lifetime.py -i "D:/北大/QLS Lab/SPC/ESIPT/谱图/吸收&荧光/20260724lifetime/20260724/esipt-1/Decay2.csv" -o ./plots/lifetime
+python plot_lifetime.py -i "D:/北大/光谱工具/示例数据/测试数据/esipt-1/Decay2.csv" -o ./plots/lifetime
 ```
 
 常用参数：

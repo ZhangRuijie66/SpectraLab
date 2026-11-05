@@ -146,7 +146,7 @@ from pathlib import Path
 
 # 绘制光谱
 plot_absorption_spectra(
-    files="D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/*.csv",
+    files="D:/北大/光谱工具/示例数据/测试数据/20260826/*.csv",
     save_dir="./plots",
     show=False
 )

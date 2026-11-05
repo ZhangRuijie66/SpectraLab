@@ -31,7 +31,7 @@ def main():
     # ---- 3D 扫描模式 ----
     w.spectrum_type_combo.setCurrentIndex(3)
     w.load_data_from_folder(
-        r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260727-RB-Lu')
+        r'D:\北大\光谱工具\示例数据\测试数据\20260727-RB-Lu')
     for _ in range(40):
         app.processEvents()
     p1 = os.path.join(out_dir, 'ui_scan3d.png')

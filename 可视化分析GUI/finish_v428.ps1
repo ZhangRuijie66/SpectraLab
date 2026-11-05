@@ -1,13 +1,13 @@
 ﻿# ============================================================
 #  v4.28 收尾脚本（一次跑完：splash → mac 同步 → 打包 → 校验 → 提交）
 # ------------------------------------------------------------
-#  背景：2026-09-10 晚，D:\北大\QLS Lab\...\可视化分析GUI 目录对进程
+#  背景：2026-09-10 晚，D:\北大\光谱工具\可视化分析GUI 目录对进程
 #  "时隐时现"（PowerShell 只看到 4 个条目、Python 只看到 1 个 .py，
 #  子进程 spawn ENOENT，Edge 也崩过），导致发版步骤无法可靠完成。
 #  本脚本放在 C 盘，**等文件系统健康了再一键跑**，避免手工重复。
 #
 #  用法（PowerShell）：
-#     powershell -ExecutionPolicy Bypass -File "C:\Users\zhang\AppData\Local\Temp\qls_v428_backup\finish_v428.ps1"
+#     powershell -ExecutionPolicy Bypass -File "C:\Users\zhang\AppData\Local\Temp\spectra_v428_backup\finish_v428.ps1"
 #  可选参数：-WaitMinutes 10      等健康窗口的最长分钟数
 #            -SkipPackage        只做校验/提交，不打包
 #
@@ -137,7 +137,7 @@ Get-Content -LiteralPath (Join-Path $G "tests\_diag\finish_regression.log") -Enc
 # ---------- 7) git 提交 ----------
 if (-not (Wait-Healthy "git 提交")) { exit 3 }
 Push-Location -LiteralPath $G
-$msgFile = Join-Path $env:TEMP "qls_v428_backup\commit_v428.txt"
+$msgFile = Join-Path $env:TEMP "spectra_v428_backup\commit_v428.txt"
 git add gui_config.py gui_ui.py gui_data.py gui_help.py gui_launcher.py gui_splash.py gui_icons.py gui_components.py `
         生成图标.py 生成splash图.py icons splash.png tests/run_regression.py tests/test_icons_smoke.py `
         tests/test_help_dialog_smoke.py "UI设计方案_讨论稿.md" "更新日志/CHANGELOG_v428.md" 2>&1 |

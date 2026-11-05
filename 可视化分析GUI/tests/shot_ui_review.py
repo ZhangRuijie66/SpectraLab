@@ -27,11 +27,10 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_ui_review')
 os.makedirs(OUT, exist_ok=True)
 
 ABS_CANDIDATES = [
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826',
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260903',
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260827',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260825',
 ]
-LIFE_FOLDER = r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\test2'
+LIFE_FOLDER = r'D:\北大\光谱工具\示例数据\测试数据\lifetime-test2'
 
 
 def pump(n=30):

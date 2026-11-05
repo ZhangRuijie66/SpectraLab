@@ -217,7 +217,6 @@ class ModuleLauncher(QDialog):
         self._help_text = f"""
         <p><b>更新日期：</b>{RELEASE_DATE}</p>
         <p><b>创建人：</b>张瑞杰</p>
-        <p><b>代码生成：</b>deepseek-v4-flash、GLM-5.3-flash</p>
         <p><b>包含模块：</b></p>
         <ul>
           <li>吸收光谱 (UV-Vis) —— 紫外-可见吸收光谱绘图与峰标注</li>

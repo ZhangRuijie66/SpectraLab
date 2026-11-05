@@ -109,7 +109,7 @@ def main(app=None, startup_splash=None):
     # ProcessPoolExecutor 起子进程，没有 freeze_support() 子进程会重跑主程序
     import multiprocessing
     multiprocessing.freeze_support()
-    # D6：日志落盘（%LOCALAPPDATA%\QLSLab\logs\gui.log）+ 未捕获异常钩子
+    # D6：日志落盘（%LOCALAPPDATA%\SpectraLab\logs\gui.log）+ 未捕获异常钩子
     from gui_log import setup_logging, install_excepthook
     setup_logging()
     install_excepthook(app)

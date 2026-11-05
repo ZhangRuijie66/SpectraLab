@@ -5,7 +5,7 @@
 ``except ...: print(...)`` 等于没有任何提示。本模块把日志写到用户目录下的
 滚动文件里，界面上的「打开日志文件夹」直接打开它。
 
-日志位置（Windows）：``%LOCALAPPDATA%\\QLSLab\\logs\\gui.log``
+日志位置（Windows）：``%LOCALAPPDATA%\\SpectraLab\\logs\\gui.log``
 （每天一个文件：``gui.log``、``gui-2026-09-10.log`` …；单文件 ≤ 2 MB，
 保留 3 个历史文件。）
 
@@ -39,7 +39,7 @@ _error_box_shown = False  # 未捕获异常只弹一次，避免连环弹窗
 
 
 def log_dir():
-    """日志目录（Windows: %LOCALAPPDATA%\\QLSLab\\logs）。"""
+    """日志目录（Windows: %LOCALAPPDATA%\\SpectraLab\\logs）。"""
     base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
     if not base:
         # 非 Windows 或环境变量缺失时的兜底：用户目录下
@@ -91,21 +91,21 @@ def setup_logging(level=logging.INFO):
             root.setLevel(level)
             # 去掉重复安装（例如 main() 与 entry_gui.main() 都调过）
             for h in list(root.handlers):
-                if getattr(h, '_qls_file_handler', False):
+                if getattr(h, '_spectra_file_handler', False):
                     root.removeHandler(h)
-            handler._qls_file_handler = True
+            handler._spectra_file_handler = True
             root.addHandler(handler)
             _log_path = str(path)
 
             # 控制台输出：源码运行时便于排查；打包后 stderr 指向 devnull 也不报错
-            if not any(getattr(h, '_qls_stream_handler', False)
+            if not any(getattr(h, '_spectra_stream_handler', False)
                        for h in root.handlers):
                 try:
                     sh = logging.StreamHandler(sys.stderr)
                     sh.setFormatter(logging.Formatter(
                         '%(levelname)s: %(message)s'))
                     sh.setLevel(level)
-                    sh._qls_stream_handler = True
+                    sh._spectra_stream_handler = True
                     root.addHandler(sh)
                 except Exception:
                     pass
@@ -121,13 +121,13 @@ def log_exception(msg, exc=None, level=logging.ERROR):
     setup_logging()
     try:
         if exc is None:
-            logging.getLogger('qls').log(level, "%s", msg)
+            logging.getLogger('spectra').log(level, "%s", msg)
         elif isinstance(exc, BaseException):
-            logging.getLogger('qls').log(
+            logging.getLogger('spectra').log(
                 level, "%s: %s: %s", msg, type(exc).__name__, exc,
                 exc_info=exc)
         else:
-            logging.getLogger('qls').log(level, "%s: %s", msg, exc)
+            logging.getLogger('spectra').log(level, "%s: %s", msg, exc)
     except Exception:
         pass
 
@@ -170,7 +170,7 @@ def install_excepthook(app=None):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
         try:
-            logging.getLogger('qls').error(
+            logging.getLogger('spectra').error(
                 "未捕获异常", exc_info=(exc_type, exc_value, exc_tb))
         except Exception:
             pass
@@ -197,7 +197,7 @@ def install_excepthook(app=None):
     # 后台线程里的异常同样进日志（Python 3.8+）
     try:
         def _thread_hook(args):
-            logging.getLogger('qls').error(
+            logging.getLogger('spectra').error(
                 "线程未捕获异常（%s）", getattr(args.thread, 'name', '?'),
                 exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
         threading.excepthook = _thread_hook

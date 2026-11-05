@@ -26,7 +26,7 @@ pip install pandas matplotlib numpy scipy
 import plot_absorption
 
 # 使用通配符选择多个文件
-files = "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/*.csv"
+files = "D:/北大/光谱工具/示例数据/测试数据/20260826/*.csv"
 
 # 一键绘图：单独图 + 合并图
 datasets = plot_absorption.plot_absorption_spectra(
@@ -48,9 +48,9 @@ import plot_absorption
 
 # 第一步：加载数据
 files = [
-    "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/20260826RB.csv",
-    "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/20260826Ce6.csv",
-    "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/20260826RBL8i.csv"
+    "D:/北大/光谱工具/示例数据/测试数据/20260826/20260826RB.csv",
+    "D:/北大/光谱工具/示例数据/测试数据/20260826/20260826Ce6.csv",
+    "D:/北大/光谱工具/示例数据/测试数据/20260826/20260826RBL8i.csv"
 ]
 
 datasets = plot_absorption.load_absorption_spectra(files, verbose=True)
@@ -78,10 +78,10 @@ plot_absorption.plot_combined_absorption(
 
 ```bash
 # 基础绘图
-python plot_absorption.py "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/*.csv" -o ./plots
+python plot_absorption.py "D:/北大/光谱工具/示例数据/测试数据/20260826/*.csv" -o ./plots
 
 # 带参数绘图
-python plot_absorption.py "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/*.csv" \
+python plot_absorption.py "D:/北大/光谱工具/示例数据/测试数据/20260826/*.csv" \
     -o ./plots \
     --normalize \
     --xlim 200 800 \
@@ -93,7 +93,7 @@ python plot_absorption.py "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260
     --no-show
 
 # 不绘制单独图，只绘制合并图
-python plot_absorption.py "D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/*.csv" \
+python plot_absorption.py "D:/北大/光谱工具/示例数据/测试数据/20260826/*.csv" \
     --no-single \
     -o ./plots
 ```

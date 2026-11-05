@@ -100,9 +100,9 @@ SECTIONS = [
         点「打开日志文件夹」直接去看。</p>
     """),
     ("关于与日志", """
-        <p>光谱可视化分析工具由 QLS Lab 开发，界面基于 PyQt5，绘图基于
+        <p>光谱可视化分析工具由张瑞杰开发，界面基于 PyQt5，绘图基于
         matplotlib，拟合基于 numpy / scipy。</p>
-        <p>日志按天归档在 <code>%LOCALAPPDATA%\\QLSLab\\logs</code>：单文件
+        <p>日志按天归档在 <code>%LOCALAPPDATA%\\SpectraLab\\logs</code>：单文件
         上限 2 MB，保留 3 个历史文件；跨天启动时上一次的 gui.log 会自动改名
         成 gui-YYYY-MM-DD.log。</p>
         <p>反馈问题时请附上日志文件与本窗口「复制全部」得到的环境说明。</p>

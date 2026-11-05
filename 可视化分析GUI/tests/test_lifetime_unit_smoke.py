@@ -14,6 +14,8 @@ import os
 import sys
 import tempfile
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.getcwd())
 sys.path.insert(0, os.path.dirname(os.getcwd()))
@@ -26,8 +28,7 @@ for fn in ('information', 'warning', 'critical'):
 
 from absorption_gui import AbsorptionGUI  # noqa: E402
 
-FOLDER = (r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱'
-          r'\202609\20260922lifetime')
+FOLDER = (r'D:\北大\光谱工具\示例数据\03-荧光寿命-Ce6')
 
 w = AbsorptionGUI()
 w.spectrum_type_combo.setCurrentIndex(2)                 # 荧光寿命模式
@@ -101,7 +102,7 @@ assert title_main == 'Ce6 1O2 磷光（μs）', title_main
 assert title_dist.startswith('Ce6 1O2 磷光（μs）'), title_dist
 
 # --- 4) 导出 PNG（标题/单位写进图里）---
-tmp = tempfile.mkdtemp(prefix='qls_unit_smoke_')
+tmp = tempfile.mkdtemp(prefix='spectra_unit_smoke_')
 w.export_format_combo.setCurrentIndex(0)                 # PNG
 w._export_lifetime_plots(tmp)
 files = sorted(os.listdir(tmp))

@@ -16,7 +16,7 @@ from absorption_gui import AbsorptionGUI  # noqa: E402
 
 w = AbsorptionGUI()
 w.spectrum_type_combo.setCurrentIndex(2)
-folder = r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光\20260724lifetime\20260724\esipt-1'
+folder = r'D:\北大\光谱工具\示例数据\测试数据\esipt-1'
 w.load_data_from_folder(folder)
 w.lifetime_nrates_spin.setValue(201)
 

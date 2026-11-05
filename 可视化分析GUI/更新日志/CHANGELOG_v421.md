@@ -111,7 +111,7 @@
 4. 后台线程不再直接读 Qt 控件（主线程先取快照），`MplCanvas.busy` 期间跳过 resize 重绘；
 5. 寿命拟合新增**进度框 + 取消按钮**（`progress_cb` / `cancel_cb` / `FitCancelled`），
    取消后保留上一次结果；
-6. 新增 `gui_log.py`：日志落盘到 `%LOCALAPPDATA%\QLSLab\logs\gui.log`
+6. 新增 `gui_log.py`：日志落盘到 `%LOCALAPPDATA%\SpectraLab\logs\gui.log`
    （打包后 stdout 为 devnull，旧实现 84 处 `except: print()` 等于没有提示），
    未捕获异常写日志并弹窗，帮助菜单加「打开日志文件夹」；
 7. 拟合中关窗会询问；

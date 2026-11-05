@@ -214,7 +214,7 @@ class DataMixin:
                 if 0 < k_lo < k_hi:
                     s.setValue(prefix + "lifetime_taumin", 1.0 / k_hi)
                     s.setValue(prefix + "lifetime_taumax", 1.0 / k_lo)
-                    logging.getLogger('qls').info(
+                    logging.getLogger('spectra').info(
                         "寿命范围设置已从 k 换算为 τ：%s %.6g–%.6g 1/ns → "
                         "%.6g–%.6g ns", prefix, k_lo, k_hi, 1.0 / k_hi, 1.0 / k_lo)
             s.setValue(self._TAU_RANGE_MIGRATION_FLAG, True)
@@ -622,7 +622,7 @@ class DataMixin:
                    f" / λ {lam} / 固定 τ {taus}")
             if hasattr(self, 'status_bar'):
                 self.status_bar.showMessage(msg, 6000)
-            logging.getLogger('qls').info(msg)
+            logging.getLogger('spectra').info(msg)
             return True
         except Exception as e:
             log_exception("保存寿命拟合默认值失败", e)

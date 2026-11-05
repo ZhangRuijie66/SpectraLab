@@ -17,7 +17,7 @@ def test_combined_plot():
     print("=== 测试合并图缩放改进 ===")
     
     # 测试数据路径
-    data_dir = r"D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826"
+    data_dir = r"D:\北大\光谱工具\示例数据\测试数据\20260826"
     
     # 加载数据
     print("加载吸收光谱数据...")
@@ -61,7 +61,7 @@ def test_single_plot_scaling():
     print("\n=== 测试单图缩放改进 ===")
     
     # 加载数据
-    data_dir = r"D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826"
+    data_dir = r"D:\北大\光谱工具\示例数据\测试数据\20260826"
     datasets = load_absorption_spectra(data_dir)
     
     # 创建输出目录

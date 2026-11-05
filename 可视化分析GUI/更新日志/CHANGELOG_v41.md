@@ -24,7 +24,6 @@
 - **版本**：v4.1（读取 `gui_config.APP_VERSION`）
 - **更新日期**：2026-08-29（新增 `gui_config.RELEASE_DATE` 常量，以后更新只改配置）
 - **创建人**：张瑞杰
-- **代码生成**：deepseek-v4-flash、GLM-5.3-flash
 - 附三个模块的一句话说明
 
 ---

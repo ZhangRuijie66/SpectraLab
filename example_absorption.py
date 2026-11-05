@@ -12,8 +12,8 @@ import plot_absorption
 
 def main():
     # 设置数据目录 - 使用绝对路径
-    data_dir = Path("D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826")
-    output_dir = Path("D:/北大/QLS Lab/SPC/1O2+luminol/谱图/光谱/20260826/plots")
+    data_dir = Path("D:/北大/光谱工具/示例数据/测试数据/20260826")
+    output_dir = Path("D:/北大/光谱工具/plots")
     
     # 支持通配符选择文件
     files = [

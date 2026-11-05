@@ -14,7 +14,7 @@ print("=" * 60)
 print()
 
 # 测试文件夹
-test_folder = Path(r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826')
+test_folder = Path(r'D:\北大\光谱工具\示例数据\测试数据\20260826')
 
 print(f"测试文件夹: {test_folder}")
 print(f"文件夹存在: {test_folder.exists()}")

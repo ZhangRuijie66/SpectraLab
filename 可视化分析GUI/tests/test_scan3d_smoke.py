@@ -21,7 +21,7 @@ print('scan3d group visible =', w.scan3d_options_group.isVisible(),
       '| lifetime group =', w.lifetime_options_group.isVisible(),
       '| peaks group =', w.peaks_group.isVisible())
 
-folder = r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260727-RB-Lu'
+folder = r'D:\北大\光谱工具\示例数据\测试数据\20260727-RB-Lu'
 w.load_data_from_folder(folder)
 print('loaded files:', list(w.data_cache))
 

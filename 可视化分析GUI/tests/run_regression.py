@@ -83,11 +83,9 @@ LIFETIME_CSV = os.path.join(TEST_DIR, 'Fig9_FoldedRNA.csv')
 # 3D 样例优先用仓库内副本（test\RBLu_1_3d_scan.csv），
 # 这样换机器/数据盘变动时不会静默跳过 3D 检查
 SCAN3D_LOCAL = os.path.join(TEST_DIR, 'RBLu_1_3d_scan.csv')
-SCAN3D_EXTERNAL = (r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱'
-                   r'\20260727-RB-Lu\RBLu 1 2026-07-27 07-11.csv')
+SCAN3D_EXTERNAL = (r'D:\北大\光谱工具\示例数据\测试数据\20260727-RB-Lu\RBLu 1 2026-07-27 07-11.csv')
 SCAN3D_CSV = SCAN3D_LOCAL if os.path.exists(SCAN3D_LOCAL) else SCAN3D_EXTERNAL
-EMISSION_DIR = (r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光'
-                r'\20260723-ESIPT-1-DMF')
+EMISSION_DIR = (r'D:\北大\光谱工具\示例数据\测试数据\20260723-ESIPT-1-DMF')
 
 
 # ---------------------------------------------------------------- 模块层
@@ -581,8 +579,7 @@ def t_gui_lifetime_defaults():
 @check("GUI：长文件夹路径缩成短名并保留完整 tooltip")
 def t_gui_short_path():
     app, w = _make_gui()
-    long_path = (r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱'
-                 r'\20260727-RB-Lu')
+    long_path = (r'D:\北大\光谱工具\示例数据\测试数据\20260727-RB-Lu')
     short = w._short_path(long_path)
     assert short != long_path, "长路径应被缩短"
     assert short.startswith('…') and '20260727-RB-Lu' in short
@@ -994,7 +991,7 @@ def t_scan3d_prep_reuse():
         raise Skip("3D 样例数据不存在")
     import plot_3d_scan as p3
     import tempfile
-    out_dir = tempfile.mkdtemp(prefix='qls3d_')
+    out_dir = tempfile.mkdtemp(prefix='spectra3d_')
     data = p3.parse_3d_scan_csv(SCAN3D_CSV, verbose=False)
     prep = p3.prepare_grid(data, verbose=False)
     calls = {'n': 0}
@@ -1134,7 +1131,7 @@ def t_summary_and_pdf():
         f.fit(method='SESM', n_rates=101)
         f.postprocess()
         results.append(f.serialize(None))
-    out = tempfile.mkdtemp(prefix='qls_rep_')
+    out = tempfile.mkdtemp(prefix='spectra_rep_')
     png = pl.plot_summary(results, save_dir=out, verbose=False)
     assert os.path.getsize(png) > 20000, "汇总图文件过小"
     pdf = pl.export_report_pdf(results, save_dir=out, verbose=False)
@@ -1216,7 +1213,7 @@ def t_lifetime_batch_reuse_cache():
         return real_fit_many(datasets, **kw)
 
     pl.fit_many = spy
-    out = tempfile.mkdtemp(prefix='qls_cache_')
+    out = tempfile.mkdtemp(prefix='spectra_cache_')
     try:
         # 第一次：汇总图要拟合全部 3 个
         w._do_batch_export(dict(params, kind='summary', save_dir=out))
@@ -1294,7 +1291,7 @@ def t_overlay_shared_scale():
     # 三个「明显不同形状」的样品：快/慢分量的比例与寿命都不同
     specs = [(0.9, 1.0, 12.0, 1), (0.5, 2.5, 8.0, 2), (0.1, 4.0, 6.0, 3)]
 
-    out = tempfile.mkdtemp(prefix='qls_overlay_')
+    out = tempfile.mkdtemp(prefix='spectra_overlay_')
     try:
         for i, (ff, tf, ts, sd) in enumerate(specs):
             _write_three_col_csv(os.path.join(out, f'sample{i}.csv'),
@@ -2072,7 +2069,7 @@ def t_single_fit_component_legend():
     truth *= 20000.0 / truth.max()
     decay = np.maximum(rng.poisson(truth).astype(float), 0.0)
 
-    out = tempfile.mkdtemp(prefix='qls_single_')
+    out = tempfile.mkdtemp(prefix='spectra_single_')
     try:
         _write_three_col_csv(os.path.join(out, 's.csv'), t, decay, irf * 1e6)
         w.spectrum_type_combo.setCurrentIndex(2)
@@ -2428,7 +2425,7 @@ def t_compare_module():
         plt.close(fig)
 
     # 一键：真实数据（RB-L8i-1..6 + 说明.xlsx），按 L8i浓度 分组
-    folder = (r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\202608\20260825')
+    folder = (r'D:\北大\光谱工具\示例数据\测试数据\20260825')
     if os.path.isdir(folder) and os.path.exists(os.path.join(folder, '说明.xlsx')):
         out = pc.run_compare(folder=folder, x_var='RB浓度', group_var='L8i浓度',
                              metric='peak_intensity', band=(560, 620),
@@ -2788,7 +2785,7 @@ def main():
     strict = '--strict' in sys.argv
 
     print("=" * 72)
-    print("  QLS Lab 光谱可视化分析工具 —— 回归测试集（E3）")
+    print("  光谱可视化分析工具 —— 回归测试集（E3）")
     print(f"  GUI 目录: {GUI_DIR}")
     if strict:
         print("  模式: --strict（跳过计为失败）")

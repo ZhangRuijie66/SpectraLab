@@ -25,7 +25,7 @@ for _fn in ('information', 'warning', 'critical'):
 
 from absorption_gui import AbsorptionGUI                    # noqa: E402
 
-DATA = Path(r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\202610\20261010')
+DATA = Path(r'D:\北大\光谱工具\示例数据\05-数据比较-浓度梯度')
 
 fails = []
 

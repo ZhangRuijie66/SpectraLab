@@ -35,7 +35,7 @@ def main():
 
     # ---------- D5 最近文件夹 ----------
     print('--- D5 recent folders ---')
-    folder = r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260727-RB-Lu'
+    folder = r'D:\北大\光谱工具\示例数据\测试数据\20260727-RB-Lu'
     w._push_recent_folder(folder)
     print('  combo:', [w.recent_combo.itemText(i)
                        for i in range(w.recent_combo.count())])

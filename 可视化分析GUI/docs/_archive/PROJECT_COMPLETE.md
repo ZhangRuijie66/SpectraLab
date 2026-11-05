@@ -59,7 +59,7 @@ D:\北大\光谱工具\
 
 ### 工具脚本
 ```
-D:\北大\QLS Lab\SPC\1O2+luminol\谱图\画图\
+D:\北大\光谱工具\
 ├── install_dependencies.py  # 自动安装依赖
 ├── check_dependencies.py    # 检查依赖状态
 └── example_gui_usage.py     # 6个实用示例

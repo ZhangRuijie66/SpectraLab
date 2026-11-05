@@ -11,7 +11,7 @@ splash.png / 忘了给打包脚本加 --hidden-import / exe 还是旧的 / mac �
   1. 能否从 gui_config.py 读出 APP_VERSION 与 RELEASE_DATE
   2. 更新日志\\CHANGELOG_v{版本号去点}.md 是否存在（4.15 -> CHANGELOG_v415.md）
   3. 更新日志 目录里是否存在**比当前版本更高**的 CHANGELOG（版本号回退/漏改）
-  4. splash.png 内嵌的版本号（PNG tEXt 键 QLSVersion）是否等于 APP_VERSION
+  4. splash.png 内嵌的版本号（PNG tEXt 键 SpectraVersion）是否等于 APP_VERSION
      —— v4.21 起改为读 PNG 元数据，不再比文件 mtime（mtime 会被无关改动带偏）
   5. 便携版\\光谱可视化分析工具.exe 是否比"打包输入集合"新（exe 落后 = FAIL）
   6. 绘图模块清单由 `sorted(parent.glob('plot_*.py'))` 动态推导（不再硬编码）
@@ -76,7 +76,7 @@ SYNC_PS1 = ROOT / "同步到mac文件夹.ps1"
 PORTABLE_EXE = ROOT / "便携版" / "光谱可视化分析工具.exe"
 
 # splash.png 里烧进去的版本号用的 PNG tEXt 键（生成splash图.py 写入）
-PNG_META_KEY = "QLSVersion"
+PNG_META_KEY = "SpectraVersion"
 
 # ---- 打包输入集合（exe 新鲜度基准）----
 # GUI 目录下的 *.py：gui_*.py（glob）+ 四个入口/启动脚本。

@@ -5,7 +5,7 @@
 版本号取自 gui_config.APP_VERSION；GUI 升版后重跑本脚本即可同步启动图，
 避免图内版本号与程序不一致。
 
-版本号同时写进 PNG 的 tEXt 元数据（键 `QLSVersion`），这样 检查版本一致性.py
+版本号同时写进 PNG 的 tEXt 元数据（键 `SpectraVersion`），这样 检查版本一致性.py
 可以直接**读图内版本号**与 gui_config.APP_VERSION 比对——不再依赖文件 mtime
 （mtime 会被无关改动带偏，且无法证明图里烧的到底是哪个版本）。
 
@@ -90,18 +90,18 @@ def main():
     draw.text((68 * s, 247 * s), "启动画面消失前勿重复双击", font=_font(13), fill=C_MUTED)
 
     # 页脚版本
-    draw.text((68 * s, 316 * s), f"QLS Lab · v{APP_VERSION}", font=_font(14), fill=C_MUTED)
+    draw.text((68 * s, 316 * s), f"v{APP_VERSION}", font=_font(14), fill=C_MUTED)
 
     # 降采样回目标尺寸（抗锯齿、文字平滑）
     img = img.resize((W, H), Image.LANCZOS)
 
     out = Path(__file__).parent / "splash.png"
-    # 把版本号写进 PNG tEXt 元数据（键 QLSVersion），供 检查版本一致性.py 读取比对
+    # 把版本号写进 PNG tEXt 元数据（键 SpectraVersion），供 检查版本一致性.py 读取比对
     meta = PngImagePlugin.PngInfo()
-    meta.add_text("QLSVersion", str(APP_VERSION))
-    meta.add_text("Software", "QLS Lab 光谱可视化分析工具 生成splash图.py")
+    meta.add_text("SpectraVersion", str(APP_VERSION))
+    meta.add_text("Software", "光谱可视化分析工具 生成splash图.py")
     img.save(out, pnginfo=meta)
-    print(f"已生成 {out}（v{APP_VERSION}，{W}x{H}，PNG tEXt QLSVersion={APP_VERSION}）")
+    print(f"已生成 {out}（v{APP_VERSION}，{W}x{H}，PNG tEXt SpectraVersion={APP_VERSION}）")
 
 
 if __name__ == "__main__":

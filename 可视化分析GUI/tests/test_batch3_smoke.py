@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox       # noqa: E402
 
 from gui_config import APP_ORG, APP_NAME                    # noqa: E402
 
-DATA_DIR = r"D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260729-A226RBL8i"
+DATA_DIR = r"D:\北大\光谱工具\示例数据\测试数据\20260729-A226RBL8i"
 # 该目录是 LabSolutions RF 的发射谱（8 个 CSV，加载 7 个同名/可解析样品），
 # 所以下面的文件列表与积分测试都跑在**发射模式**（吸收模式读不出这批数据）
 

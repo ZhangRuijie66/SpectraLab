@@ -5,9 +5,9 @@ from plot_absorption import load_absorption_spectra, find_absorption_peaks
 
 # 测试所有文件
 files = [
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826RB.csv',
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826Ce6.csv',
-    r'D:\北大\QLS Lab\SPC\1O2+luminol\谱图\光谱\20260826\20260826RBL8i.csv',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826RB.csv',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826Ce6.csv',
+    r'D:\北大\光谱工具\示例数据\测试数据\20260826\20260826RBL8i.csv',
 ]
 
 for f in files:

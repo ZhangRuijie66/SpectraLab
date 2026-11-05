@@ -19,7 +19,7 @@ for fn in ('information', 'warning', 'critical'):
 
 from absorption_gui import AbsorptionGUI  # noqa: E402
 
-FOLDER = r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光\20260724lifetime\20260724\esipt-1'
+FOLDER = r'D:\北大\光谱工具\示例数据\测试数据\esipt-1'
 
 w = AbsorptionGUI()
 w.spectrum_type_combo.setCurrentIndex(2)
@@ -29,6 +29,12 @@ w.load_data_from_folder(FOLDER)
 print('loaded:', list(w.data_cache))
 if not w.data_cache:
     raise SystemExit('SKIP：样例数据不可用 ' + FOLDER)
+
+# --- 0) 隔离会话记忆：本测试全部断言以 ns 为单位 ---
+# 时间单位是会话级记忆（param/lifetime_unit），上一轮用 μs 会让 τ→k 换算差 1000 倍，
+# 使下面的断言看起来「失败」。测试必须把单位钉死为 ns，不能依赖本机记忆状态。
+w.lifetime_unit_combo.setCurrentIndex(0)      # 0 = ns
+assert w.lifetime_unit_combo.currentIndex() == 0, '无法设为 ns 单位'
 
 # --- 1) 默认 τ 0.01–100 ns（= 旧 k 100–0.01 /ns）---
 w.lifetime_nrates_spin.setValue(201)

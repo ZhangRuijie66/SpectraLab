@@ -18,10 +18,8 @@ import sys
 import time
 
 OUT_DIR = os.path.join('plots', '_diag3d')
-EMISSION_DIR = (r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光'
-                r'\20260723-ESIPT-1-DMF')
-LIFETIME_DIR = (r'D:\北大\QLS Lab\SPC\ESIPT\谱图\吸收&荧光'
-                r'\20260724lifetime\20260724\esipt-1')
+EMISSION_DIR = (r'D:\北大\光谱工具\示例数据\测试数据\20260723-ESIPT-1-DMF')
+LIFETIME_DIR = (r'D:\北大\光谱工具\示例数据\测试数据\esipt-1')
 
 
 def _wait(app, seconds=6.0):
