@@ -90,6 +90,15 @@ class PlotMixin:
             # 跳过数据不完整（如 axvline 竖线：xdata 常数、ydata 含 ±inf）的线条
             if xd.ndim != 1 or yd.ndim != 1 or xd.size != yd.size or xd.size < 2:
                 continue
+            # v4.44：跳过竖线/横线这类"标注线"。axvline 的 xdata 恒为常数、
+            # ydata 恒为 [0, 1]（轴坐标分母），它**不是数据**。此前只按 ndim/size
+            # 过滤，竖线能顺利通过 → 它的 ydata=[0,1] 把 Y 下限拉到 0，
+            # 于是「标注 EX」+「填显示范围」同时启用时，曲线被压到纵轴中部：
+            # 实测曲线占纵轴比例从 83% 掉到 41.7%（纵轴跨度被撑大 2.4 倍）。
+            if xd.size >= 2 and np.allclose(xd, xd[0], equal_nan=False):
+                continue
+            if yd.size >= 2 and np.allclose(yd, yd[0], equal_nan=False):
+                continue
             mask = (xd >= xlim[0]) & (xd <= xlim[1]) & np.isfinite(yd)
             if mask.any():
                 y_vals.append(yd[mask])
@@ -810,7 +819,16 @@ class PlotMixin:
         if self.spectrum_type == 'scan3d':
             target = self._single_plot_target()
             name = self._sample_name(target) if target else ''
-            return f"{prefix} - {name}" if name else prefix
+            # v4.44：标题里带上绘图类型（3D 曲面 / 等高线 / Waterfall）。
+            # 此前不含类型，三种视图导出到同一目录时会**互相同名覆盖**——
+            # 实测连导 3 次只剩 1 个 PNG（留下的是最后一次的 Waterfall），
+            # 用户以为三种图都导出了。
+            try:
+                plot_type = self.scan3d_plot_combo.currentText().strip()
+            except Exception:
+                plot_type = ''
+            base = f"{prefix} - {name}" if name else prefix
+            return f"{base} - {plot_type}" if plot_type else base
         sub_cfg = self._get_subtract_config()
         if sub_cfg and sub_cfg['mode'] == 'diff':
             name_a = self._sample_name(sub_cfg['a'])
@@ -1730,7 +1748,19 @@ class PlotMixin:
                         pass
 
         try:
-            fig.savefig(path, dpi=dpi, bbox_inches='tight')
+            # v4.44：必须显式传 facecolor —— 只用 fig.patch 设白底不管用。
+            # gui_ui._apply_mpl_theme 把 rcParam ``savefig.facecolor`` 设成了主题色
+            # （深色主题是 #0b1220），而 rcParam 优先级**高于** fig.patch，
+            # 于是深色主题下"导出用白底"（默认勾选）产出的仍是黑底图，
+            # 而文字已被换成浅色主题的深灰 → 深底深字几乎全黑。
+            # 浅色主题恰好也是白底，所以这个 bug 只在深色下暴露。
+            try:
+                _fc = fig.get_facecolor()
+            except Exception:
+                _fc = 'white'
+            fig.savefig(path, dpi=dpi, bbox_inches='tight', facecolor=_fc)
+        except TypeError:
+            fig.savefig(path, dpi=dpi)
         finally:
             for fn in reversed(restore):
                 try:
@@ -1753,6 +1783,16 @@ class PlotMixin:
             dpi = self.dpi_spin.value()
             exts = self._export_formats()
             result = getattr(self, '_last_lifetime_result', None)
+            # v4.44：没拟合过就导出，只会得到两张写着「请点击开始拟合」的提示图，
+            # 而弹窗却说"已导出"——用户以为拿到了拟合结果。此处明确拒绝。
+            if not result:
+                self.progress_bar.setVisible(False)
+                QMessageBox.warning(
+                    self, "还没有拟合结果",
+                    "当前还没有荧光寿命拟合结果，导出的会是一张提示图。\n\n"
+                    "请先点击「⏱ 开始拟合」，完成后再导出。")
+                self.status_bar.showMessage("导出取消：尚未拟合")
+                return
             name = result.get('name') if result else 'lifetime'
 
             exported = []
@@ -1768,7 +1808,11 @@ class PlotMixin:
                 from plot_lifetime import NumpyTypeEncoder
                 json_path = out_dir / f"{name}_fit_result.json"
                 with open(json_path, 'w', encoding='utf-8') as f:
-                    _json.dump(result, f, cls=NumpyTypeEncoder)
+                    # v4.44：ensure_ascii=False —— 否则中文样品名/单位会被转义成
+                    # \uXXXX，产物无法直接阅读或用 grep 检索（同仓 3D 的 stats.json
+                    # 本来就是写对的，这里是漏网的一处）。
+                    _json.dump(result, f, cls=NumpyTypeEncoder,
+                               ensure_ascii=False, indent=2)
                 msg += f"\n{json_path}"
             self.progress_bar.setVisible(False)
             QMessageBox.information(self, "成功", msg)
@@ -2544,6 +2588,32 @@ class PlotMixin:
         if xlim:
             self._apply_xlim(ax, xlim)
 
+    @staticmethod
+    def _normalize_intensity(y):
+        """把一条光谱归一化到「峰高 = 1」（v4.44）。
+
+        旧写法是 ``y / np.nanmax(y)``，对**本底没扣干净、带负基线**的谱会爆：
+        实测 EtOH 空白谱 min=-66.1 / max=6.04，除完最低到 -10.95，
+        整张合并图的纵轴被拉到 (-12.15, 2.2)，真实样品(0~1)只剩 8.4% 图高，
+        全被压成贴着零线的细线。
+
+        新口径：先减去最小值（扣掉基线），再除以扣完之后的峰值。
+        对本来就是正、基线≈0 的谱，结果与旧口径几乎一致（不影响历史图）；
+        对带负基线的谱则保证结果落在 [0, 1] 内，不会被撑爆。
+        全常量谱原样返回（归一化无意义）。
+        """
+        y = np.asarray(y, dtype=float)
+        if y.size == 0:
+            return y
+        finite = np.isfinite(y)
+        if not finite.any():
+            return y
+        lo = float(np.nanmin(y[finite]))
+        hi = float(np.nanmax(y[finite]))
+        if not np.isfinite(hi - lo) or (hi - lo) <= 0:
+            return y
+        return (y - lo) / (hi - lo)
+
     def _plot_emission_combined(self, linewidth, mark_peaks, peak_height, peak_distance, color_map, custom_title="", xlim=None, sub_cfg=None):
         """绘制发射光谱合并图（仅勾选的数据，含峰标注/EX标注，可选归一化）"""
         ax = self.canvas.axes
@@ -2573,8 +2643,11 @@ class PlotMixin:
             if xy is None:
                 continue          # 扣不了本底的那条只跳过自己（v4.36）
             wl, intensity = xy
-            if normalize and np.nanmax(intensity) > 0:
-                intensity = intensity / np.nanmax(intensity)
+            # v4.44：改为扣基线后按峰高归一（见 _normalize_intensity 的说明）。
+            # 旧口径 y/nanmax(y) 在带负基线的谱上会把纵轴撑到 -12 倍，
+            # 所有真实样品被压成贴零线的细线。
+            if normalize:
+                intensity = self._normalize_intensity(intensity)
 
             # 图例标签：说明.xlsx 信息或样品名 + EX
             label = self._build_legend_label(file_name, data)
@@ -2761,6 +2834,34 @@ class PlotMixin:
             return "寿命分布"
         return self._current_plot_title()
 
+    def _canvas_is_placeholder(self):
+        """当前导出画布上是否只有提示文字、没有任何真实数据（v4.44）。
+
+        判断依据：画布上存在坐标轴，但**所有** ax 都没有 data 线、
+        也没有图像/集合（3D 用）。空画布、未勾选、未拟合都属于这种情况。
+        返回 True 表示"没有可导出的图"。
+        """
+        try:
+            canvas = self._current_export_canvas()
+            fig = getattr(canvas, 'fig', None)
+            if fig is None:
+                return True
+            for ax in fig.axes:
+                # 2D 折线
+                if ax.get_lines():
+                    return False
+                # 散点 / 柱 / 图像 / 3D 集合
+                for coll in getattr(ax, 'collections', []) or []:
+                    return False
+                if getattr(ax, 'images', None):
+                    return False
+                if getattr(ax, 'patches', None):
+                    return False
+            return True
+        except Exception:
+            # 判断本身失败时不要拦住导出（宁可放过，不可错杀）
+            return False
+
     def export_plot(self):
         """导出**当前标签页**的图（预览 / 数据比较 / 拟合诊断 / 寿命分布）。
 
@@ -2769,6 +2870,16 @@ class PlotMixin:
         """
         if not self.data_cache:
             QMessageBox.warning(self, "警告", "请先加载数据并生成图表！")
+            return
+
+        # v4.44：画布上只剩占位提示文字时（未勾选任何样品 / 未拟合）拒绝导出。
+        # 此前照样"成功"写出提示图，弹窗却说"已保存"，用户以为拿到了结果图。
+        if self._canvas_is_placeholder():
+            QMessageBox.warning(
+                self, "没有可导出的内容",
+                "当前画布上还没有可导出的图（只有提示文字）。\n\n"
+                "请先勾选至少一个样品，或先完成拟合。")
+            self.status_bar.showMessage("导出取消：画布上没有图")
             return
 
         # 荧光寿命模式：一次导出两张图（拟合+残差合并图、寿命分布图）与 json
@@ -2965,8 +3076,16 @@ class PlotMixin:
         res = getattr(self, '_last_scan3d_result', None)
         if res and res.get('stats'):
             jp = plots_dir / f"{base}_stats.json"
+            # v4.44：把绘图类型一并写进 stats，否则只拿到 json 时无法判断
+            # 它对应 3D 曲面 / 等高线 / Waterfall 中的哪一种。
+            stats_out = dict(res['stats'])
+            try:
+                stats_out.setdefault('plot_type',
+                                     self.scan3d_plot_combo.currentText().strip())
+            except Exception:
+                pass
             with open(jp, 'w', encoding='utf-8') as f:
-                _json.dump(res['stats'], f, ensure_ascii=False, indent=2,
+                _json.dump(stats_out, f, ensure_ascii=False, indent=2,
                            default=float)
             exported.append(jp)
         QMessageBox.information(
@@ -3058,8 +3177,10 @@ class PlotMixin:
             if xy is None:
                 continue          # 扣不了本底的不进导出图（v4.36）
             wl, y = xy
-            if normalize and np.nanmax(y) > 0:
-                y = y / np.nanmax(y)
+            # v4.44：与预览同一口径（扣基线后按峰高归一），保证导出的图
+            # 和画布上看到的一致，也避免负基线把纵轴撑爆。
+            if normalize:
+                y = self._normalize_intensity(y)
             ax.plot(wl, y, linewidth=linewidth, color=colors[i],
                     label=self._build_legend_label(file_name, data))
             if is_emission:

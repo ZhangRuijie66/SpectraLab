@@ -83,6 +83,29 @@ def reset_curve_colors():
 
 # ======================== 1. 读取解析 ========================
 
+def _normalize_intensity(y):
+    """把一条光谱归一化到「峰高 = 1」（v4.44）。
+
+    旧写法 ``y / np.nanmax(y)`` 对本底没扣干净、带负基线的谱会爆：
+    实测 EtOH 空白谱 min=-66.1 / max=6.04，除完最低到 -10.95，
+    整张合并图纵轴被拉到 (-12.15, 2.2)，真实样品(0~1)只剩 8.4% 图高。
+
+    新口径：先减最小值（扣基线）再除峰值。对本来正、基线≈0 的谱结果与旧口径
+    几乎一致；对带负基线的谱保证落在 [0, 1]。全常量谱原样返回。
+    """
+    y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        return y
+    finite = np.isfinite(y)
+    if not finite.any():
+        return y
+    lo = float(np.nanmin(y[finite]))
+    hi = float(np.nanmax(y[finite]))
+    if not np.isfinite(hi - lo) or (hi - lo) <= 0:
+        return y
+    return (y - lo) / (hi - lo)
+
+
 def clean_array(arr):
     """去除 NaN 和 Inf"""
     arr = np.asarray(arr, dtype=float)
@@ -716,7 +739,11 @@ def plot_combined(datasets, save_dir=".", show=True, normalize=False, xlim=None,
     for i, ds in enumerate(valid):
         y = ds['intensity'].astype(float)
         if normalize:
-            y = y / np.nanmax(y)
+            # v4.44：改为「扣基线后按峰高归一」。旧写法 y/nanmax(y) 在带负基线
+            # 的谱上会爆（实测 EtOH 空白谱 min=-66.1/max=6.04，除完到 -10.95，
+            # 纵轴被撑到 (-12, 2)，真实样品全压成贴零线的细线）。
+            # 与 GUI（gui_plot._normalize_intensity）保持同一口径。
+            y = _normalize_intensity(y)
 
         lbl = ds.get('label') or ds.get('name') or f'spectrum_{i}'
         ex_wl = ds.get('ex_wl', ds.get('ex'))

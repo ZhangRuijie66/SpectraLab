@@ -966,6 +966,7 @@ class DataMixin:
         self.data_cache.clear()
         if hasattr(self, '_lifetime_fit_cache'):
             self._lifetime_fit_cache.clear()
+        self._invalidate_results()        # v4.44：派生结果一并作废
         self.file_list.clear()
         self._update_file_count_label()   # v4.26：列表清空后计数归零
         # v4.27：切模式后状态栏徽标跟着走；拟合摘要卡片只属于寿命模式
@@ -979,6 +980,38 @@ class DataMixin:
             mode_names = {1: "发射光谱", 2: "荧光寿命", 3: "3D 扫描 (EEM)"}
             self.status_bar.showMessage(
                 f"已切换到 {mode_names.get(index, '吸收光谱')}，请选择文件夹")
+
+    def _invalidate_results(self):
+        """作废所有「派生结果」（v4.44）。
+
+        换文件夹 / 切模式后，``data_cache`` 会被清空，但下面这些结果此前
+        **没有任何清空点**，于是导出链路会拿着上一批数据的结果往外写：
+        实测切到 B 文件夹后导出，产物里出现 A 文件夹的样品名，
+        而弹窗照样提示"导出成功"——用户以为拿到的是当前数据。
+
+        这里集中作废，配合导出入口的「结果名必须在 data_cache 里」防御。
+        只清结果、不动用户参数（勾选、颜色、线宽等仍保留）。
+        """
+        for attr in ('_last_lifetime_result', '_last_integration_results',
+                     '_last_compare_result', '_last_scan3d_result',
+                     '_overlay_results'):
+            try:
+                if hasattr(self, attr):
+                    setattr(self, attr, None)
+            except Exception:
+                pass
+        # 积分结果表 / 拟合摘要卡片 都是上面结果的投影，一并复位
+        try:
+            if getattr(self, 'integ_table', None) is not None:
+                self.integ_table.setRowCount(0)
+        except Exception:
+            pass
+        try:
+            card = getattr(self, 'fit_card', None)
+            if card is not None:
+                card.setVisible(False)
+        except Exception:
+            pass
 
     def select_folder(self):
         """选择文件夹（起始目录为当前数据文件夹/工作区，E4）"""
@@ -1043,11 +1076,23 @@ class DataMixin:
             all_files = sorted(all_files, key=self._natural_key)
 
             if not all_files:
-                QMessageBox.warning(
-                    self, "警告",
-                    "未找到CSV或TXT文件！"
-                    + ("（本模式还支持多列光谱 xlsx）"
-                       if self.spectrum_type == "absorption" else ""))
+                # v4.44：区分「文件夹根本不存在」与「文件夹在但没数据」。
+                # 此前两种情况都弹「未找到CSV或TXT文件！」——用户会以为路径没错、
+                # 只是没数据，于是反复重试；并且状态栏会永久停在"正在加载…"。
+                if not folder.is_dir():
+                    QMessageBox.warning(
+                        self, "文件夹不存在",
+                        f"找不到这个文件夹：\n{folder_path}\n\n"
+                        "它可能已被移动、重命名或删除，请重新选择数据文件夹。")
+                    self.status_bar.showMessage("加载取消：文件夹不存在")
+                else:
+                    QMessageBox.warning(
+                        self, "未找到数据文件",
+                        f"文件夹里没有可解析的数据文件：\n{folder_path}\n\n"
+                        "支持 .csv / .txt"
+                        + ("（本模式还支持多列光谱 .xlsx）"
+                           if self.spectrum_type == "absorption" else ""))
+                    self.status_bar.showMessage("加载失败：未找到可解析的数据文件")
                 self.progress_bar.setVisible(False)
                 return
 
@@ -1061,6 +1106,7 @@ class DataMixin:
             self.data_cache.clear()
             if hasattr(self, '_lifetime_fit_cache'):
                 self._lifetime_fit_cache.clear()
+            self._invalidate_results()    # v4.44：派生结果一并作废
             self.file_list.clear()
             self.reset_curve_colors()  # 换文件夹即换一批数据，重新分配曲线颜色
 

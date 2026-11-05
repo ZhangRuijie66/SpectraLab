@@ -150,18 +150,37 @@ def _brief(items, limit=12):
 
 
 def parse_version_tuple(s):
-    """'4.15' -> (4, 15)；'2' -> (2, 0)；解析失败返回 None。"""
+    """'4.44.0' -> (4, 44, 0)；'4.15' -> (4, 15, 0)；'2' -> (2, 0, 0)；失败返回 None。
+
+    v4.44：从两段式扩展为**三段式**。两段式会把 4.43.0 与 4.43.9 判成同一个
+    版本，「版本号回退」检查因此形同虚设。补丁号缺失时补 0，保证老版本
+    CHANGELOG（如 v4.15）仍能正确参与比较。
+    """
     parts = str(s).strip().lstrip("vV").split(".")
     try:
         major = int(parts[0])
         minor = int(parts[1]) if len(parts) > 1 else 0
+        patch = int(parts[2]) if len(parts) > 2 else 0
     except (ValueError, IndexError):
         return None
-    return (major, minor)
+    return (major, minor, patch)
 
 
 def version_from_filename(name):
-    """CHANGELOG_v415.md -> '4.15'（把数字串按 首位=主版本 还原）。"""
+    """CHANGELOG 文件名 -> 版本字符串。
+
+    v4.44 起支持两种写法，**优先**无歧义的下划线格式：
+      CHANGELOG_v4_44_0.md -> '4.44.0'   （新格式，推荐）
+      CHANGELOG_v443.md    -> '4.43'     （旧格式，按「首位=主版本」还原）
+
+    旧格式本身不可逆（v4431 会被还原成 4.431），所以新版本一律用下划线格式；
+    旧文件保持原样，只为历史可读性与「更高版本」比较服务。
+    """
+    # 新格式：CHANGELOG_v<major>_<minor>_<patch>.md
+    m = re.search(r"CHANGELOG_v(\d+)_(\d+)_(\d+)\.md$", name, re.I)
+    if m:
+        return "{}.{}.{}".format(m.group(1), m.group(2), m.group(3))
+    # 旧格式：CHANGELOG_v<数字串>.md（首位=主版本）
     m = re.search(r"CHANGELOG_v(\d+)\.md$", name, re.I)
     if not m:
         return None
@@ -170,8 +189,8 @@ def version_from_filename(name):
 
 
 def version_from_changelog_text(text):
-    """从 CHANGELOG 正文里取 **版本**：v4.15。"""
-    m = re.search(r"版本\s*\**\s*[：:]\s*\**\s*v?(\d+\.\d+)", text)
+    """从 CHANGELOG 正文里取 **版本**：v4.44.0 / v4.15（补丁号可省略）。"""
+    m = re.search(r"版本\s*\**\s*[：:]\s*\**\s*v?(\d+\.\d+(?:\.\d+)?)", text)
     return m.group(1) if m else None
 
 
@@ -265,14 +284,53 @@ def check_changelog_exists(version):
     if not CHANGELOG_DIR.is_dir():
         add("fail", "更新日志目录", f"目录不存在：{CHANGELOG_DIR}")
         return None
-    expect = "CHANGELOG_v{}.md".format(re.sub(r"\D", "", version))
-    target = CHANGELOG_DIR / expect
-    if target.is_file():
-        add("ok", "当前版本的 CHANGELOG", f"已存在：更新日志\\{expect}")
-        return target
+    # v4.44：三段式版本用无歧义的下划线文件名 CHANGELOG_v4_44_0.md；
+    # 两段式老版本仍兼容原来的 CHANGELOG_v443.md 写法（找得到也算通过）。
+    parts = [p for p in re.split(r"[.\s]+", str(version).strip().lstrip("vV")) if p]
+    candidates = []
+    if len(parts) >= 3:
+        candidates.append("CHANGELOG_v{}_{}_{}.md".format(*parts[:3]))
+    candidates.append("CHANGELOG_v{}.md".format(re.sub(r"\D", "", str(version))))
+    for expect in candidates:
+        target = CHANGELOG_DIR / expect
+        if target.is_file():
+            add("ok", "当前版本的 CHANGELOG", f"已存在：更新日志\\{expect}")
+            return target
+    expect = candidates[0]
     add("fail", "当前版本的 CHANGELOG",
         f"缺少 更新日志\\{expect}（版本 {version}）。每个版本都必须写一份更新日志。")
     return None
+
+
+# ================================================================ 检查 2b（v4.44 新增）
+def check_changelog_continuity():
+    """检查 4.x 版本序列有没有缺号（历史变更日志被误删时能发现）。
+
+    v4.43 那次「去 QLS 字样」的全仓替换曾把 CHANGELOG_v43.md 整份误删
+    （该文件正文其实不含任何 QLS 内容），而原有检查只验「当前版本是否存在」，
+    查不出历史被挖了个洞。这里补上连续性断言。
+    """
+    if not CHANGELOG_DIR.is_dir():
+        return
+    used = set()
+    for f in CHANGELOG_DIR.glob("CHANGELOG_v*.md"):
+        txt = f.read_text(encoding="utf-8", errors="replace")
+        v = version_from_changelog_text(txt) or version_from_filename(f.name)
+        t = parse_version_tuple(v) if v else None
+        if t and t[0] == 4:
+            used.add(t[1])
+    if not used:
+        return
+    lo, hi = min(used), max(used)
+    missing = [n for n in range(lo, hi + 1) if n not in used]
+    if missing:
+        add("warn", "更新日志连续性",
+            "4.x 版本序列缺号：{}（4.{} ~ 4.{} 之间）。"
+            "可能是某份 CHANGELOG 被误删，历史追溯会断档。"
+            .format(missing, lo, hi))
+    else:
+        add("ok", "更新日志连续性",
+            f"4.{lo} ~ 4.{hi} 序列完整，无缺号（共 {len(used)} 个版本）")
 
 
 # ================================================================ 检查 3
@@ -629,6 +687,7 @@ def main():
     version, _date = check_read_config()
     if version:
         check_changelog_exists(version)
+        check_changelog_continuity()
         check_higher_changelog(version)
         check_splash_version(version)
         check_exe_freshness()

@@ -70,6 +70,19 @@ class UiMixin:
 
     def setup_ui(self):
         """设置用户界面"""
+        # v4.44：把「日志落盘 + 未捕获异常钩子」提前到这里，一次覆盖**全部入口**
+        # （start_gui / launch_hidden / entry_gui / absorption_gui.run_gui）。
+        # 此前只在 run_gui 与 entry_gui 里装，而桌面快捷方式（.lnk）和 run_gui.bat
+        # 实际走的都是 launch_hidden.py —— 该入口完全绕过钩子。PyQt5 对从槽函数
+        # 逃出去的异常直接 abort（实测子进程退出码 0xC0000409），没有 traceback、
+        # 没有日志，窗口瞬间消失，用户只会说"软件又崩了"。
+        # install_excepthook 内部幂等（_hook_installed），重复调用无副作用。
+        try:
+            from gui_log import setup_logging, install_excepthook
+            setup_logging()
+            install_excepthook()
+        except Exception:
+            pass
         self.setWindowTitle(f"光谱可视化分析工具 v{APP_VERSION}")
         # 设置窗口图标
         try:
@@ -591,6 +604,14 @@ class UiMixin:
                 a.setToolTip(f"{label} —— {tip}")
                 a.setStatusTip(tip)
             tb.setToolTip("matplotlib 缩放 / 平移 / 保存（鼠标悬停看中文说明）")
+            # v4.44：Fusion 样式在高 DPI 下把 PM_ToolBarIconSize 算成 48px
+            # （192 DPI 实测），mpl 工具条直接继承 → 工具条高 65px、占掉画布页
+            # 15.6% 的高度，1440×852 下画布只剩 351px，与"图表是主角"相悖。
+            # 栏开关条（:300）本来就显式设了 16px，唯独这里漏了。
+            try:
+                tb.setIconSize(QSize(20, 20))
+            except Exception:
+                pass
             lab = getattr(tb, 'locLabel', None)
             if lab is not None:
                 lab.setToolTip("当前鼠标位置的数据坐标")
@@ -845,6 +866,24 @@ class UiMixin:
             tb = getattr(self, 'toolbar', None)
             if tb is not None:
                 tb.setVisible(not empty)
+            # v4.44：主操作随「有没有数据」切换，保证**同屏最多 1 个**实心主色按钮。
+            # 注意：参数栏「操作」区的 preview_btn 恒为 primary（v4.25 的既有契约，
+            # 回归测试 tests/run_regression.py::t_gui_action_buttons 守着它），
+            # 所以空状态下的主操作改由它承担，画布引导页的 empty_btn 降为次级。
+            def _set_variant(btn, want):
+                if btn is None or btn.property("variant") == want:
+                    return
+                btn.setProperty("variant", want)
+                try:
+                    btn.style().unpolish(btn)
+                    btn.style().polish(btn)
+                    btn.update()
+                except Exception:
+                    pass
+
+            _set_variant(getattr(self, 'folder_btn', None), "secondary")
+            _set_variant(getattr(self, 'empty_btn', None), "secondary")
+            _set_variant(getattr(self, 'preview_btn', None), "primary")
             if not empty:
                 return
             # 第 3 步的说法随模式变（寿命模式的主操作是「开始拟合」而不是预览）
@@ -955,7 +994,9 @@ class UiMixin:
             "<li><b>Ctrl+Shift+E</b> — 导出全部图片</li>"
             "<li><b>Ctrl+D</b> — 复制积分结果</li>"
             "<li><b>Ctrl+F</b> — 跳到文件搜索框（数据栏折叠时会自动展开）</li>"
-            "<li><b>Ctrl+T</b> — 切换浅色 / 深色主题（也可点左上角的月亮/太阳图标）</li>"
+            "<li><b>Ctrl+T</b> — 循环切换三套主题（浅色 → 深色 → 高对比打印友好），"
+            "也可点左上角的主题图标</li>"
+            "<li><b>Ctrl+1 / Ctrl+2 / Ctrl+3</b> — 布局预设：拟合工作台 / 出图工作台 / 只看图</li>"
             "<li><b>F1</b> — 本帮助</li>"
             "</ul>")
         others = (
@@ -1219,6 +1260,10 @@ class UiMixin:
         # 每个只剩约 77px，中文标签被切掉一半（画面上显示成「; 工作」）。
         folder_btn = QPushButton("选择数据文件夹")
         folder_btn.clicked.connect(self.select_folder)
+        # v4.44：主/次随「有没有数据」切换——没有数据时它是本屏唯一的主操作；
+        # 一旦加载了数据，主操作就变回参数栏底部的「实时预览 / 开始拟合」，
+        # 这里降为次级，避免同屏出现多个实心主色按钮。
+        self.folder_btn = folder_btn
         folder_btn.setProperty("variant", "primary")
         folder_btn.setCursor(Qt.PointingHandCursor)
         folder_btn.setToolTip("选择数据文件夹并加载其中全部数据文件（Ctrl+O）")
@@ -1336,7 +1381,11 @@ class UiMixin:
 
         reload_btn = QPushButton("重新加载数据")
         reload_btn.clicked.connect(self.reload_data)
-        reload_btn.setProperty("variant", "primary")
+        # v4.44：降为次级按钮。设计方案 §5.1 规定「每屏 1 个实心主色按钮」，
+        # 此前有数据时同屏出现 5 个（选择文件夹 / 重新加载 / 数据比较 /
+        # 实时预览 / 复制结果），主次不分。主操作统一留给参数栏底部的
+        # 「实时预览 / 开始拟合」。「选择数据文件夹」按有无数据动态切换主/次。
+        reload_btn.setProperty("variant", "secondary")
         reload_btn.setCursor(Qt.PointingHandCursor)
         root_layout.addWidget(reload_btn)
 
@@ -1892,7 +1941,8 @@ class UiMixin:
         compare_btns = QHBoxLayout()
         compare_btns.setSpacing(4)
         self.compare_btn = QPushButton("数据比较")
-        self.compare_btn.setProperty("variant", "primary")
+        # v4.44：降为次级（主操作只保留「实时预览 / 开始拟合」一个）
+        self.compare_btn.setProperty("variant", "secondary")
         self.compare_btn.setCursor(Qt.PointingHandCursor)
         self.compare_btn.setToolTip(
             "按说明.xlsx 的变量画点线图（只统计左侧勾选的样品）\n"
@@ -2225,7 +2275,8 @@ class UiMixin:
         integ_ctrl.addWidget(self.integ_count_label)
         integ_ctrl.addStretch()
         self.integ_copy_btn = QPushButton("复制结果")
-        self.integ_copy_btn.setProperty("variant", "primary")
+        # v4.44：降为次级（「复制结果」是辅助动作，不是本屏主操作）
+        self.integ_copy_btn.setProperty("variant", "secondary")
         self.integ_copy_btn.setCursor(Qt.PointingHandCursor)
         self.integ_copy_btn.setToolTip("把整张表复制到剪贴板（制表符分隔，可直接粘进 Excel/Origin）")
         self.integ_copy_btn.clicked.connect(self._copy_integration_results)
@@ -2555,9 +2606,15 @@ class UiMixin:
             float_u = _icon_path("float", _theme, 24) or ""
         except Exception:
             close_u, float_u = "", ""
-        close_img = (f"titlebar-close-icon: url({Path(close_u).as_posix()});"
+        # ⚠️ url() 里的路径**必须加引号**（v4.44）：图标文件名形如 close_light@24.png，
+        # Qt 的 QSS 解析器在未加引号的 `@` 处整块放弃，并**连带让该块之后的规则一起失效**
+        # （实测三套主题下 QDockWidget::title / close-button / float-button /
+        #  QWidget[role="dockBody"] / QToolBar#panelRail 共 6 条规则全部失效，
+        #  三栏标题栏在深色下退化成一块亮灰 #dadada）。
+        # Qt 不会报行号，只打印 "Could not parse stylesheet"，非常难查。
+        close_img = (f'titlebar-close-icon: url("{Path(close_u).as_posix()}");'
                      if close_u else "")
-        float_img = (f"titlebar-normal-icon: url({Path(float_u).as_posix()});"
+        float_img = (f'titlebar-normal-icon: url("{Path(float_u).as_posix()}");'
                      if float_u else "")
         # 下拉弹窗的 item delegate 取色也要跟着主题走（否则深色下弹出一块白板）
         set_combo_palette(P)
@@ -2830,6 +2887,16 @@ class UiMixin:
             QPushButton[variant="secondary"]:hover {{
                 background-color: {HOVER_BG};
                 border-color: {HANDLE_HOVER};
+            }}
+            /* v4.44：键盘焦点框。此前 QSS 里没有任何 :focus 规则，
+               Tab 能走到按钮上，但**看不出焦点在哪**（键盘用户等于失明）。
+               用主色描边 + 1px 外扩，不改布局。 */
+            QPushButton:focus {{
+                border: 2px solid {ACCENT};
+                padding: 5px 11px;
+            }}
+            QPushButton:focus:disabled {{
+                border: 1px solid {DISABLED_BG};
             }}
             /* 拟合类动作：紫色语义条（原来整块紫底） */
             QPushButton[variant="fit"],
@@ -3201,6 +3268,20 @@ class UiMixin:
         app = QApplication.instance()
         if app is not None and app.styleSheet() != qss:
             app.setStyleSheet(qss)
+        # QSS 自检（v4.44）：url() 里未加引号且含 @ / % / 空格的路径会让 Qt 在
+        # 该字符处**整块放弃**，并连带让该块之后的所有规则失效，而 Qt 只打印
+        # "Could not parse stylesheet"、不给行号（本次就是 close_light@24.png
+        # 让 dock 标题栏等 6 条规则全灭，三套主题都中招）。
+        # 这里主动扫一遍并落日志，避免同类回潮后又要靠二分切块才查得到。
+        try:
+            import re as _re
+            _bad = _re.findall(r'url\(\s*(?!")([^)]*[@%\s][^)]*?)\s*\)', qss)
+            if _bad:
+                logging.warning(
+                    "QSS 中 %d 处 url() 未加引号且含特殊字符，会导致整块规则失效：%s",
+                    len(_bad), _bad[:5])
+        except Exception:
+            pass
         # 弹出菜单（QMenu）是独立弹出窗口：它的样式规则只在**第一次显示**时解析，
         # 切换主题后再弹出时不会自动按新色板重算（实测仍是 #ffffff 浅色面板）。
         # 所以除了把 QMenu 段写进全局 qss，还要逐个 setStyleSheet 强制它重新解析
