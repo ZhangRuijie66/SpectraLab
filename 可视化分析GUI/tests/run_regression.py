@@ -1769,6 +1769,12 @@ def t_theme_three_sets():
 
     # 4) 主题按钮三态循环，每态图标都取得到
     app, w = _make_gui()
+    # v4.46：首次启动的默认主题改为**跟随操作系统深浅色**（Windows 深色用户
+    # 第一次打开不再是白界面）。这意味着 w.theme 的初值取决于跑测试的机器——
+    # 断言"循环顺序必须等于 ORDER"会因此假失败。这里显式把起点钉到 ORDER[0]，
+    # 只验证"循环逻辑"本身，不验证"初值"。
+    w.set_theme(ORDER[0])
+    app.processEvents()
     seen = []
     for _ in range(3):
         seen.append(w.theme)
@@ -2314,8 +2320,12 @@ def t_gui_icons_replaced():
             f"{name} 文本里还有 emoji：{btn.text()!r}"
 
     # 主题按钮：浅色=月亮、深色=太阳，两套图标必须真的不同
+    # v4.46：初值可能跟随系统（深色机器上初始就是 dark），所以不能假设
+    # "切一下就变"。这里先把起点钉到 light，再切到 dark 比较图标。
+    w.set_theme('light')
+    app.processEvents()
     key_light = w.theme_btn.icon().cacheKey()
-    w.toggle_theme(True)
+    w.set_theme('dark')
     app.processEvents()
     key_dark = w.theme_btn.icon().cacheKey()
     assert key_light != key_dark, "主题按钮图标没跟着主题切换"

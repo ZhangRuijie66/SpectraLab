@@ -24,20 +24,30 @@ def _hex_to_rgba(hexc, alpha):
     return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
 
 
-def saved_theme(default=DEFAULT_THEME):
-    """读取上次会话保存的主题（v4.23）。
+def saved_theme(default=None):
+    """读取上次会话保存的主题（v4.23 / v4.46 增强）。
 
     启动时入口界面在「上次会话」之前出现，此前只能硬用默认浅色主题——
     深色用户每次启动都会看到一块全白入口界面，连标题栏「？」里的
     帮助也都是白的。这里直接读 QSettings 里的 theme 保持一致。
+
+    v4.46：**没有保存过主题时（首次启动）跟随操作系统深浅色**，
+    而不是硬用 light。Windows 深色模式的用户第一次打开就能看到深色界面，
+    不需要先手动按 Ctrl+T。`default` 参数传 None 表示"按系统探测"，
+    显式传值则优先用传入值（旧调用方语义不变）。
     """
     try:
         from PyQt5.QtCore import QSettings
-        from gui_config import APP_ORG, APP_NAME
-        t = QSettings(APP_ORG, APP_NAME).value("theme", default, str)
-        return t if t in THEMES else default
+        from gui_config import APP_ORG, APP_NAME, detect_system_theme
+        fallback = default if default is not None else detect_system_theme()
+        t = QSettings(APP_ORG, APP_NAME).value("theme", fallback, str)
+        return t if t in THEMES else fallback
     except Exception:
-        return default
+        try:
+            from gui_config import detect_system_theme
+            return detect_system_theme()
+        except Exception:
+            return DEFAULT_THEME
 
 
 class ModuleCard(QFrame):

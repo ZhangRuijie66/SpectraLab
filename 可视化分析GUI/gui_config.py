@@ -30,7 +30,7 @@ APP_NAME = "光谱可视化分析工具"
 # 且「数字去点拼接」的文件名规则不可逆（v105 会被解析成 1.05）。
 # 校验脚本 检查版本一致性.py 的 version_from_filename / parse_version_tuple
 # 已同步改为三段式解析（见该文件头部的规则说明）。
-APP_VERSION = "4.45.0"
+APP_VERSION = "4.46.0"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-11-06"
 
@@ -79,8 +79,53 @@ LOGGER_DATEFMT = "%Y-%m-%d %H:%M:%S"
 # 键名与上面的常量一一对应（apply_style 按当前主题取色）。
 # **三套色板的键必须完全一致**——apply_style 是按固定键名解包的，
 # 少一个键就会 KeyError（回归测试里有一条专门守这件事）。
-# 默认主题：light（与 v4.17 之前完全一致）。
-DEFAULT_THEME = "light"
+# 默认主题：首次启动时**跟随操作系统**（v4.46）。
+# 此前硬编码 "light"：Windows 深色模式的用户第一次打开会看到一块全白界面，
+# 而且此后每次启动都从这项设置读，等于永远停在浅色（用户得手动按 Ctrl+T）。
+# 现在 DEFAULT_THEME 由 detect_system_theme() 决定；用户一旦手动切过主题，
+# 后续启动一律用保存的主题（见 gui_launcher.saved_theme / gui_data 恢复逻辑）。
+DEFAULT_THEME = "light"          # 兜底色板（检测失败时用，也供 import 期引用）
+
+
+def detect_system_theme():
+    """探测操作系统当前是深色还是浅色（v4.46）。返回 'dark' / 'light'。
+
+    三个平台分别读各自的标准设置，任何一步失败都退回 'light'
+    （宁可白一点，也不要因为探测异常把程序带崩）：
+
+    - Windows：注册表 ``HKCU\\...\\Themes\\Personalize\\AppsUseLightTheme``，
+      0 = 深色、1 = 浅色（这是"应用"模式，与 SystemUsesLightTheme 区分开）；
+    - macOS：``defaults read -g AppleInterfaceStyle`` 输出 Dark 即深色；
+    - Linux：``gsettings get org.gnome.desktop.interface color-scheme``
+      含 'dark' 即深色（GNOME 42+）。
+    """
+    try:
+        if sys.platform == 'win32':
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
+            try:
+                val, _t = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+            finally:
+                winreg.CloseKey(key)
+            return 'light' if int(val) else 'dark'
+        if sys.platform == 'darwin':
+            import subprocess
+            out = subprocess.run(
+                ['defaults', 'read', '-g', 'AppleInterfaceStyle'],
+                capture_output=True, text=True, timeout=3)
+            return 'dark' if 'dark' in (out.stdout or '').lower() else 'light'
+        if sys.platform.startswith('linux'):
+            import subprocess
+            out = subprocess.run(
+                ['gsettings', 'get', 'org.gnome.desktop.interface',
+                 'color-scheme'],
+                capture_output=True, text=True, timeout=3)
+            return 'dark' if 'dark' in (out.stdout or '').lower() else 'light'
+    except Exception:
+        pass
+    return 'light'
 # 主题切换顺序（「主题」按钮 / Ctrl+T 依次循环）
 THEME_ORDER = ("light", "dark", "contrast")
 # 界面上显示的名字（按钮 tooltip / 帮助说明）
@@ -124,6 +169,9 @@ THEMES = {
         # v4.27：徽标底色（拟合质量 ok / warn / bad 三档药丸标签）
         "SUCCESS_BG": "#dcfce7", "WARN_BG": "#ffedd5",
         "DANGER": "#dc2626", "DANGER_BG": "#fee2e2",
+        # v4.46：徽标「bad」档文字专用色。原用 DANGER #dc2626 压在
+        # DANGER_BG #fee2e2 上只有 3.95:1（低于 4.5），改深一档到 5.0:1+。
+        "DANGER_TEXT": "#b91c1c",
     },
     "dark": {
         "BG": "#0f172a", "CARD": "#1e293b", "BORDER": "#334155",
@@ -165,6 +213,8 @@ THEMES = {
         # v4.27：徽标底色（深色下用药丸底色而不是纯色，避免刺眼）
         "SUCCESS_BG": "#064e3b", "WARN_BG": "#7c2d12",
         "DANGER": "#f87171", "DANGER_BG": "#7f1d1d",
+        # v4.46：bad 档文字色（深色下要更亮，5.4:1）
+        "DANGER_TEXT": "#fca5a5",
     },
     # ---- 第三套：高对比 / 打印友好（v4.30）----
     # 两个目标同时满足：
@@ -206,5 +256,7 @@ THEMES = {
         # 徽标底色：浅底 + 深字（不用深色药丸，打印后是一块灰）
         "SUCCESS_BG": "#d9f2d9", "WARN_BG": "#ffe8d1",
         "DANGER": "#a80000", "DANGER_BG": "#ffd9d9",
+        # v4.46：bad 档文字色（打印友好主题下已达标，沿用 DANGER）
+        "DANGER_TEXT": "#a80000",
     },
 }

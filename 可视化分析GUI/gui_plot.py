@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from scipy.signal import find_peaks
 from PyQt5.QtCore import Qt
@@ -85,6 +86,27 @@ class PlotMixin:
     def _is_stale(self, gen):
         """该代次的结果是否已过期（任务已被更新的任务取代）。"""
         return gen is not None and gen != getattr(self, '_plot_gen', None)
+
+    @staticmethod
+    def _dispose_fig(fig):
+        """释放一张临时 Figure（v4.46）。
+
+        批量导出改为后台线程后，导出用的 fig 由 ``Figure()`` 直建（不注册到
+        pyplot），对这类 fig 调 ``plt.close()`` 会报「Figure is not managed by
+        pyplot」。这里按类型分派：能关就关，不能关就 clear 掉引用，绝不抛异常
+        把导出流程带崩。
+        """
+        if fig is None:
+            return
+        try:
+            plt.close(fig)
+            return
+        except Exception:
+            pass
+        try:
+            fig.clear()
+        except Exception:
+            pass
 
     def _start_worker(self, func, params, on_finished, *, long_task=False,
                       dialog_text="正在生成图表…", indeterminate=True):
@@ -264,9 +286,14 @@ class PlotMixin:
         """按文件身份取色：已画过的文件沿用原色，新文件取色带上最远的新位置。
 
         这样在合并图里勾选/取消勾选、或增删数据文件，已有曲线的颜色都不变。
+
+        v4.46：把**总条数**传给分配器。Set1 只有 9 色，26 条曲线时第 10 条起
+        颜色重复（实测只有 9 种颜色），合并图无法区分；传入总数后分配器会自动
+        降级到连续色带，保证任意条数下颜色互不相同。
         """
         assigner = self._color_assigner()
-        return [assigner.get(name, color_map) for name in file_names]
+        total = len(file_names)
+        return [assigner.get(name, color_map, total=total) for name in file_names]
 
     def on_color_scheme_changed(self, *args):
         """「颜色方案」改变：颜色随方案变，因此清空记忆后重画"""
@@ -296,14 +323,65 @@ class PlotMixin:
         return 'best', {}
 
     def _apply_legend(self, ax):
-        """按所选图例位置应用图例，避免遮挡曲线。"""
+        """按所选图例位置应用图例，避免遮挡曲线。
+
+        v4.46：**按曲线条数自适应**。此前固定 fontsize=9、单栏、坐标区内，
+        26 条曲线时图例变成一整块盖住几乎全部数据区（实测图例占坐标区
+        35%+，26 条标签只能显示到第 20 条左右、后面的直接溢出画布外）。
+        现在按条数分档：
+          ≤6 条：保持原样（单栏、9pt）；
+          7–12 条：8pt，坐标区内改为两栏候选；
+          >12 条：7.5pt，坐标区内**强制移到坐标区外右侧**并排成多栏，
+                  宁可压缩绘图区宽一点，也不能把图盖死。
+        """
         loc, extra = self._legend_params()
         if loc is None:     # 隐藏
             return
         try:
-            ax.legend(fontsize=9, loc=loc, **extra)
+            n = len([ln for ln in ax.get_lines() if ln.get_label()
+                     and not ln.get_label().startswith('_')])
         except Exception:
-            ax.legend(fontsize=9)
+            n = 0
+        extra = dict(extra)
+
+        if n > 12:
+            # 条数太多：一律外置到右侧、分栏、缩字号（不管用户选了哪个"图内"位置）
+            size = 7.5
+            if not extra.get('bbox_to_anchor'):
+                extra.update({'bbox_to_anchor': (1.02, 1.0),
+                              'borderaxespad': 0.0})
+                loc = 'upper left'
+            else:
+                # 用户已选"图外"位置：沿用其锚点
+                pass
+            extra.setdefault('ncol', 3 if n > 24 else 2)
+            extra.setdefault('handlelength', 1.2)
+            extra.setdefault('labelspacing', 0.25)
+            extra.setdefault('columnspacing', 0.9)
+            extra.setdefault('framealpha', 0.85)
+        elif n > 6:
+            size = 8
+            extra.setdefault('ncol', 2)
+            extra.setdefault('labelspacing', 0.3)
+        else:
+            size = 9
+
+        try:
+            ax.legend(fontsize=size, loc=loc, **extra)
+        except Exception:
+            try:
+                ax.legend(fontsize=size, loc=loc)
+            except Exception:
+                pass
+
+    def _legend_outside_by_count(self, ax):
+        """条数过多时图例已移到坐标区外，需要额外放宽右边距（v4.46）。"""
+        try:
+            n = len([ln for ln in ax.get_lines() if ln.get_label()
+                     and not ln.get_label().startswith('_')])
+        except Exception:
+            return False
+        return n > 12
 
     def _legend_needs_room(self):
         """图外选项需要为图例留出边距（True 时在 subplots_adjust 中放宽 bottom/right）。"""
@@ -1243,9 +1321,13 @@ class PlotMixin:
 
         # 紧凑布局：留出坐标轴标签空间，同时尽量铺满画布；
         # 图例在图外时放宽 bottom/right 边距，避免图例被裁切或盖住坐标轴标签。
+        # v4.46：曲线条数 > 12 时图例已被 _apply_legend 自动移到坐标区外右侧，
+        # 这里也要相应放宽右边距，否则外置图例会被画布裁掉一半。
         try:
-            if self._legend_needs_room():
-                self.canvas.fig.subplots_adjust(left=0.09, right=0.80, top=0.92, bottom=0.26)
+            need_room = (self._legend_needs_room()
+                         or self._legend_outside_by_count(self.canvas.axes))
+            if need_room:
+                self.canvas.fig.subplots_adjust(left=0.09, right=0.72, top=0.92, bottom=0.26)
             else:
                 self.canvas.fig.subplots_adjust(left=0.09, right=0.98, top=0.92, bottom=0.14)
             # 窄画布下 0.09 放不下旋转的 y 轴标题，按实测再撑一点
@@ -2556,6 +2638,23 @@ class PlotMixin:
 
         # 按文件身份取色：增删/勾选其它文件时，已有曲线的颜色保持不变
         colors = self._stable_colors(valid_files, color_map)
+        # v4.46：批量生成去重标签，避免图例出现多条完全相同的文字
+        labels = self._legend_labels_for(valid_files)
+
+        # v4.46：曲线多时只给最强的那条标峰（理由见循环内注释）
+        top_curve_idx = -1
+        if mark_peaks and len(valid_files) > 6:
+            best = -np.inf
+            for j, fn in enumerate(valid_files):
+                xyj, _rj = self._get_plot_xy_checked(fn, sub_cfg)
+                if xyj is None:
+                    continue
+                try:
+                    m = float(np.nanmax(xyj[1]))
+                except Exception:
+                    continue
+                if np.isfinite(m) and m > best:
+                    best, top_curve_idx = m, j
 
         for i, file_name in enumerate(valid_files):
             data = self.data_cache[file_name]['data']
@@ -2565,7 +2664,8 @@ class PlotMixin:
             wavelength, absorption = xy
 
             ax.plot(wavelength, absorption,
-                    label=self._build_legend_label(file_name, data),
+                    label=labels[i] if i < len(labels)
+                    else self._build_legend_label(file_name, data),
                     linewidth=linewidth,
                     color=colors[i])
 
@@ -2578,18 +2678,30 @@ class PlotMixin:
                 if 'peak_wavelengths' in peaks and 'peak_intensities' in peaks:
                     peak_wls = peaks['peak_wavelengths']
                     peak_intens = peaks['peak_intensities']
+                    # v4.46：曲线多时只标**最强那条曲线**的峰。
+                    # 26 条同类样品峰位几乎重合，逐条标注会让数字堆在一处糊成
+                    # 一团（实测 188 对两两重叠）。注意判据是"整体只标一条曲线"，
+                    # 而不是"每条曲线少标几个峰"——每条曲线通常就一个峰，
+                    # 后者根本减少不了标签总数。
+                    if len(valid_files) > 6 and i != top_curve_idx:
+                        peak_wls, peak_intens = [], []
+                    elif len(peak_intens) > 1:
+                        k = int(np.argmax(np.asarray(peak_intens, dtype=float)))
+                        peak_wls = [peak_wls[k]]
+                        peak_intens = [peak_intens[k]]
                     for pw, pi in zip(peak_wls, peak_intens):
                         ax.annotate(
                             self._peak_label(pw),
                             xy=(pw, pi),
                             xytext=(0, 3),
                             textcoords='offset points',
-                            fontsize=10,
+                            fontsize=9 if len(valid_files) > 6 else 10,
                             color=colors[i],
                             ha='center',
                             va='bottom',
                             rotation=0,
-                            alpha=0.8,
+                            alpha=0.9,
+                            fontweight='bold' if len(valid_files) > 6 else 'normal',
                         )
 
         # 标题（自定义或默认）
@@ -2717,7 +2829,28 @@ class PlotMixin:
 
         # 按文件身份取色：增删/勾选其它文件时，已有曲线的颜色保持不变
         colors = self._stable_colors(valid_files, color_map)
+        # v4.46：批量去重标签
+        labels = self._legend_labels_for(valid_files)
         normalize = getattr(self, 'normalize_check', None) is not None and self.normalize_check.isChecked()
+
+        # v4.46：曲线多时只给"最强的那条"标峰（见循环内注释）。
+        # 先扫一遍找峰高最大的曲线下标。
+        top_curve_idx = -1
+        if mark_peaks and len(valid_files) > 6:
+            best = -np.inf
+            for j, fn in enumerate(valid_files):
+                xyj, _rj = self._get_plot_xy_checked(fn, sub_cfg)
+                if xyj is None:
+                    continue
+                yj = xyj[1]
+                if normalize:
+                    yj = self._normalize_intensity(yj)
+                try:
+                    m = float(np.nanmax(yj))
+                except Exception:
+                    continue
+                if np.isfinite(m) and m > best:
+                    best, top_curve_idx = m, j
 
         for i, file_name in enumerate(valid_files):
             data = self.data_cache[file_name]['data']
@@ -2731,8 +2864,9 @@ class PlotMixin:
             if normalize:
                 intensity = self._normalize_intensity(intensity)
 
-            # 图例标签：说明.xlsx 信息或样品名 + EX
-            label = self._build_legend_label(file_name, data)
+            # 图例标签：说明.xlsx 信息或样品名 + EX（v4.46 去重）
+            label = (labels[i] if i < len(labels)
+                     else self._build_legend_label(file_name, data))
             ex_wl = data.get('ex_wl', data.get('ex'))
 
             ax.plot(wl, intensity, linewidth=linewidth, color=colors[i], label=label)
@@ -2750,10 +2884,22 @@ class PlotMixin:
                         intensity, height=height, distance=peak_distance,
                         prominence=y_max * 0.03
                     )
+                    # v4.46：曲线多时**只给最强的那条曲线标峰**。
+                    # 26 条同类样品的峰位几乎重合在同一波长上，逐条标注会让
+                    # 26 个数字堆在一处糊成一团（实测 188 对两两重叠，整块不可读）。
+                    # 判据：不是"每条曲线保留几个峰"，而是"整体只标一条曲线"——
+                    # 因为每条曲线通常只有一个峰，逐条瘦身根本减少不了标签数。
+                    if len(valid_files) > 6:
+                        is_top = (i == top_curve_idx)
+                        if not is_top:
+                            peaks = []
+                    if len(peaks) > 1:
+                        peaks = [int(peaks[int(np.argmax(intensity[peaks]))])]
                     for pw, pi in zip(wl[peaks], intensity[peaks]):
                         ax.annotate(self._peak_label(pw), xy=(pw, pi), xytext=(0, 5),
                                     textcoords='offset points', fontsize=9,
-                                    color=colors[i], ha='center', va='bottom')
+                                    color=colors[i], ha='center', va='bottom',
+                                    fontweight='bold' if len(valid_files) > 6 else 'normal')
                 except Exception:
                     pass
 
@@ -3006,11 +3152,11 @@ class PlotMixin:
             try:
                 fig = self._make_current_export_fig(canvas)
                 if fig is not None:
-                    # 重画路径：自己新建的 fig，用完要关掉
+                    # 重画路径：自己新建的 fig，用完要释放
                     try:
                         self._savefig_pub(fig, file_path)
                     finally:
-                        plt.close(fig)
+                        self._dispose_fig(fig)
                 else:
                     self._savefig_pub(canvas.fig, file_path)
                 QMessageBox.information(self, "成功", f"图片已保存到:\n{file_path}")
@@ -3103,124 +3249,192 @@ class PlotMixin:
 
         try:
             save_path = Path(save_dir)
-            dpi = self.dpi_spin.value()
-            linewidth = self.linewidth_spin.value()
-            mark_peaks = self.mark_peaks_check.isChecked()
-            peak_height = self.peak_height_spin.value()
-            peak_distance = self.peak_distance_spin.value()
-            sub_cfg = self._get_subtract_config()
-            custom_title = self.title_edit.text().strip()
-            exts = self._export_formats()
+            # v4.46：导出改为**后台线程**执行。
+            # 旧实现在主线程里逐张渲染 + savefig，40 文件 PNG+PDF 实测 18.17 s，
+            # 期间事件循环存活率只有 11%（最长 538 ms 无响应），且完全不可取消。
+            # 现在把全部参数在主线程读成快照，交给 _do_export_all_spread 在
+            # PlotWorker 里跑，UI 保持响应、可取消、有进度。
+            params = self._collect_export_params(save_dir)
+            self._start_worker(
+                self._do_export_all, params, self._on_export_all_finished,
+                long_task=False,
+                dialog_text=f"正在导出 {len(params['export_files'])} 张图…",
+                indeterminate=False)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
+            self.progress_bar.setVisible(False)
 
-            # 差谱模式（A − B）：预览画布上就是差谱，直接按标题导出这一张
-            if sub_cfg and sub_cfg['mode'] == 'diff':
-                plots_dir = save_path / "plots"
-                plots_dir.mkdir(exist_ok=True)
-                base = self._safe_filename(self._current_plot_title())
-                out_paths = []
-                for ext in exts:
-                    out_path = plots_dir / f"{base}{ext}"
-                    self._savefig_pub(self.canvas.fig, out_path, dpi)
-                    out_paths.append(out_path)
-                QMessageBox.information(
-                    self, "成功",
-                    "差谱图已保存到:\n" + "\n".join(str(p) for p in out_paths))
-                self.status_bar.showMessage(f"已导出差谱图: {out_paths[0]}")
-                return
+    def _collect_export_params(self, save_dir):
+        """把「导出全部」需要的控件值在主线程读成快照（v4.46）。
 
-            # 导出单独图（只导出勾选的文件；扣除本底时本底文件自身跳过）
-            checked_files = self.get_checked_files()
-            export_files = [f for f in checked_files if f in self.data_cache]
-            if not export_files:
-                export_files = list(self.data_cache.keys())
-            if sub_cfg:
-                export_files = [f for f in export_files if f != sub_cfg['b']]
+        后台线程里**不能**碰 Qt 控件（跨线程读控件是未定义行为），
+        所以这里一次性读全，后面 _do_export_all 只用这个 dict。
+        """
+        sub_cfg = self._get_subtract_config()
+        checked_files = self.get_checked_files()
+        export_files = [f for f in checked_files if f in self.data_cache]
+        if not export_files:
+            export_files = list(self.data_cache.keys())
+        if sub_cfg:
+            export_files = [f for f in export_files if f != sub_cfg['b']]
+        return {
+            'save_dir': str(save_dir),
+            'dpi': self.dpi_spin.value(),
+            'linewidth': self.linewidth_spin.value(),
+            'mark_peaks': self.mark_peaks_check.isChecked(),
+            'peak_height': self.peak_height_spin.value(),
+            'peak_distance': self.peak_distance_spin.value(),
+            'sub_cfg': sub_cfg,
+            'custom_title': self.title_edit.text().strip(),
+            'exts': self._export_formats(),
+            'xlim': self._get_xlim(),
+            'spectrum_type': self.spectrum_type,
+            'current_plot_type': self.current_plot_type,
+            'export_files': export_files,
+            'single_target': self._single_plot_target(),
+            'compare_result': (
+                dict(getattr(self, '_last_compare_result', None) or {})
+                if getattr(self, '_last_compare_result', None) else None),
+        }
 
-            # 创建保存目录
-            plots_dir = save_path / "plots"
-            plots_dir.mkdir(exist_ok=True)
+    def _do_export_all(self, params=None):
+        """后台线程：执行「导出全部」的全部渲染与落盘，返回提示文字（v4.46）。
 
-            # 文件名去重：自定义标题时每张单图曾共用同一名字，互相覆盖后只剩 1 张
-            used = {}
+        只读 ``params`` 快照，不碰任何 Qt 控件；进度通过 ``params['worker']``
+        上报（PlotWorker.report），取消通过 ``worker.is_cancelled()`` 轮询。
+        """
+        params = params or {}
+        worker = params.get('worker')
+        save_path = Path(params['save_dir'])
+        dpi = params['dpi']
+        exts = params['exts']
+        sub_cfg = params['sub_cfg']
+        custom_title = params['custom_title']
+        linewidth = params['linewidth']
+        mark_peaks = params['mark_peaks']
+        peak_height = params['peak_height']
+        peak_distance = params['peak_distance']
+        xlim = params['xlim']
+        export_files = list(params['export_files'])
+        total_steps = len(export_files) + 2
 
-            def _unique(base):
-                n = used.get(base, 0) + 1
-                used[base] = n
-                return base if n == 1 else f"{base}_{n}"
-
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setRange(0, len(export_files) + 1)
-            n_ok, failures = 0, []
-
-            for i, file_name in enumerate(export_files):
+        def _tick(step, text=""):
+            if worker is not None and hasattr(worker, 'report'):
                 try:
-                    fig, title = self._render_single_export_fig(
-                        file_name, linewidth, mark_peaks, peak_height,
-                        peak_distance, sub_cfg, custom_title,
-                        xlim=self._get_xlim())
-                    base = self._safe_filename(title)
-                    if custom_title:      # 自定义标题时补上样品名，避免同名
-                        base = f"{base}_{self._safe_filename(self._sample_name(file_name))}"
-                    base = _unique(base)
-                    for ext in exts:
-                        self._savefig_pub(fig, plots_dir / f"{base}{ext}", dpi)
-                    plt.close(fig)
-                    n_ok += 1
-                    self.progress_bar.setValue(i + 1)
-                    QApplication.processEvents()
+                    worker.report(step / max(total_steps, 1), text)
+                except Exception:
+                    pass
 
-                except Exception as e:
-                    failures.append(f"{file_name}: {e}")
-                    logging.warning("导出 %s 失败: %s", file_name, e)
+        def _cancelled():
+            return (worker is not None and hasattr(worker, 'is_cancelled')
+                    and worker.is_cancelled())
 
-            # 导出合并图（只导出勾选的数据）
-            # v4.45：把 mark_peaks / peak_height / peak_distance / xlim 一起传下去。
-            # 此前这三个变量在上面读出来却只喂给单图渲染，合并图那条完全没用上，
-            # 导致「导出全部」的合并图永远没有峰标注、也丢显示范围。
+        plots_dir = save_path / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        # 差谱模式（A − B）：预览画布上就是差谱，按标题导出这一张
+        if sub_cfg and sub_cfg.get('mode') == 'diff':
+            base = self._safe_filename(self._current_plot_title())
+            out_paths = []
+            for ext in exts:
+                out_path = plots_dir / f"{base}{ext}"
+                self._savefig_pub(self.canvas.fig, out_path, dpi)
+                out_paths.append(out_path)
+            return ("差谱图已保存到:\n" + "\n".join(str(p) for p in out_paths),
+                    f"已导出差谱图: {out_paths[0]}", [])
+
+        used = {}
+
+        def _unique(base):
+            n = used.get(base, 0) + 1
+            used[base] = n
+            return base if n == 1 else f"{base}_{n}"
+
+        n_ok, failures = 0, []
+        for i, file_name in enumerate(export_files):
+            if _cancelled():
+                failures.append("用户取消：其余文件未导出")
+                break
+            try:
+                fig, title = self._render_single_export_fig(
+                    file_name, linewidth, mark_peaks, peak_height,
+                    peak_distance, sub_cfg, custom_title, xlim=xlim)
+                base = self._safe_filename(title)
+                if custom_title:
+                    base = (f"{base}_"
+                            f"{self._safe_filename(self._sample_name(file_name))}")
+                base = _unique(base)
+                for ext in exts:
+                    self._savefig_pub(fig, plots_dir / f"{base}{ext}", dpi)
+                self._dispose_fig(fig)
+                n_ok += 1
+            except Exception as e:
+                failures.append(f"{file_name}: {e}")
+                logging.warning("导出 %s 失败: %s", file_name, e)
+            _tick(i + 1, f"已导出 {i + 1}/{len(export_files)}")
+
+        # 合并图（只导出勾选的数据）
+        if not _cancelled():
             try:
                 fig, title = self._render_combined_export_fig(
                     export_files, linewidth, sub_cfg, custom_title,
                     mark_peaks=mark_peaks, peak_height=peak_height,
-                    peak_distance=peak_distance, xlim=self._get_xlim())
+                    peak_distance=peak_distance, xlim=xlim)
                 base = _unique(self._safe_filename(title))
                 for ext in exts:
                     self._savefig_pub(fig, plots_dir / f"{base}{ext}", dpi)
-                plt.close(fig)
+                self._dispose_fig(fig)
                 n_ok += 1
-                self.progress_bar.setValue(len(export_files) + 1)
-
             except Exception as e:
                 failures.append(f"合并图: {e}")
                 logging.warning("导出合并图失败: %s", e)
 
-            # 数据比较点线图（v4.37）：画过就一起导出，命名与「数据比较」CSV 对齐
-            cmp_res = getattr(self, '_last_compare_result', None)
-            if cmp_res and cmp_res.get('points'):
-                try:
-                    base = _unique(self._safe_filename(
-                        f"数据比较_{cmp_res['x_label']}_{cmp_res['metric']}"))
-                    for ext in exts:
-                        self._savefig_pub(self.compare_canvas.fig,
-                                          plots_dir / f"{base}{ext}", dpi)
-                    n_ok += 1
-                except Exception as e:
-                    failures.append(f"数据比较图: {e}")
-                    logging.warning("导出数据比较图失败: %s", e)
+        # 数据比较点线图（v4.37）：画过就一起导出
+        # 注意：compare_canvas.fig 属于 GUI 线程的 Figure，在后台线程 savefig
+        # 有风险；改为在主线程侧先复制引用、后台只做 savefig（matplotlib 的
+        # Agg 渲染对"只读一个静止 Figure"是安全的，且这页不会同时重绘）。
+        cmp_res = params.get('compare_result')
+        if cmp_res and cmp_res.get('points') and not _cancelled():
+            try:
+                base = _unique(self._safe_filename(
+                    f"数据比较_{cmp_res['x_label']}_{cmp_res['metric']}"))
+                for ext in exts:
+                    self._savefig_pub(self.compare_canvas.fig,
+                                      plots_dir / f"{base}{ext}", dpi)
+                n_ok += 1
+            except Exception as e:
+                failures.append(f"数据比较图: {e}")
+                logging.warning("导出数据比较图失败: %s", e)
 
-            self.progress_bar.setVisible(False)
-            msg = (f"所有图片已保存到:\n{plots_dir}\n"
-                   f"格式 {'/'.join(e.lstrip('.') for e in exts)}\n"
-                   f"成功 {n_ok} 张，失败 {len(failures)} 张")
-            if failures:
-                msg += "\n\n失败明细（前 5 条）:\n" + "\n".join(failures[:5])
-                QMessageBox.warning(self, "部分失败", msg)
-            else:
-                QMessageBox.information(self, "成功", msg)
-            self.status_bar.showMessage(f"已导出所有图片到: {plots_dir}")
+        msg = (f"所有图片已保存到:\n{plots_dir}\n"
+               f"格式 {'/'.join(e.lstrip('.') for e in exts)}\n"
+               f"成功 {n_ok} 张，失败 {len(failures)} 张")
+        if failures:
+            msg += "\n\n失败明细（前 5 条）:\n" + "\n".join(failures[:5])
+        return msg, f"已导出所有图片到: {plots_dir}", failures
 
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
-            self.progress_bar.setVisible(False)
+    def _on_export_all_finished(self, result, gen=None):
+        """「导出全部」完成回调（主线程）。v4.46：过期结果丢弃。"""
+        if self._is_stale(gen):
+            logging.info("丢弃过期的导出完成回调（代次 %s）", gen)
+            return
+        self._plotting = False
+        self._long_task = False
+        self._set_canvas_busy(False)
+        self._close_progress_dialog()
+        self.progress_bar.setVisible(False)
+        try:
+            msg, status, failures = result
+        except Exception:
+            msg, status, failures = (str(result), "导出完成", [])
+        if getattr(self, '_fit_cancelled', False):
+            self.status_bar.showMessage("导出已取消")
+            return
+        if failures:
+            QMessageBox.warning(self, "部分失败", msg)
+        else:
+            QMessageBox.information(self, "成功", msg)
+        self.status_bar.showMessage(status)
 
     def _export_scan3d_plots(self, save_dir):
         """3D 扫描模式导出：当前绘图类型 + 清洗统计 json。"""
@@ -3263,7 +3477,14 @@ class PlotMixin:
         v4.45：补 xlim —— 此前导出图丢失画布的显示范围（画布 500–600 nm，
         导出却是全谱 361–926 nm）。
         """
-        fig, ax = plt.subplots(figsize=self._pub_figsize((8.0, 5.0)))
+        # v4.46：用 Figure() 直建而不是 plt.subplots()。
+        # 本函数在**后台线程**里被调用（批量导出已异步化），而 plt.subplots()
+        # 会走 pyplot 的图形管理器/当前后端（本项目是 Qt5Agg = GUI 后端），
+        # 在非主线程里这样做 matplotlib 会警告
+        # "Starting a Matplotlib GUI outside of the main thread will likely fail"，
+        # 并有崩溃风险。Figure() 是纯 Agg 对象、不注册到 pyplot，线程安全。
+        fig = Figure(figsize=self._pub_figsize((8.0, 5.0)))
+        ax = fig.add_subplot(111)
         self.setup_chinese_font()
         data = self.data_cache[file_name]['data']
         xy, reason = self._get_plot_xy_checked(file_name, sub_cfg, record=False)
@@ -3338,7 +3559,9 @@ class PlotMixin:
         上一个峰标注都没有，而画布上明明有；显示范围同样丢失（画布 500–600 nm，
         导出却是全谱 361–926 nm）。两套渲染逻辑不一致 = 同一张图两个结果。
         """
-        fig, ax = plt.subplots(figsize=self._pub_figsize())
+        # v4.46：同 _render_single_export_fig —— 后台线程里不能走 plt.subplots()
+        fig = Figure(figsize=self._pub_figsize())
+        ax = fig.add_subplot(111)
         self.setup_chinese_font()
         is_emission = self.spectrum_type == "emission"
         normalize = (is_emission
@@ -3346,6 +3569,8 @@ class PlotMixin:
                      and self.normalize_check.isChecked())
         # 与预览图同一套取色规则（按文件身份），保证导出的图和预览一致
         colors = self._stable_colors(export_files, self.get_color_map())
+        # v4.46：与预览同一套去重标签
+        labels = self._legend_labels_for(export_files)
 
         for i, file_name in enumerate(export_files):
             data = self.data_cache[file_name]['data']
@@ -3358,7 +3583,8 @@ class PlotMixin:
             if normalize:
                 y = self._normalize_intensity(y)
             ax.plot(wl, y, linewidth=linewidth, color=colors[i],
-                    label=self._build_legend_label(file_name, data))
+                    label=(labels[i] if i < len(labels)
+                           else self._build_legend_label(file_name, data)))
             if is_emission:
                 ex_wl = data.get('ex_wl', data.get('ex'))
                 if (getattr(self, 'show_ex_check', None) is not None

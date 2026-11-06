@@ -60,6 +60,17 @@ class AbsorptionGUI(UiMixin, DataMixin, PlotMixin, QMainWindow):
         self.xlsx_info = None
         # 持久化设置（记住上次工作区等）
         self.settings = QSettings(APP_ORG, APP_NAME)
+        # 主题初始值（v4.46）：setup_ui 里 apply_style 会立刻用到 self.theme，
+        # 而 _restore_session 在 setup_ui 之后才跑。以前这里没有初值，于是
+        # setup_ui 阶段一律按 DEFAULT_THEME 画一遍（系统深色用户会看到白闪），
+        # 恢复后再重画。现在先按"保存的主题 → 否则跟随系统"定好初值，
+        # 让首帧就是对的主题。
+        try:
+            from gui_config import detect_system_theme, THEMES as _THEMES
+            _t = self.settings.value("theme", detect_system_theme(), str)
+            self.theme = _t if _t in _THEMES else detect_system_theme()
+        except Exception:
+            self.theme = "light"
         # 工作区（目录树根目录）：优先取上次保存的，否则用默认
         self.workspace = self._get_saved_workspace()
         # 实时预览防抖定时器（避免频繁重绘）

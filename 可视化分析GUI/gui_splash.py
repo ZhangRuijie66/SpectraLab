@@ -42,18 +42,27 @@ def _resource_path(name):
     return None
 
 
-def saved_theme(default=DEFAULT_THEME):
+def saved_theme(default=None):
     """读取上次会话保存的主题（与 gui_launcher.saved_theme 同义，但保持零重依赖）。
 
-    QSettings 读失败（注册表被限制、键不存在等）一律回退默认浅色，绝不抛异常——
+    QSettings 读失败（注册表被限制、键不存在等）一律回退，绝不抛异常——
     启动画面挂了会直接导致程序打不开。
+
+    v4.46：没有保存过主题时（首次启动）跟随操作系统深浅色，
+    避免深色用户第一次启动先看到一块白色启动画面。
     """
     try:
         from PyQt5.QtCore import QSettings
+        if default is None:
+            try:
+                from gui_config import detect_system_theme
+                default = detect_system_theme()
+            except Exception:
+                default = DEFAULT_THEME
         t = QSettings(APP_ORG, APP_NAME).value("theme", default, str)
         return t if t in THEMES else default
     except Exception:
-        return default
+        return default or DEFAULT_THEME
 
 
 class StartupSplash(QWidget):

@@ -503,7 +503,10 @@ class DataMixin:
                         f"文件夹: {self._short_path(last_folder)}")
                     self.folder_label.setToolTip(str(last_folder))
             # 主题（D3 / v4.30 起三套：light / dark / contrast）
-            theme = s.value("theme", "light", str)
+            # v4.46：没有保存过主题时（首次启动）跟随操作系统深浅色，
+            # 而不是硬用浅色——否则 Windows 深色用户第一次打开是白界面。
+            from gui_config import detect_system_theme
+            theme = s.value("theme", detect_system_theme(), str)
             if theme in THEMES:
                 self.theme = theme
                 if hasattr(self, '_update_theme_btn_tip'):
@@ -1539,6 +1542,58 @@ class DataMixin:
                 return f"{name}（{info_str}）{ex}"
             return f"{info_str}{ex}"
         return f"{name}{ex}"
+
+    def _legend_labels_for(self, file_names):
+        """为一组文件批量生成**互不重复**的图例标签（v4.46）。
+
+        问题：合并图为了简短，说明.xlsx 匹配成功时只显示说明信息、不显示样品名
+        （见 _build_legend_label）。一批同类样品（比如都是"RB浓度=50"，
+        只是测量次序不同）就会得到多条完全相同的标签——实测 26 条曲线里
+        只有 8 条唯一标签，图例等于没有。
+
+        这里做两件事：
+          1. 先按原规则生成；
+          2. 发现重复时，给重复的加上样品名后缀区分（"RB浓度=50 (S3)"）。
+
+        返回 list，与 file_names 等长、同序。
+        """
+        names = list(file_names)
+        labels = []
+        for fn in names:
+            data = (getattr(self, 'data_cache', {}) or {}).get(fn, {}).get('data')
+            labels.append(self._build_legend_label(fn, data))
+        # 统计重复
+        from collections import Counter
+        cnt = Counter(labels)
+        if all(c == 1 for c in cnt.values()):
+            return labels
+        out = []
+        seen = Counter()
+        for fn, lab in zip(names, labels):
+            if cnt[lab] > 1:
+                seen[lab] += 1
+                data = (getattr(self, 'data_cache', {}) or {}).get(fn, {}).get('data')
+                # 优先用样品名区分；样品名也重名时退到序号
+                sample = self._sample_name(fn, data)
+                if sample and sample != lab:
+                    out.append(f"{lab} [{sample}]")
+                else:
+                    out.append(f"{lab} #{seen[lab]}")
+            else:
+                out.append(lab)
+        # 二次兜底：加后缀后仍可能撞（样品名相同），用序号强区分
+        cnt2 = Counter(out)
+        if any(c > 1 for c in cnt2.values()):
+            seen2 = Counter()
+            fixed = []
+            for lab in out:
+                if cnt2[lab] > 1:
+                    seen2[lab] += 1
+                    fixed.append(f"{lab} #{seen2[lab]}")
+                else:
+                    fixed.append(lab)
+            out = fixed
+        return out
 
     def _refresh_subtract_combos(self):
         """把已加载文件名填入「光谱减法」的 A/B 下拉框（尽量保留原选择）。

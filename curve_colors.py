@@ -45,13 +45,18 @@ class CurveColors:
         """清空所有已分配的颜色（换一批数据、或换配色方案时调用）"""
         self._pos.clear()
 
-    def get(self, key, color_map=None):
+    def get(self, key, color_map=None, total=None):
         """取 key 对应的颜色；首次调用时分配并记住。
 
         参数
         ----
         key : 数据标识（GUI 用文件列表里的名字，脚本用样品名）
         color_map : matplotlib 色带，默认 Set1
+        total : 本次要画的曲线**总数**（可选，v4.46）。
+            传入后，若总数超过该色带的唯一色数（Set1 只有 9 色），
+            自动改用同色系的**连续色带**分配，避免第 10 条起颜色重复——
+            实测 26 条曲线时只有 9 种颜色、26 条图例里仅 8 条唯一标签，
+            合并图根本没法区分哪条是哪条。
 
         返回
         ----
@@ -59,11 +64,44 @@ class CurveColors:
         """
         if color_map is None:
             color_map = plt.cm.Set1
+        cmap = color_map
+        # v4.46：条数超过色表唯一色数时，降级到连续色带（保序、颜色不重复）
+        try:
+            n_unique = getattr(color_map, 'N', 256) or 256
+            if total is not None and n_unique > 1 and total > n_unique:
+                cmap = self._continuous_fallback(color_map)
+        except Exception:
+            cmap = color_map
         t = self._pos.get(key)
         if t is None:
-            t = self._next_pos(color_map)
+            t = self._next_pos(cmap)
             self._pos[key] = t
-        return color_map(t)
+        return cmap(t)
+
+    @staticmethod
+    def _continuous_fallback(color_map):
+        """把离散色表换成"从它的颜色里插值出的连续色带"（v4.46）。
+
+        做法：取原色表每个颜色的 RGB，用采到的这些采样点直接构造一条
+        **N=256 的 LinearSegmentedColormap**。这样既保留原配方的色系
+        （Set1 → 红蓝绿紫…），又能按需切出任意条互不相同的颜色。
+
+        ⚠️ 不能用 ListedColormap(cols)：它的 N 会等于 len(cols)（如 9），
+        `_next_pos` 仍会按"离散色表"处理，只会切出 9 个位置、颜色照样重复
+        （第一版就这么写错，实测仍是 9/26 唯一）。必须显式给 N=256。
+        """
+        from matplotlib.colors import LinearSegmentedColormap
+        try:
+            n = int(getattr(color_map, 'N', 0) or 0)
+            if n <= 1:
+                return color_map
+            positions = [k / (n - 1) for k in range(n)]
+            cols = [tuple(color_map(k / (n - 1))) for k in range(n)]
+            return LinearSegmentedColormap.from_list(
+                f'{getattr(color_map, "name", "cmap")}_cont',
+                list(zip(positions, cols)), N=256)
+        except Exception:
+            return color_map
 
     def _next_pos(self, color_map):
         """为新数据挑一个色带位置"""

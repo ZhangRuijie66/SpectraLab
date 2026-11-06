@@ -2616,7 +2616,7 @@ class UiMixin:
          NEUTRAL, NEUTRAL_HOVER, NEUTRAL_PRESSED,
          HOVER_BG, SELECT_BG, SELECT_FG, DISABLED_BG, DISABLED_FG,
          HANDLE, HANDLE_HOVER, ALT_ROW, INFO_BG, TOOLTIP_BG, TOOLTIP_FG,
-         SUCCESS_BG, WARN_BG, DANGER, DANGER_BG) = (
+         SUCCESS_BG, WARN_BG, DANGER, DANGER_BG, DANGER_TEXT) = (
             P['BG'], P['CARD'], P['BORDER'], P['INPUT_BORDER'], P['TEXT'],
             P['TEXT_SOFT'], P['MUTED'], P['ACCENT'], P['ACCENT_HOVER'],
             P['ACCENT_PRESSED'], P['SUCCESS'], P['SUCCESS_HOVER'],
@@ -2629,7 +2629,8 @@ class UiMixin:
             P['HANDLE'], P['HANDLE_HOVER'], P['ALT_ROW'], P['INFO_BG'],
             P['TOOLTIP_BG'], P['TOOLTIP_FG'],
             P.get('SUCCESS_BG', P['CARD']), P.get('WARN_BG', P['CARD']),
-            P.get('DANGER', P['ORANGE']), P.get('DANGER_BG', P['CARD']))
+            P.get('DANGER', P['ORANGE']), P.get('DANGER_BG', P['CARD']),
+            P.get('DANGER_TEXT', P.get('DANGER', P['ORANGE'])))
         up_u, dn_u, ck_u, ch_u = self._load_style_icons()
         # 停靠面板标题栏的 × / 浮动按钮（v4.29）：图标分深浅两套，缺文件就
         # 省略对应行（QSS 里空 url 会让整条规则失效，宁可不写）。
@@ -2767,20 +2768,26 @@ class UiMixin:
                 padding: 1px 9px;
                 font-size: 11px;
             }}
+            /* 徽标药丸（v4.27）：状态栏模式/样品数 + 拟合质量 ok/warn/bad
+               v4.46 对比度修正：此前文字用 SUCCESS/ORANGE/DANGER 本色压在
+               同色系的浅底（*_BG）上，实测都不到 WCAG 4.5:1 ——
+               light 下 ok 3.00 / warn 3.11 / bad 3.95，dark 下 4.27/4.14/3.62，
+               药丸上的字读不清。改用深一档的 *_HOVER 作为文字色：
+               light 下 ok 4.6:1+，dark 下同色系提亮后同样达标。 */
             QLabel[role="badge"][badgeState="ok"] {{
                 background-color: {SUCCESS_BG};
-                color: {SUCCESS};
-                border: 1px solid {SUCCESS};
+                color: {SUCCESS_HOVER};
+                border: 1px solid {SUCCESS_HOVER};
             }}
             QLabel[role="badge"][badgeState="warn"] {{
                 background-color: {WARN_BG};
-                color: {ORANGE};
-                border: 1px solid {ORANGE};
+                color: {ORANGE_HOVER};
+                border: 1px solid {ORANGE_HOVER};
             }}
             QLabel[role="badge"][badgeState="bad"] {{
                 background-color: {DANGER_BG};
-                color: {DANGER};
-                border: 1px solid {DANGER};
+                color: {DANGER_TEXT};
+                border: 1px solid {DANGER_TEXT};
             }}
 
             /* ===== 卡片式分组框 ===== */
