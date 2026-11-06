@@ -277,17 +277,27 @@ class HelpDialog(QDialog):
             root.addWidget(self.log_label)
 
         # ---- 底部一行：复制全部 / 打开日志文件夹 / 右侧 关闭 ----
+        # v4.47：所有按钮都关掉 autoDefault/default。
+        # 不关的话，Qt 会把对话框里第一个按钮（这里是「复制全部」）当成默认按钮，
+        # 用户在正文里按 Enter（读帮助时的下意识动作）就会**静默把全部正文刷进
+        # 剪贴板**，覆盖掉用户自己复制的内容，而且没有任何提示。
+        # 「关闭」显式设为默认按钮更符合直觉（Enter = 关闭）。
         foot = QHBoxLayout()
         foot.setSpacing(8)
         self.copy_btn = QPushButton(self._copy_default_text)
         self.copy_btn.setProperty("variant", "primary")
         self.copy_btn.setCursor(Qt.PointingHandCursor)
-        self.copy_btn.setToolTip("把全部帮助正文以纯文本复制到剪贴板")
+        self.copy_btn.setAutoDefault(False)
+        self.copy_btn.setDefault(False)
+        self.copy_btn.setToolTip("把全部帮助正文以纯文本复制到剪贴板"
+                                 "（Ctrl+C 只复制选中的部分）")
         self.copy_btn.clicked.connect(self.copy_all_text)
         foot.addWidget(self.copy_btn)
 
         self.log_btn = QPushButton("打开日志文件夹")
         self.log_btn.setCursor(Qt.PointingHandCursor)
+        self.log_btn.setAutoDefault(False)
+        self.log_btn.setDefault(False)
         self.log_btn.setToolTip(self.log_text or "打开日志目录")
         self.log_btn.clicked.connect(self.open_log_folder)
         foot.addWidget(self.log_btn)
@@ -295,6 +305,8 @@ class HelpDialog(QDialog):
         foot.addStretch(1)
         self.close_btn = QPushButton("关闭")
         self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setAutoDefault(True)
+        self.close_btn.setDefault(True)     # Enter = 关闭（符合直觉）
         self.close_btn.clicked.connect(self.close)
         foot.addWidget(self.close_btn)
         root.addLayout(foot)

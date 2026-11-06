@@ -1156,6 +1156,7 @@ class DataMixin:
             if hasattr(self, '_lifetime_fit_cache'):
                 self._lifetime_fit_cache.clear()
             self._invalidate_results()    # v4.44：派生结果一并作废
+            self._load_errors = []        # v4.47：本批解析失败的明细
             self.file_list.clear()
             self.reset_curve_colors()  # 换文件夹即换一批数据，重新分配曲线颜色
 
@@ -1205,6 +1206,27 @@ class DataMixin:
             # 一个文件都没读进来（D6）：明确告诉用户原因与日志位置
             if loaded_count == 0:
                 self._warn_no_files_loaded(folder_path, errors, skipped)
+            elif errors:
+                # v4.47：**部分**文件解析失败时也要说清楚。
+                # 此前只有 loaded_count == 0 才提示，成功 3 个、失败 2 个时
+                # 状态栏只写"成功加载 3 个文件"，errors 列表直接丢弃——
+                # 用户以为这一批就只有 3 个样品，拿去做后续分析。
+                # 现在：① 存进 _load_errors 供计数标签悬停查看；
+                #       ② 状态栏带上失败数；③ 明细写进日志。
+                self._load_errors = list(errors)
+                try:
+                    n_err = len(errors)
+                    self.status_bar.showMessage(
+                        f"成功加载 {loaded_count} 个文件"
+                        + (f"（跳过 {skipped} 个）" if skipped else "")
+                        + f"，另有 {n_err} 个解析失败（把鼠标移到「已加载 N 个」上看明细）")
+                    logging.warning("部分文件解析失败（%d 个）: %s",
+                                    n_err, "; ".join(str(e) for e in errors[:10]))
+                except Exception:
+                    pass
+                # 计数标签重建（带"N 个失败"与悬停明细）
+                if hasattr(self, '_update_file_count_label'):
+                    self._update_file_count_label()
 
             # 自动把波长上下限设为数据实际范围（E2：仅该文件夹首次加载时）
             if self.data_cache:
@@ -2023,7 +2045,11 @@ class DataMixin:
         return shown
 
     def _update_file_count_label(self, shown=None):
-        """计数标签：有过滤时显示「已加载 N 个（显示 M）」（v4.26）。"""
+        """计数标签：有过滤时显示「已加载 N 个（显示 M）」（v4.26）。
+
+        v4.47：解析失败的文件数也挂在这里（悬停可看前若干条原因），
+        否则"成功 3 个、失败 2 个"和"这批就只有 3 个"在界面上完全一样。
+        """
         label = getattr(self, 'file_count_label', None)
         if label is None or not hasattr(self, 'file_list'):
             return
@@ -2031,12 +2057,23 @@ class DataMixin:
             total = self.file_list.count()
             if shown is None:
                 shown = len(self._visible_file_items())
+            n_err = len(getattr(self, '_load_errors', []) or [])
+            suffix = f"，{n_err} 个失败" if n_err else ""
             if shown < total:
-                label.setText(f"已加载 {total} 个（显示 {shown}）")
-                label.setToolTip(f"已在列表中过滤：显示 {shown} / 共 {total} 个文件")
+                label.setText(f"已加载 {total} 个（显示 {shown}）{suffix}")
+                tip = f"已在列表中过滤：显示 {shown} / 共 {total} 个文件"
             else:
-                label.setText(f"已加载 {total} 个文件")
-                label.setToolTip("")
+                label.setText(f"已加载 {total} 个文件{suffix}")
+                tip = ""
+            if n_err:
+                lines = [f"有 {n_err} 个文件解析失败："]
+                for name, reason in list(self._load_errors)[:8]:
+                    lines.append(f"  · {name}: {reason}")
+                if n_err > 8:
+                    lines.append(f"  ……其余 {n_err - 8} 个见日志")
+                lines.append(f"\n详细日志：{log_file_path()}")
+                tip = (tip + "\n\n" if tip else "") + "\n".join(lines)
+            label.setToolTip(tip)
             self._update_status_badges()     # v4.27：状态栏样品数徽标同步
         except Exception:
             pass

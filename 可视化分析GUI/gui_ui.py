@@ -40,6 +40,85 @@ from gui_log import log_exception
 from plot_lifetime import TIME_UNIT_KEYS, TIME_UNIT_NAMES, unit_symbol, unit_factor
 
 
+class CollapsibleGroup(QGroupBox):
+    """可折叠的分组框（v4.47）：点标题即可收起 / 展开。
+
+    动机：参数栏内容总高远超可视高度（审计实测四档分辨率全部溢出，
+    2560×1440 下仍需滚 0.7 屏），而其中「峰检测参数」「显示范围」
+    「光谱减法」属于**低频**设置——大多数时候用户只是看图和预览。
+    把这些组默认收起后首屏只留高频项，需要时点一下标题展开。
+
+    实现：QGroupBox 自带标题栏正好当折叠把手（setCheckable + toggled），
+    内容放进内部容器，折叠只需 setVisible(False)，不重建任何控件，
+    因此不影响既有控件引用、数值与信号。
+    """
+
+    def __init__(self, title, parent=None, collapsed=False):
+        super().__init__(title, parent)
+        self._title_text = str(title)
+        self._collapsed = bool(collapsed)
+        self._inner = QWidget(self)
+        self._inner_layout = QVBoxLayout(self._inner)
+        self._inner_layout.setContentsMargins(8, 6, 8, 8)
+        self._inner_layout.setSpacing(8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._inner)
+        self.setCheckable(True)
+        self.setChecked(not self._collapsed)
+        self.toggled.connect(self._on_toggled)
+        self._apply_state()
+
+    def _on_toggled(self, on):
+        self._collapsed = not on
+        self._apply_state()
+
+    def _apply_state(self):
+        try:
+            self._inner.setVisible(not self._collapsed)
+            self.setTitle(self._title_text
+                          + ("　▸ 已收起" if self._collapsed else "　▾"))
+        except Exception:
+            pass
+
+    def is_collapsed(self):
+        return self._collapsed
+
+    def set_collapsed(self, yes):
+        self._collapsed = bool(yes)
+        self.blockSignals(True)
+        self.setChecked(not self._collapsed)
+        self.blockSignals(False)
+        self._apply_state()
+
+    def add_widget(self, w):
+        self._inner_layout.addWidget(w)
+        return w
+
+    def add_layout(self, lay):
+        self._inner_layout.addLayout(lay)
+        return lay
+
+    def content_layout(self):
+        return self._inner_layout
+
+    def setLayout(self, lay):           # noqa: N802 - 兼容 QGroupBox 调用惯例
+        """兼容外部按 QGroupBox 写法调用 setLayout(lay)。
+
+        本类自己已经用 outer/inner 两层布局了，直接把 QGroupBox.setLayout 交给
+        外部会把内部容器顶掉。这里改成"把 lay 里的内容搬进内层容器"：
+        逐个 takeAt 后 addItem，迁移完就把 lay 置空，避免悬空归属。
+        """
+        try:
+            while lay.count():
+                item = lay.takeAt(0)
+                if item is None:
+                    break
+                self._inner_layout.addItem(item)
+        except Exception:
+            pass
+
+
 class UiMixin:
     """界面搭建与样式（含各面板、中文字体、实时预览联动）。"""
 
@@ -1772,8 +1851,9 @@ class UiMixin:
         self.peak_distance_spin = SliderSpin(5, 50, 10, 1, scale=1, decimals=0, suffix=" nm")
         peaks_layout.addWidget(self.peak_distance_spin)
 
-        peaks_group = QGroupBox("峰检测参数")
-        peaks_group.setLayout(peaks_layout)
+        # v4.47：低频组默认收起（点标题展开），缓解参数栏长期需要滚 2.5 屏的问题
+        peaks_group = CollapsibleGroup("峰检测参数", collapsed=True)
+        peaks_group.add_layout(peaks_layout)
         self.peaks_group = peaks_group
         param_layout.addWidget(peaks_group)
 
@@ -1866,7 +1946,8 @@ class UiMixin:
         param_layout.addWidget(range_group)
 
         # 光谱减法（两光谱相减 / 扣除本底；吸收与发射模式可用，寿命模式隐藏）
-        subtract_group = QGroupBox("光谱减法")
+        # v4.47：低频组默认收起
+        subtract_group = CollapsibleGroup("光谱减法", collapsed=True)
         subtract_layout = QVBoxLayout()
 
         self.subtract_enable_check = QCheckBox("启用光谱减法")
@@ -1897,7 +1978,6 @@ class UiMixin:
         subtract_group.setLayout(subtract_layout)
         self.subtract_group = subtract_group
         param_layout.addWidget(subtract_group)
-
         # 数据比较（v4.37）：按说明.xlsx 里某个变量的值画「指标-变量」点线图。
         # 只在吸收/发射模式显示（寿命/3D 没有"波长-强度"曲线也无变量可比）。
         compare_group = QGroupBox("数据比较（说明.xlsx）")
@@ -3102,6 +3182,25 @@ class UiMixin:
                 border-color: {ACCENT};
             }}
             QCheckBox::indicator:checked {{
+                background-color: {ACCENT};
+                border-color: {ACCENT};
+                {ck_img}
+            }}
+            /* v4.47：可折叠分组的标题勾选指示器（CollapsibleGroup）。
+               上面那组规则只覆盖 QCheckBox；QGroupBox 的 indicator 走 Qt 默认
+               绘制，在深色主题下是一个**黑方块**（白框里一团黑），很难看也
+               看不出"已收起/已展开"。这里与 QCheckBox 用同一套视觉。 */
+            QGroupBox::indicator {{
+                width: 15px;
+                height: 15px;
+                border: 2px solid {HANDLE_HOVER};
+                border-radius: 4px;
+                background-color: {CARD};
+            }}
+            QGroupBox::indicator:hover {{
+                border-color: {ACCENT};
+            }}
+            QGroupBox::indicator:checked {{
                 background-color: {ACCENT};
                 border-color: {ACCENT};
                 {ck_img}

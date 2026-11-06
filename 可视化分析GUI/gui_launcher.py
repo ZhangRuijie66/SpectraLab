@@ -71,6 +71,12 @@ class ModuleCard(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setObjectName("moduleCard")
         self.setMinimumHeight(78)
+        # v4.47：卡片可 Tab 聚焦 + 回车/空格激活。
+        # 此前 4 张卡片全是 QFrame 且没设 focusPolicy（= Qt.NoFocus），整个对话框
+        # 里连一个 QPushButton 都没有 —— 程序**第一屏**完全无法用键盘操作：
+        # 按 Tab 没有焦点框、按 Enter 没反应、方向键也选不了，只能用鼠标点。
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._accent = color
         self.setStyleSheet(f"""
             QFrame#moduleCard {{
                 background-color: {card_bg};
@@ -81,6 +87,11 @@ class ModuleCard(QFrame):
             QFrame#moduleCard:hover {{
                 background-color: {_hex_to_rgba(color, 0.06)};
                 border: 1px solid {color};
+                border-left: 5px solid {color};
+            }}
+            QFrame#moduleCard[focused="true"] {{
+                background-color: {_hex_to_rgba(color, 0.10)};
+                border: 2px solid {color};
                 border-left: 5px solid {color};
             }}
         """)
@@ -136,6 +147,44 @@ class ModuleCard(QFrame):
             self.clicked.emit()
         super().mouseReleaseEvent(event)
 
+    # ---- v4.47：键盘可达 ----
+
+    def keyPressEvent(self, event):
+        """回车 / 空格 = 激活本卡片；方向键在卡片间移动焦点。"""
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        if key in (Qt.Key_Down, Qt.Key_Up):
+            # 让父对话框在卡片之间上下移动焦点
+            parent = self.parentWidget()
+            while parent is not None and not hasattr(parent, 'focus_next_card'):
+                parent = parent.parentWidget()
+            if parent is not None:
+                parent.focus_next_card(self, +1 if key == Qt.Key_Down else -1)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _set_focused(self, on):
+        """焦点态只改一个 QSS 属性，避免重建整个样式表。"""
+        self.setProperty("focused", "true" if on else "false")
+        try:
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        except Exception:
+            pass
+
+    def focusInEvent(self, event):
+        self._set_focused(True)
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self._set_focused(False)
+        super().focusOutEvent(event)
+
 
 class ModuleLauncher(QDialog):
     """模块选择对话框：吸收光谱 / 发射光谱 / 荧光寿命，选择后进入主窗口。
@@ -177,6 +226,10 @@ class ModuleLauncher(QDialog):
         except Exception:
             pass
         self.setMinimumWidth(520)
+        # v4.47：给门户一个合理上限。它是固定版式的选择页（4 张定宽卡片），
+        # 被拉到全屏会变成"卡片横贯整屏、文字挤在左边一大片留白"。
+        # 限高同理——纵向拉长只会让卡片间距变得夸张。
+        self.setMaximumSize(1180, 860)
         self.setStyleSheet(f"QDialog {{ background-color: {P['BG']}; }}")
 
         layout = QVBoxLayout(self)
@@ -210,19 +263,37 @@ class ModuleLauncher(QDialog):
         layout.addWidget(line)
 
         # 模块卡片
+        self._cards = []
         for mode, icon_name, name, desc, color in self.MODES:
             card = ModuleCard(icon_name, name, desc, color, palette=P,
                               theme=self.theme)
             card.clicked.connect(lambda m=mode: self._choose(m))
             layout.addWidget(card)
+            self._cards.append(card)
+        # v4.47：首帧把焦点给第一张卡片——键盘用户打开就能直接回车进入，
+        # 也让"当前选中哪一项"从第一屏起就有视觉反馈。
+        if self._cards:
+            self._cards[0].setFocus()
 
-        hint = QLabel("进入主窗口后仍可通过左上角「光谱类型」下拉框切换模块")
+        hint = QLabel("进入主窗口后仍可通过左上角「光谱类型」下拉框切换模块"
+                      + ("（键盘：↑↓ 选择，Enter 进入）" if self._cards else ""))
         hint.setStyleSheet(f"color: {P['MUTED']}; font-size: 13px;")
         hint.setAlignment(Qt.AlignCenter)
         layout.addWidget(hint)
 
-        # 标题栏自带的「？」按键（Qt 的上下文帮助按键）：拦截它来显示帮助/关于
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, True)
+        # 标题栏按键（v4.47）
+        # ⚠️ QDialog 的默认 windowFlags 是 0x08013003，**不含** WindowMinimizeButtonHint
+        # （0x20000）——所以标题栏根本没有最小化按钮，用户没法把门户收进任务栏。
+        # 这里显式补上最小化 + 关闭；「？」保留（拦截它显示帮助）。
+        #
+        # 不加 WindowMaximizeButtonHint：门户是**固定版式**的选择页（4 张定宽卡片），
+        # 最大化后卡片被拉到屏幕宽度、文字挤在左侧一大片留白，反而更难用。
+        # 系统菜单里也不提供最大化（下面 setMaximumSize 与 WindowMaximizeButtonHint
+        # 都不给），符合"选完就走"的使用场景。
+        self.setWindowFlags(self.windowFlags()
+                            | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowCloseButtonHint
+                            | Qt.WindowContextHelpButtonHint)
 
         self._help_text = f"""
         <p><b>更新日期：</b>{RELEASE_DATE}</p>
@@ -259,6 +330,18 @@ class ModuleLauncher(QDialog):
                 log_text=f"日志目录：{log_dir()}")
         except Exception as e:                      # 兜底：绝不因帮助起不来而崩
             logging.warning("打开帮助窗口失败: %s", e)
+
+    def focus_next_card(self, current, delta):
+        """在四张模块卡片之间移动焦点（v4.47，供 ↑↓ 键使用）。"""
+        try:
+            cards = [c for c in getattr(self, '_cards', []) if c is not None]
+            if not cards:
+                return
+            idx = cards.index(current)
+            nxt = (idx + delta) % len(cards)
+            cards[nxt].setFocus()
+        except Exception:
+            pass
 
     def _choose(self, mode):
         self.selected_mode = mode
