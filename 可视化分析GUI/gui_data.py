@@ -1049,6 +1049,12 @@ class DataMixin:
                     setattr(self, attr, None)
             except Exception:
                 pass
+        # v5.0.2：峰表也是派生结果——不清的话换文件夹后「导出峰表」会写出
+        # 上一批数据的样品名（与上面 5 个结果同一类问题）
+        try:
+            self._last_peaks = []
+        except Exception:
+            pass
         # 积分结果表 / 拟合摘要卡片 都是上面结果的投影，一并复位
         try:
             if getattr(self, 'integ_table', None) is not None:

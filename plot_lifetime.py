@@ -86,6 +86,16 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
+# 导出口径单一来源（v5.0.2）：GUI 与根目录各 plot_*.py 共用同一组 DPI。
+# 此前 plot_summary 写死 200、report PDF 写死 150，与 GUI 的 600 差 3–4 倍，
+# 汇总图只有 1377×1774 px（200 dpi），投稿会被审稿人退。
+try:
+    from export_defaults import (EXPORT_DPI_DEFAULT,
+                                 EXPORT_DPI_VECTOR_MIN,
+                                 EXPORT_DPI_PREVIEW)
+except ImportError:                     # 脚本被单独复制出去时退回字面量
+    EXPORT_DPI_DEFAULT, EXPORT_DPI_VECTOR_MIN, EXPORT_DPI_PREVIEW = 600, 300, 150
+
 
 # ======================== 0. 基础设置 ========================
 
@@ -1721,7 +1731,7 @@ def export_fit_results(results, save_dir, name="lifetime_fit_results",
 # ======================== 3. 绘图 ========================
 
 def plot_summary(results, save_dir='./plots', name='lifetime_summary',
-                 x=None, xlabel='样品序号', show=False, dpi=200, fmt='.png',
+                 x=None, xlabel='样品序号', show=False, dpi=None, fmt='.png',
                  verbose=True, time_unit='ns'):
     """跨样品汇总图（v4.22 新增）：把一批拟合结果画成「参数 vs 样品」曲线。
 
@@ -1787,7 +1797,8 @@ def plot_summary(results, save_dir='./plots', name='lifetime_summary',
     out = Path(save_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{name}{fmt}"
-    fig.savefig(path, dpi=dpi, bbox_inches='tight')
+    fig.savefig(path, dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi,
+                bbox_inches='tight')
     if show:
         plt.show()
     else:
@@ -1798,7 +1809,7 @@ def plot_summary(results, save_dir='./plots', name='lifetime_summary',
 
 
 def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
-                      title=None, dpi=150, verbose=True, time_unit='ns'):
+                      title=None, dpi=None, verbose=True, time_unit='ns'):
     """把一批拟合结果导出成**多页 PDF 报告**（v4.22 新增）。
 
     第 1 页：汇总表（文件名 / 方法 / χ²R / 拟合区间 / 各分量 τ 与占比）+ χ²R 柱状图；
@@ -1867,7 +1878,7 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
         ax_c.set_xticks(range(len(names)))
         ax_c.set_xticklabels(names, rotation=30, ha='right', fontsize=8)
         ax_c.grid(True, axis='y', alpha=0.3)
-        pdf.savefig(fig, dpi=dpi)
+        pdf.savefig(fig, dpi=EXPORT_DPI_VECTOR_MIN if dpi is None else dpi)
         plt.close(fig)
 
         # ---------- 每个样品一页 ----------
@@ -1926,7 +1937,7 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
                 ax2.set_title(f"残差均值 {resid.mean():.3g}，标准差 {resid.std():.3g}",
                               fontsize=9)
             fig.tight_layout()
-            pdf.savefig(fig, dpi=dpi)
+            pdf.savefig(fig, dpi=EXPORT_DPI_VECTOR_MIN if dpi is None else dpi)
             plt.close(fig)
 
     if verbose:
@@ -1935,7 +1946,7 @@ def export_report_pdf(results, save_dir='./plots', name='lifetime_report',
 
 
 def plot_result(result, save_dir='./plots', name=None, show=False,
-                dpi=600, fmt='png', time_unit='ns'):
+                dpi=None, fmt='png', time_unit='ns'):
     """
     画拟合结果的两张图：
       1) {name}_decay.png : 衰减曲线 + 移动后 IRF + 拟合曲线（log 轴）+ 残差
@@ -2003,7 +2014,8 @@ def _plot_one(res, save_dir, name, show, dpi, fmt, time_unit='ns'):
         out_dir = Path(save_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         out1 = out_dir / f"{name or 'lifetime'}_decay.{fmt}"
-        fig.savefig(out1, bbox_inches='tight', dpi=dpi)
+        fig.savefig(out1, bbox_inches='tight',
+                dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi)
         _safe_print(f"  [保存] {out1}")
 
     # ---- 图 2：寿命分布 ----
@@ -2041,7 +2053,8 @@ def _plot_one(res, save_dir, name, show, dpi, fmt, time_unit='ns'):
     out2 = None
     if save_dir is not None:
         out2 = Path(save_dir) / f"{name or 'lifetime'}_peaks.{fmt}"
-        fig2.savefig(out2, bbox_inches='tight', dpi=dpi)
+        fig2.savefig(out2, bbox_inches='tight',
+                 dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi)
         _safe_print(f"  [保存] {out2}")
 
     if show:

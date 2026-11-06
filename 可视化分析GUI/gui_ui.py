@@ -1105,7 +1105,10 @@ class UiMixin:
                       ("其它", others)],
             palette=self.theme_palette(),
             subtitle=f"v{APP_VERSION} · {RELEASE_DATE}",
-            log_text=f"日志（含加载失败原因、未捕获异常）：{log_dir()}")
+            log_text=f"日志（含加载失败原因、未捕获异常）：{log_dir()}",
+            # 稳定键（v5.0.2）：见 gui_help._safe_key 的注释——标题文案会变，
+            # 不能当记忆键，否则改名一次尺寸就丢。
+            settings_key="main_help")
 
     def _connect_live_update(self):
         """将所有参数控件连接到实时预览（防抖自动刷新）"""
@@ -2126,6 +2129,17 @@ class UiMixin:
         self.act_export_all.setToolTip("把当前文件夹每个文件各存一张图到导出目录")
         self.act_export_all.triggered.connect(self.export_all_plots)
         export_menu.addAction(self.act_export_all)
+
+        # v5.0.2：峰表导出。此前勾了「标记峰」画布上有 548/564 这类数字，
+        # 但程序**从不产出峰位/峰高表**，用户只能用眼睛抄——或去用「积分结果」
+        # 表间接推（那是另一个口径，峰位不是积分边界）。
+        self.act_export_peaks = QAction("导出峰表（CSV / XLSX）",
+                                        self.export_menu_btn)
+        self.act_export_peaks.setToolTip(
+            "把当前图里检测到的峰导出成表：样品 / 峰位(nm) / 峰高 / 相对峰高\n"
+            "口径与图上标注完全一致（同一次峰检测的结果）")
+        self.act_export_peaks.triggered.connect(self._export_peak_table)
+        export_menu.addAction(self.act_export_peaks)
 
         # 分隔线也要跟着一起隐藏，否则非寿命模式下菜单底部会留一条空线。
         # 注意：创建时就得隐藏——程序启动若停在非寿命模式（索引 0），

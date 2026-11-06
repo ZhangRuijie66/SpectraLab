@@ -1690,19 +1690,41 @@ def t_gui_window_lifecycle():
          地雷的话进程会当场 abort。
     """
     import gc
-    app, w = _make_gui()
+    # v5.0.2：改成**增量式**断言。
+    # 原实现取 allWidgets() 的绝对值做基准（`left < base // 4`），这个基准里
+    # 混着**前面几十个检查项**留下的、还没被 GC 回收的窗口；一旦新增检查项
+    # 让遗留量跨过某个阈值，`_make_gui()` 内部恰好触发一轮 GC 把这些遗留
+    # 一次性收走 —— base 反而变小（实测 v5.0.2 加 4 条 GUI 检查项后
+    # base 从 2881 掉到 1093），而 base//4 随之压到 273，被固定的 646 个
+    # 残留判为失败。也就是说：**泄漏量一点没变（HEAD 与本版的 left 都是 646），
+    # 变的只是测量起点。** 现在只问"这个窗口自己建的控件回收掉了吗"。
+    # 先把 app 单独拿到（_make_gui 会连窗口一起建，那样就没法量 before）
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    gc.collect()
+    app.processEvents()
+    before = len(app.allWidgets())
+
+    _app, w = _make_gui()
     w.show()
     app.processEvents()
-    base = len(app.allWidgets())
-    assert base > 200, f"主窗口控件数异常偏少：{base}"
+    peak = len(app.allWidgets())
+    built = peak - before
+    assert built > 200, f"主窗口控件数异常偏少：新建窗口只多了 {built} 个控件"
     # PyQt 里 connect(self.方法) 天然会形成引用环（窗口要等 GC 才回收，这是
     # 既有行为，不是本次引入的），所以这里显式 gc.collect() 逼出析构——
-    # 重要是"显示状态下被析构"这条路径要能安全走完。
+    # 重要的是"显示状态下被析构"这条路径要能安全走完。
     del w
     gc.collect()
     app.processEvents()
     left = len(app.allWidgets())
-    assert left < base // 4, f"GC 后主窗口控件仍未释放：{base} → {left}"
+    freed = peak - left
+    assert freed >= built * 0.9, (
+        f"GC 后主窗口控件基本没释放：新建 {built} 个，只回收了 {freed} 个"
+        f"（窗口销毁后不应留 90% 以上的控件）")
+    # 反复建/销毁（不 close，走"显示状态下被析构"这条路径）——析构期有地雷
+    # 的话进程会当场 abort。每轮允许留少量（滚动条/视图容器等 Qt 内部对象），
+    # 但不能出现"建一个留一个整窗"的量级。
     for _ in range(3):
         _app, t = _make_gui()
         t.show()
@@ -1710,8 +1732,9 @@ def t_gui_window_lifecycle():
         del t
         gc.collect()
         app.processEvents()
-    assert len(app.allWidgets()) < base // 2, \
-        f"反复建/销毁后控件数没有回落：{base} → {len(app.allWidgets())}"
+    grew = len(app.allWidgets()) - left
+    assert grew < built, \
+        f"反复建/销毁 3 轮后多出 {grew} 个控件（接近一个整窗的 {built} 个，疑似未回收）"
 
 
 @check("主题：三套色板键一致 + 高对比达标 + 循环切换（v4.30）")
@@ -2755,6 +2778,237 @@ def t_absorption_multicolumn_xlsx():
         w.xlsx_info, 'RB浓度', metric='peak_intensity')
     assert [p[4] for p in res['points']] == ['R1'], res
     assert len(res['skipped']) == 1 and '为空' in res['skipped'][0][1], res['skipped']
+
+
+# ---------------------------------------------------------------- v5.0.2 新增
+@check("寿命图：MPL_LIFE_* 语义色三套主题齐全且对坐标区底色 ≥ 4.5:1（v5.0.2）")
+def t_lifetime_theme_colors():
+    """v5.0.2 前这 7 个颜色硬编码在 gui_plot 里，只按「深色够亮」挑过。
+
+    实测对白底只有 1.74–3.09:1，远低于图形元素 3:1 门槛——浅色与打印友好
+    主题下散点和 IRF 几乎隐形。改到 THEMES 后必须三套都齐、且都够对比。
+    """
+    import gui_config as cfg
+
+    KEYS = ('MPL_LIFE_DATA', 'MPL_LIFE_IRF', 'MPL_LIFE_IRF_RAW',
+            'MPL_LIFE_FIT', 'MPL_LIFE_MARK', 'MPL_LIFE_ACF', 'MPL_LIFE_CI')
+
+    def _lum(hexc):
+        c = hexc.lstrip('#')
+        ch = [int(c[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        ch = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+              for v in ch]
+        return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+    def _ratio(a, b):
+        la, lb = _lum(a), _lum(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    bad = []
+    for name in cfg.THEME_ORDER:
+        P = cfg.THEMES[name]
+        bg = P['MPL_AX']          # 曲线实际压在这个底色上，不是 CARD
+        for k in KEYS:
+            assert k in P, f"主题 {name} 缺少 {k}"
+            r = _ratio(P[k], bg)
+            if r < 4.5:
+                bad.append(f"{name}/{k}={P[k]} 对 {bg} 仅 {r:.2f}:1")
+    assert not bad, "寿命图语义色对比度不足：" + str(bad)
+
+    # 三套主题之间必须真的不同——同值说明忘了按主题给（改了个寂寞）
+    for k in KEYS:
+        vals = {cfg.THEMES[n][k] for n in cfg.THEME_ORDER}
+        assert len(vals) == len(cfg.THEME_ORDER), \
+            f"{k} 在三套主题里取值重复（{vals}），应各主题各给一色"
+
+
+@check("寿命主图：时间轴按拟合区间裁剪，不再有 78% 噪声地板（v5.0.2）")
+def t_lifetime_xlim_by_fit_window():
+    """原图时间轴用原始通道全长，Ce6 数据 0–399 900 ns 而拟合只用
+    23 300–89 400 ns —— 右侧 78% 是平的噪声地板，曲线挤在左边 1/4。
+    """
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)      # lifetime
+    # 点数必须是 4000：审计原文的通道号 233–894 就是 4000 点数组上的下标
+    # （dt=100 ns → ch233=23 300 ns、ch894=89 400 ns）。1000 点时同一组
+    # 通道号只占 66% 宽度，测不出"78% 噪声地板"这件事。
+    n = 4000
+    time = np.linspace(0.0, 399900.0, n)
+    decay = 4000.0 * np.exp(-time / 50000.0) + 1.0
+    fit_start, fit_end = 233, 894
+    y_fitted = decay[fit_start:fit_end].copy()
+    res = {
+        'name': 'Ce6 lifetime',
+        'time': time, 'decay': decay,
+        'k': np.logspace(-2, 1, 201),
+        'k_distribution': np.exp(-((np.linspace(-2, 1, 201) - 0.6) ** 2) / 0.05),
+        'peak_result': [],
+        'info': {
+            'irf_shifted': decay.copy(),
+            'y_fitted': y_fitted,
+            'residuals': np.zeros(fit_end - fit_start),
+            'fit_start': fit_start, 'fit_end': fit_end,
+            'qshift_suggested': 22.4,
+            'chi_sqr': 1.02, 'method': 'MEM',
+        },
+    }
+    w._render_lifetime_result(res, 1.5, '')
+
+    ax1 = w.canvas.fig.axes[0]
+    x0, x1 = ax1.get_xlim()
+    t_lo = time[fit_start]
+    t_hi = time[fit_end - 1]
+    total = time[-1] - time[0]
+    # 裁剪后的窗口必须显著小于全长（原实现是全长 ~440 000 ns）
+    assert (x1 - x0) < total * 0.75, \
+        f"时间轴仍占全长的 {(x1 - x0) / total:.0%}（应 <75%），噪声地板没裁掉"
+    # 且必须完整包含拟合区间（裁过头就看不清拟合了）
+    assert x0 <= t_lo and x1 >= t_hi, \
+        f"时间轴 [{x0:.0f}, {x1:.0f}] 没包住拟合区间 [{t_lo:.0f}, {t_hi:.0f}]"
+    # 拟合窗口阴影带存在
+    spans = [p for p in ax1.patches if type(p).__name__ == 'Rectangle']
+    assert spans, "拟合窗口应有 axvspan 阴影带"
+
+    # 诊断页：上图 xlabel 与下图 title 间距必须为正
+    # （v5.0.2 前实测 0 px，两行字贴在一起成一句乱文）
+    dfig = w.diag_canvas.fig
+    dfig.canvas.draw()
+    r = dfig.canvas.get_renderer()
+    axs = dfig.axes
+    assert len(axs) >= 2, f"诊断页应有上下两图，实际 {len(axs)} 个"
+    xl = axs[0].xaxis.label
+    title_top = axs[1].title.get_window_extent(r).y1
+    if xl.get_text().strip():
+        gap = xl.get_window_extent(r).y0 - title_top
+        assert gap > 2, \
+            f"上图 xlabel 与下图 title 间距 {gap:.0f} px（要求 >2px，原来 0px 相撞）"
+
+
+@check("导出 DPI：GUI / CLI / 汇总图读同一口径（v5.0.2）")
+def t_export_dpi_single_source():
+    """原状：GUI 600 / absorption・emission・3d_scan 200 / compare 300 /
+    lifetime.summary 200 / report PDF 150 —— 同一份数据差 2–4 倍。
+    """
+    import export_defaults as ed
+    import gui_config as cfg
+    import plot_absorption as pa
+    import plot_emission as pe
+    import plot_3d_scan as p3
+    import plot_compare as pc
+    import plot_lifetime as pl
+
+    # 单一真源：三个常量都是正整数且递增关系合理
+    assert ed.EXPORT_DPI_DEFAULT >= 300, "位图默认 DPI 低于期刊底线"
+    assert ed.EXPORT_DPI_VECTOR_MIN <= ed.EXPORT_DPI_DEFAULT
+    assert 0 < ed.EXPORT_DPI_PREVIEW < ed.EXPORT_DPI_VECTOR_MIN
+
+    # GUI 侧与根目录侧读到同一个值（gui_config 从 export_defaults 转出）
+    assert cfg.EXPORT_DPI_DEFAULT == ed.EXPORT_DPI_DEFAULT
+    assert cfg.EXPORT_DPI_VECTOR_MIN == ed.EXPORT_DPI_VECTOR_MIN
+    assert cfg.EXPORT_DPI_PREVIEW == ed.EXPORT_DPI_PREVIEW
+
+    # 各 CLI 模块必须真的 import 到这个口径（而不是各自留了字面量）
+    for mod, nm in ((pa, 'plot_absorption'), (pe, 'plot_emission'),
+                    (p3, 'plot_3d_scan'), (pc, 'plot_compare'),
+                    (pl, 'plot_lifetime')):
+        assert hasattr(mod, 'EXPORT_DPI_DEFAULT'), f"{nm} 没接入共享 DPI 口径"
+        assert mod.EXPORT_DPI_DEFAULT == ed.EXPORT_DPI_DEFAULT, \
+            f"{nm} 的默认 DPI 与统一口径不一致"
+
+    # 关键函数的 dpi 默认值必须是 None（走共享口径），不能是硬编码数字
+    import inspect
+    for fn, nm in ((pa.plot_single_absorption, 'plot_single_absorption'),
+                   (pa.plot_combined_absorption, 'plot_combined_absorption'),
+                   (pc.save_figure, 'plot_compare.save_figure'),
+                   (pl.plot_summary, 'plot_summary'),
+                   (pl.export_report_pdf, 'export_report_pdf')):
+        d = inspect.signature(fn).parameters.get('dpi')
+        assert d is not None, f"{nm} 没有 dpi 参数"
+        assert d.default is None, \
+            f"{nm} 的 dpi 默认值仍是硬编码 {d.default}，应改为 None 走统一口径"
+
+
+@check("峰标注：关闭「峰位标数值」后不留空 Text 对象（v5.0.2）")
+def t_peak_label_no_empty_text():
+    """原实现 `_peak_label` 返回空串、调用方仍无条件 annotate('')。
+
+    实测每次重绘留 6 个空 Text：肉眼看不到，但参与 bbox 计算、导出时被
+    序列化，也让自动避让重叠标注的逻辑失效（空串 bbox 是退化矩形）。
+    """
+    app, w = _make_gui()
+    wl = np.arange(400.0, 601.0, 1.0)
+    y = 100.0 * np.exp(-((wl - 500.0) / 25.0) ** 2)
+    _install_spectra(w, {'s-1 (Emission)': (wl, y)})
+
+    def _empty_texts(canvas):
+        n = 0
+        for ax in canvas.fig.axes:
+            for t in ax.texts:
+                if not t.get_text().strip():
+                    n += 1
+        return n
+
+    w.peak_value_check.setChecked(False)
+    w._do_plot()
+    assert _empty_texts(w.canvas) == 0, \
+        f"关闭峰位数值后仍留了 {_empty_texts(w.canvas)} 个空 Text 对象"
+
+    # 打开时必须真的标出数字（不能为了不建空对象把功能一起关掉）
+    w.peak_value_check.setChecked(True)
+    w._do_plot()
+    labels = [t.get_text() for ax in w.canvas.fig.axes for t in ax.texts
+              if t.get_text().strip()]
+    assert labels, "勾选「峰位标数值」后应至少有 1 个峰位数字标注"
+    assert all(s.replace('.', '').isdigit() for s in labels), \
+        f"峰位标注内容异常：{labels[:5]}"
+
+
+@check("寿命图：IRF 平移量不用科学计数法（v5.0.2）")
+def t_lifetime_shift_format():
+    app, w = _make_gui()
+    assert w._fmt_shift(1499.0) == '1,499', w._fmt_shift(1499.0)
+    assert w._fmt_shift(22.4) == '22.4', w._fmt_shift(22.4)
+    assert w._fmt_shift(0.0) == '0', w._fmt_shift(0.0)
+    assert 'e' not in w._fmt_shift(1499.0).lower(), "不得输出科学计数法"
+    # 极小值仍可读（退回 2 位有效数字，不撑爆图例）
+    assert len(w._fmt_shift(0.00123)) <= 6
+
+
+@check("寿命分布：τ 轴按分布质量分位裁剪（v5.0.2）")
+def t_lifetime_tau_axis_by_mass():
+    """τ 网格 0.01–100 ns 跨 4 个数量级，而 Ce6 的 MEM 分布 99% 质量只落在
+    69.2–100 ns（0.16 个数量级）—— 峰被挤在最右端贴着边框。
+    """
+    app, w = _make_gui()
+    w.spectrum_type_combo.setCurrentIndex(2)
+    k = np.logspace(-2, 1, 201)        # k = 1/τ，τ ∈ [0.1, 100] ns
+    tau = 1.0 / k
+    # 分布集中在 τ≈85 ns 附近，模拟 Ce6 的窄峰
+    dist = np.exp(-((np.log10(tau) - np.log10(85.0)) ** 2) / (2 * 0.02 ** 2))
+    time = np.linspace(0.0, 40000.0, 800)
+    decay = 3000.0 * np.exp(-time / 8000.0) + 1.0
+    fs, fe = 100, 700
+    res = {
+        'name': 'Ce6', 'time': time, 'decay': decay,
+        'k': k, 'k_distribution': dist, 'peak_result': [],
+        'info': {'irf_shifted': decay.copy(), 'y_fitted': decay[fs:fe].copy(),
+                 'residuals': np.zeros(fe - fs), 'fit_start': fs, 'fit_end': fe,
+                 'qshift_suggested': 5.0, 'chi_sqr': 1.0, 'method': 'MEM'},
+    }
+    w._render_lifetime_result(res, 1.5, '')
+    ax3 = w.lifetime_canvas.fig.axes[0]
+    lo, hi = ax3.get_xlim()
+    assert lo > 0 and hi > lo, f"τ 轴范围异常：{lo}, {hi}"
+    decades = np.log10(hi) - np.log10(lo)
+    # 原实现跨 4 个数量级（0.0063–158.5）；裁剪后应显著收窄
+    assert decades < 2.0, \
+        f"τ 轴仍跨 {decades:.2f} 个数量级（应 <2），峰还是被挤在一边"
+    # 峰必须在视野内且不在最右边缘（留有余量）
+    t_peak = 85.0
+    assert lo < t_peak < hi, f"主峰 τ={t_peak} 不在轴范围 [{lo:.3g}, {hi:.3g}] 内"
+    assert np.log10(hi) - np.log10(t_peak) > 0.05, \
+        f"主峰贴着右边界（hi={hi:.3g}），应留出余量"
 
 
 @check("GUI：「导出当前图」跟着标签页走——数据比较页导出的是点线图（v4.42）")

@@ -55,7 +55,9 @@ __all__ = ["HelpDialog", "show_help_dialog"]
 
 _logger = logging.getLogger(__name__)
 
-# QSettings 里记住窗口尺寸用的组名（键：help_dialog/<标题>）
+# QSettings 里记住窗口尺寸用的组名。键有两种写法（v5.0.2）：
+#   help_dialog/<稳定键>   ← 调用方传 settings_key 时（推荐，见 _safe_key 注释）
+#   help_dialog/<标题>     ← 未传 settings_key 时的旧行为（仅作兼容读回）
 _SETTINGS_GROUP = "help_dialog"
 
 # 最近一次创建的窗口（parent 为 None 时靠它兜住引用，避免被 GC 掉）
@@ -63,7 +65,14 @@ _LAST_DIALOG = None
 
 
 def _safe_key(name):
-    """把窗口标题转成安全的 QSettings 键（斜杠在 QSettings 里是分组分隔符）。"""
+    """把任意文本转成安全的 QSettings 单段键（斜杠在 QSettings 里是分组分隔符）。
+
+    ⚠️ 不要拿窗口标题当键（v5.0.2 修）：标题是**展示文案**，会被随手改。
+    标题一改，旧键就成为永久残留在注册表里的死条目——本项目实测踩到过：
+    帮助窗口标题从「帮助」改成「帮助 - 光谱可视化分析工具」后，注册表里
+    `help_dialog/帮助` 下的尺寸再也没人读，而新键又是从默认值开始。
+    需要记忆的窗口应由调用方给一个**与界面文案无关**的稳定键（如 "main_help"）。
+    """
     try:
         key = "".join(ch if (ch.isalnum() or ch in "-_") else "_"
                       for ch in str(name))
@@ -135,7 +144,8 @@ class HelpDialog(QDialog):
 
     def __init__(self, parent=None, title="帮助", sections=None,
                  palette=None, subtitle="", log_text="",
-                 default_size=(720, 560), remember_geometry=True):
+                 default_size=(720, 560), remember_geometry=True,
+                 settings_key=None):
         """
         Args:
             parent: 父窗口（可为 None）
@@ -148,6 +158,9 @@ class HelpDialog(QDialog):
             log_text: 底部显示的日志路径文字（空串则不显示该行）
             default_size: (宽, 高) 初始尺寸，可缩放
             remember_geometry: True 时用 QSettings(APP_ORG, APP_NAME) 记住并恢复尺寸
+            settings_key: 记忆尺寸用的**稳定键**（不随标题变化，v5.0.2）。
+                给了就用它当键；没给则退回旧的「按标题取键」行为——那样标题
+                一改旧键就成死条目，所以新代码都应显式传本参数。
         """
         super().__init__(parent)
         # 色板：以默认主题为底，再用传入色板覆盖（传入不全也不会 KeyError）。
@@ -179,6 +192,7 @@ class HelpDialog(QDialog):
 
         self._settings = None
         self._geo_key = None
+        self.settings_key = (str(settings_key) if settings_key else None)
         try:
             self.resize(int(default_size[0]), int(default_size[1]))
         except Exception:
@@ -187,8 +201,16 @@ class HelpDialog(QDialog):
         if remember_geometry:
             try:
                 self._settings = QSettings(APP_ORG, APP_NAME)
-                self._geo_key = f"{_SETTINGS_GROUP}/{_safe_key(self.title_text)}"
+                # 稳定键优先；没给才退回标题（旧行为，仅兼容历史条目）
+                _key_src = self.settings_key or self.title_text
+                self._geo_key = f"{_SETTINGS_GROUP}/{_safe_key(_key_src)}"
                 saved = _to_size(self._settings.value(self._geo_key))
+                if saved is None and self.settings_key:
+                    # 从旧「按标题取键」版本升级过来：本键还没写过时，试着读一次
+                    # 历史标题键，把用户调好的尺寸带过来（读不到就算了）。
+                    _legacy = f"{_SETTINGS_GROUP}/{_safe_key(self.title_text)}"
+                    if _legacy != self._geo_key:
+                        saved = _to_size(self._settings.value(_legacy))
                 if saved is not None and saved.width() >= 460 and saved.height() >= 340:
                     self.resize(saved)
             except Exception as e:
@@ -746,7 +768,7 @@ class HelpDialog(QDialog):
 
 
 def show_help_dialog(parent, title, sections, palette=None, subtitle="",
-                     log_text=""):
+                     log_text="", settings_key=None):
     """构造并**非模态**显示帮助窗口；返回该对象。
 
     窗口挂在 ``parent._help_dialog`` 上防止被 GC。若 parent 已有
@@ -760,6 +782,10 @@ def show_help_dialog(parent, title, sections, palette=None, subtitle="",
         palette: gui_config.THEMES[theme]；None 时用默认主题
         subtitle: 副标题（如 "v4.24 · 2026-09-10"）
         log_text: 底部日志路径文字（空串则不显示该行）
+        settings_key: 记忆窗口尺寸用的稳定键（v5.0.2）。**调用方应显式传**
+            一个与标题文案无关的常量（如 "launcher_help" / "main_help"），
+            否则标题一改，旧尺寸条目就变成注册表里的死键、新窗口又从默认
+            尺寸开始。缺省时退回按标题取键的旧行为（兼容历史条目）。
     """
     global _LAST_DIALOG
     key = _sections_key(sections)
@@ -794,7 +820,8 @@ def show_help_dialog(parent, title, sections, palette=None, subtitle="",
             _logger.warning("复用帮助窗口失败，改为重建：%s", e)
 
     dialog = HelpDialog(parent=parent, title=title, sections=sections,
-                        palette=palette, subtitle=subtitle, log_text=log_text)
+                        palette=palette, subtitle=subtitle, log_text=log_text,
+                        settings_key=settings_key)
     dialog._sections_key = key
     if parent is not None:
         try:

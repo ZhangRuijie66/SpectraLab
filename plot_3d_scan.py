@@ -49,6 +49,15 @@ from scipy.interpolate import (RectBivariateSpline, make_interp_spline,
                                PchipInterpolator)
 from scipy.ndimage import gaussian_filter, gaussian_filter1d, median_filter
 
+# 导出口径单一来源（v5.0.2）：GUI 与根目录各 plot_*.py 共用同一组 DPI。
+# 此前本文件的 6 处 savefig 都写死 dpi=200。
+try:
+    from export_defaults import (EXPORT_DPI_DEFAULT,
+                                 EXPORT_DPI_VECTOR_MIN,
+                                 EXPORT_DPI_PREVIEW)
+except ImportError:                     # 脚本被单独复制出去时退回字面量
+    EXPORT_DPI_DEFAULT, EXPORT_DPI_VECTOR_MIN, EXPORT_DPI_PREVIEW = 600, 300, 150
+
 
 # ======================== 0. 打印与字体 ========================
 
@@ -977,7 +986,7 @@ def plot_3d_surface(data, save_dir=".", show=True, cmap='viridis',
                    fontsize=10)
     fig.tight_layout()
     fname = Path(save_dir) / f"{_safe_label(data.get('label', 'scan'))}_3D_surface.png"
-    fig.savefig(fname, dpi=200)
+    fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT)
     _safe_print(f"  ✔ 已保存: {fname}")
     if show:
         plt.show()
@@ -1002,7 +1011,7 @@ def plot_contour(data, save_dir=".", show=True, cmap='viridis',
                    fontsize=10)
     fig.tight_layout()
     fname = Path(save_dir) / f"{_safe_label(data.get('label', 'scan'))}_contour.png"
-    fig.savefig(fname, dpi=200)
+    fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT)
     _safe_print(f"  ✔ 已保存: {fname}")
     if show:
         plt.show()
@@ -1024,7 +1033,7 @@ def plot_waterfall(data, save_dir=".", show=True, cmap='plasma',
                    label=data.get('label', ''))
     fig.tight_layout()
     fname = Path(save_dir) / f"{_safe_label(data.get('label', 'scan'))}_waterfall.png"
-    fig.savefig(fname, dpi=200)
+    fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT)
     _safe_print(f"  ✔ 已保存: {fname}")
     if show:
         plt.show()
@@ -1140,7 +1149,7 @@ def main():
         cbar.set_label('log10 强度' if args.log else '强度 (AU)', fontsize=10)
         fig.tight_layout()
         fname = Path(args.out) / f"{_safe_label(data['label'])}_3D_surface.png"
-        fig.savefig(fname, dpi=200)
+        fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT)
         _safe_print(f"  ✔ 已保存: {fname}")
         plt.close(fig) if not show else plt.show()
 
@@ -1154,7 +1163,7 @@ def main():
         cbar.set_label('log10 强度' if args.log else '强度 (AU)', fontsize=10)
         fig.tight_layout()
         fname = Path(args.out) / f"{_safe_label(data['label'])}_contour.png"
-        fig.savefig(fname, dpi=200)
+        fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT)
         _safe_print(f"  ✔ 已保存: {fname}")
         plt.close(fig) if not show else plt.show()
 
@@ -1166,7 +1175,7 @@ def main():
                        smooth_factor=args.smooth, label=data['label'])
         fig.tight_layout()
         fname = Path(args.out) / f"{_safe_label(data['label'])}_waterfall.png"
-        fig.savefig(fname, dpi=200)
+        fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT)
         _safe_print(f"  ✔ 已保存: {fname}")
         plt.close(fig) if not show else plt.show()
 

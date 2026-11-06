@@ -65,6 +65,23 @@ except ImportError:                     # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from read_xlsx_info import load_xlsx_info, match_number
 
+# 导出口径单一来源（v5.0.2）。根目录各 plot_*.py 与 GUI 共用同一组 DPI，
+# 避免"同一份数据从 GUI 和命令行导出的图分辨率差 2–3 倍"。找不到时退回字面量，
+# 保证脚本能脱离仓库单独复制出去运行。
+try:
+    from export_defaults import (EXPORT_DPI_DEFAULT,
+                                 EXPORT_DPI_VECTOR_MIN,
+                                 EXPORT_DPI_PREVIEW)
+except ImportError:                     # pragma: no cover
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from export_defaults import (EXPORT_DPI_DEFAULT,
+                                     EXPORT_DPI_VECTOR_MIN,
+                                     EXPORT_DPI_PREVIEW)
+    except ImportError:
+        EXPORT_DPI_DEFAULT, EXPORT_DPI_VECTOR_MIN, EXPORT_DPI_PREVIEW = 600, 300, 150
+
 
 # ======================== 0. 中文字体 / 打印 ========================
 
@@ -355,8 +372,36 @@ def make_compare_figure(points, x_label, y_label, title,
         else:
             label = f'{key}'
         color = _color(i, label)
-        ax.plot(xs, ys, marker=marker, markersize=markersize,
-                linewidth=linewidth, color=color, label=label)
+
+        # v5.0.2：同一 x 上重复测量的点**不要用折线顺序连起来**。
+        # 原实现直接 ax.plot(xs, ys)：05 数据 12 个点只落在 3 个 x 值上
+        # （x=10 有 6 个点、20 有 3 个、50 有 3 个），折线把这些同 x 的点按
+        # 读入顺序串起来，在图上画出一条条**竖直的"假趋势"**，看起来像
+        # 数据在某个浓度上下剧烈跳动，实际只是重复测量的离散。
+        # 现在：不排序、按 x 聚合，画「均值 ± 标准差」误差棒，原始点仍以
+        # 散点叠在同样的位置（不丢信息，但不再伪造趋势线）。
+        agg = {}
+        for x, y in zip(xs, ys):
+            if not (np.isfinite(x) and np.isfinite(y)):
+                continue
+            agg.setdefault(x, []).append(y)
+        has_replicates = any(len(v) > 1 for v in agg.values())
+        if has_replicates:
+            ux = sorted(agg)
+            uy = [float(np.mean(agg[x])) for x in ux]
+            ue = [float(np.std(agg[x], ddof=1)) if len(agg[x]) > 1 else 0.0
+                  for x in ux]
+            ax.errorbar(ux, uy, yerr=ue, marker=marker,
+                        markersize=markersize, linewidth=linewidth,
+                        capsize=3, color=color, label=label,
+                        elinewidth=0.9, alpha=0.95)
+            # 原始点淡色叠在均值位置上，保留逐点离散（重复测量多时看得出散布）
+            ax.plot(xs, ys, linestyle='none', marker=marker,
+                    markersize=max(markersize * 0.55, 2.0), color=color,
+                    alpha=0.35, markeredgewidth=0)
+        else:
+            ax.plot(xs, ys, marker=marker, markersize=markersize,
+                    linewidth=linewidth, color=color, label=label)
         if annotate:
             for x, y, name, _num in rows:
                 ax.annotate(str(name), xy=(x, y), xytext=(4, 4),
@@ -368,25 +413,61 @@ def make_compare_figure(points, x_label, y_label, title,
     ax.set_ylabel(y_label)
     ax.set_title(title, fontsize=13)
     ax.grid(True, linestyle='--', alpha=0.35)
+
+    # v5.0.2：纵轴量级大时用科学刻度。峰面积量级可到 3.8×10⁵，原图上 tick
+    # 直接写「383400」这类 6 位数，读数容易错位；改成「3.8」+ 顶部 ×10⁵ 偏移。
+    try:
+        _ys = [abs(float(r[1])) for _k, _rows in grouped for r in _rows
+               if np.isfinite(r[1])]
+        if _ys and max(_ys) >= 1e5:
+            from matplotlib.ticker import ScalarFormatter
+            fmt = ScalarFormatter(useMathText=True)
+            fmt.set_powerlimits((-3, 4))
+            ax.yaxis.set_major_formatter(fmt)
+            ax.yaxis.get_offset_text().set_fontsize(9)
+    except Exception:
+        pass
+
     if n_points:
         ax.legend(fontsize=8, frameon=False, loc='upper left',
                   bbox_to_anchor=(1.01, 1.0))
         fig.subplots_adjust(left=0.12, right=0.80, top=0.90, bottom=0.16)
     else:
+        # v5.0.2：空图也要恢复正常边距。MplCanvas 初始把边距设成 0
+        # （提示文字铺满用），不恢复的话 xlabel/ylabel/title 会被算到画布外，
+        # 触发大量越界 bbox 计算（实测 top +23px、left -51px）。
+        fig.subplots_adjust(left=0.12, right=0.97, top=0.90, bottom=0.16)
         ax.text(0.5, 0.5, '没有可画的样品\n（检查说明.xlsx 的变量与勾选情况）',
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=13, color='#64748b', wrap=True)
         ax.set_axis_off()
     summary = {'groups': [(k, len(v)) for k, v in grouped if v],
                'n_points': n_points}
+    # v5.0.2：把重复测量聚成的浓度点数与各点重复次数报出来，
+    # 状态栏才能说明「N 个样品聚成 M 个点，误差棒 = 标准差」
+    try:
+        _all_agg = {}
+        for _g, _rows in grouped:
+            for _x, _y in ((r[0], r[1]) for r in _rows):
+                if np.isfinite(_x) and np.isfinite(_y):
+                    _all_agg.setdefault(_x, []).append(_y)
+        if _all_agg:
+            summary['aggregated'] = {
+                'n_unique_x': len(_all_agg),
+                'has_replicates': any(len(v) > 1 for v in _all_agg.values()),
+                'replicates': {k: len(v) for k, v in sorted(_all_agg.items())},
+            }
+    except Exception:
+        pass
     return fig, summary
 
 
-def save_figure(fig, path, dpi=300):
+def save_figure(fig, path, dpi=None):
     """保存图片（自动建目录），返回保存路径。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=dpi, bbox_inches='tight')
+    fig.savefig(path, dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi,
+                bbox_inches='tight')
     return path
 
 
@@ -439,7 +520,7 @@ def _load_spectra(files, kind='emission'):
 def run_compare(folder=None, files=None, x_var=None, group_var=None,
                 metric='peak_intensity', band=None, at_wl=None,
                 kind='emission', save_dir='./plots', name=None,
-                figsize=(7.2, 4.6), dpi=300, verbose=True,
+                figsize=(7.2, 4.6), dpi=None, verbose=True,
                 y_label=None, legend_prefix=None):
     """一键：读光谱 + 读说明.xlsx + 取点 + 画图 + 存盘。
 

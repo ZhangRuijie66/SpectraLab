@@ -32,6 +32,14 @@ import glob
 from scipy.signal import find_peaks
 from curve_colors import CurveColors
 
+# 导出口径单一来源（v5.0.2）：GUI 与根目录各 plot_*.py 共用同一组 DPI。
+try:
+    from export_defaults import (EXPORT_DPI_DEFAULT,
+                                 EXPORT_DPI_VECTOR_MIN,
+                                 EXPORT_DPI_PREVIEW)
+except ImportError:                     # 脚本被单独复制出去时退回字面量
+    EXPORT_DPI_DEFAULT, EXPORT_DPI_VECTOR_MIN, EXPORT_DPI_PREVIEW = 600, 300, 150
+
 
 # ======================== 0. 中文字体设置 ========================
 
@@ -540,7 +548,7 @@ def _is_excitation(ds):
 
 def plot_single(dataset, save_dir=".", show=True, xlim=None, annotate_peaks=True,
                 peak_height=0.05, peak_distance=10, peak_prominence=0.03, show_ex=False,
-                fname=None, dpi=200, skip_excitation=True):
+                fname=None, dpi=None, skip_excitation=True):
     """绘制单条光谱图；传入多条（list）时逐条各画一张。
 
     参数
@@ -678,7 +686,7 @@ def plot_single(dataset, save_dir=".", show=True, xlim=None, annotate_peaks=True
     fname = Path(fname)
     if not fname.is_absolute():
         fname = Path(save_dir) / fname
-    fig.savefig(fname, dpi=dpi)
+    fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi)
     print(f"  ✔ 已保存: {fname}")
 
     if show:
@@ -691,7 +699,7 @@ def plot_single(dataset, save_dir=".", show=True, xlim=None, annotate_peaks=True
 
 def plot_combined(datasets, save_dir=".", show=True, normalize=False, xlim=None,
                   annotate_peaks=True, peak_height=0.05, peak_distance=10, peak_prominence=0.03,
-                  fname=None, dpi=200, skip_excitation=True):
+                  fname=None, dpi=None, skip_excitation=True):
     """绘制合并对比图（多条光谱叠加在一张图上）。
 
     参数
@@ -807,7 +815,7 @@ def plot_combined(datasets, save_dir=".", show=True, normalize=False, xlim=None,
     if fname is None:
         fname = "combined_emission.png"
     fname = Path(save_dir) / fname
-    fig.savefig(fname, dpi=dpi)
+    fig.savefig(fname, dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi)
     print(f"  ✔ 已保存: {fname}")
 
     if show:
@@ -821,7 +829,7 @@ def plot_combined(datasets, save_dir=".", show=True, normalize=False, xlim=None,
 def plot_spectra(files=None, datasets=None, save_dir=".", show=True, normalize=False,
                  xlim=None, show_ex=False, annotate_peaks=True, peak_height=0.05,
                  peak_distance=10, peak_prominence=0.03, single=True, combined=True,
-                 skip_excitation=True, combined_fname=None, dpi=200, verbose=True):
+                 skip_excitation=True, combined_fname=None, dpi=None, verbose=True):
     """【多光谱一键】解析 → 每条单独图 → 合并图。
 
     两种调用方式（二选一）：

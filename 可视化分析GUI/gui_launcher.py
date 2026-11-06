@@ -327,7 +327,10 @@ class ModuleLauncher(QDialog):
                 sections=[("关于本工具", self._help_text)],
                 palette=THEMES[self.theme],
                 subtitle=f"v{APP_VERSION} · {RELEASE_DATE}",
-                log_text=f"日志目录：{log_dir()}")
+                log_text=f"日志目录：{log_dir()}",
+                # 稳定键（v5.0.2）：不能用标题当尺寸记忆键——标题是展示文案，
+                # 改一次旧键就成注册表死条目，用户调好的窗口尺寸白调。
+                settings_key="launcher_help")
         except Exception as e:                      # 兜底：绝不因帮助起不来而崩
             logging.warning("打开帮助窗口失败: %s", e)
 

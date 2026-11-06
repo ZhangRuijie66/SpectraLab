@@ -30,6 +30,15 @@ from scipy.interpolate import CubicSpline
 from curve_colors import CurveColors
 from read_xlsx_info import parse_spectrum_xlsx
 
+# 导出口径单一来源（v5.0.2）：GUI 与根目录各 plot_*.py 共用同一组 DPI。
+# 此前这里写死 200 而 GUI 是 600，同一份数据两条路径产出的图分辨率差 3 倍。
+try:
+    from export_defaults import (EXPORT_DPI_DEFAULT,
+                                 EXPORT_DPI_VECTOR_MIN,
+                                 EXPORT_DPI_PREVIEW)
+except ImportError:                     # 脚本被单独复制出去时退回字面量
+    EXPORT_DPI_DEFAULT, EXPORT_DPI_VECTOR_MIN, EXPORT_DPI_PREVIEW = 600, 300, 150
+
 
 # ======================== 0. 中文字体设置 ========================
 
@@ -372,7 +381,7 @@ def load_absorption_spectra(files, skip_metadata=False, verbose=True):
 
 # ======================== 2. 绘图函数 ========================
 
-def plot_single_absorption(dataset, save_dir=".", show=False, dpi=200,
+def plot_single_absorption(dataset, save_dir=".", show=False, dpi=None,
                          xlim=None, ylim=None, annotate_peaks=True,
                          peak_height=0.1, peak_distance=10, peak_prominence=0.05,
                          smooth=False, smooth_factor=1, figsize=(10, 6),
@@ -499,7 +508,8 @@ def plot_single_absorption(dataset, save_dir=".", show=False, dpi=200,
         filename = filename.replace('/', '_').replace('\\', '_')  # 替换路径分隔符
         save_path = save_dir / filename
         
-        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        plt.savefig(save_path, dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi,
+                bbox_inches='tight')
         saved_files.append(save_path)
         
         if show:
@@ -510,7 +520,7 @@ def plot_single_absorption(dataset, save_dir=".", show=False, dpi=200,
     return saved_files
 
 
-def plot_combined_absorption(datasets, save_dir=".", normalize=False, dpi=200,
+def plot_combined_absorption(datasets, save_dir=".", normalize=False, dpi=None,
                             xlim=None, ylim=None, annotate_peaks=True,
                             peak_height=0.1, peak_distance=10, peak_prominence=0.05,
                             smooth=False, smooth_factor=1, figsize=(12, 8),
@@ -687,7 +697,8 @@ def plot_combined_absorption(datasets, save_dir=".", normalize=False, dpi=200,
     
     # 保存文件
     save_path = save_dir / "combined_absorption_spectra.png"
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+    plt.savefig(save_path, dpi=EXPORT_DPI_DEFAULT if dpi is None else dpi,
+                bbox_inches='tight')
     
     # 不显示图像窗口
     if not show:

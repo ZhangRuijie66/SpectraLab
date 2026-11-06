@@ -403,6 +403,16 @@ class PlotMixin:
             'note_bg': P.get('MPL_NOTE_BG', 'white'),
             'note_fg': P.get('MPL_NOTE_FG', P.get('MPL_FG', 'black')),
             'muted': P.get('MUTED', 'gray'),
+            # v5.0.2：荧光寿命图的 6 个语义色（原为硬编码，浅色/打印友好主题下
+            # 对白底只有 1.74–3.09:1，几乎隐形）。缺键时退回本主题前景色，
+            # 不会画不出线，但会失去语义区分——tests 里要求三套主题都齐全。
+            'life_data': P.get('MPL_LIFE_DATA', P.get('MPL_FG', 'black')),
+            'life_irf': P.get('MPL_LIFE_IRF', P.get('MPL_FG', 'black')),
+            'life_irf_raw': P.get('MPL_LIFE_IRF_RAW', P.get('MUTED', 'gray')),
+            'life_fit': P.get('MPL_LIFE_FIT', P.get('MPL_FG', 'black')),
+            'life_mark': P.get('MPL_LIFE_MARK', P.get('MPL_FG', 'black')),
+            'life_acf': P.get('MPL_LIFE_ACF', P.get('MPL_FG', 'black')),
+            'life_ci': P.get('MPL_LIFE_CI', P.get('MPL_FG', 'black')),
         }
 
     def _grid(self, ax, dashed=False):
@@ -1286,6 +1296,8 @@ class PlotMixin:
         self.canvas.clear_fig()
         self.canvas.axes = self.canvas.fig.add_subplot(111)
         self._reset_subtract_skips()
+        # v5.0.2：每张图重画前清空峰表缓存，避免「导出峰表」导出的是上一张图的峰
+        self._last_peaks = []
 
         # 设置中文字体
         self.setup_chinese_font()
@@ -1800,6 +1812,92 @@ class PlotMixin:
             return ''
         return f'{pw:.0f}'
 
+    def _annotate_peak(self, ax, pw, pi, **kwargs):
+        """峰位标注，未勾选「峰位标数值」时**根本不创建 Text 对象**（v5.0.2）。
+
+        此前 `_peak_label` 返回空串、调用方仍无条件 `ax.annotate('')`，实测
+        每次重绘在图里留下 6 个空 Text：肉眼看不到，但它们参与 bbox 计算、
+        导出时被序列化，也让「自动避让重叠标注」类逻辑失效（空串的 bbox 是
+        退化矩形，避让算法会把它当成一个占了位置的标注）。
+        """
+        lbl = self._peak_label(pw)
+        if not lbl:
+            return None
+        try:
+            return ax.annotate(lbl, xy=(pw, pi), **kwargs)
+        except Exception:
+            return None
+
+    def _record_peaks(self, rows):
+        """**覆盖**本张图的峰检测结果，供「导出峰表」使用（v5.0.2）。
+
+        以前 `find_absorption_peaks` / `find_peaks` 返回的峰位峰高在
+        `_plot_*` 里用完即弃——图上能看到「548」「564」，但程序从不产出
+        峰位/峰高表，用户只能用眼睛抄。这里在画峰的同时把结果留下。
+        只保留**真正画出来的**峰（被条数裁剪规则丢掉的峰不进表，
+        否则"表和图对不上"比没有表更糟）。
+        """
+        self._last_peaks = list(rows or [])
+
+    def _add_peak(self, sample, pw, pi):
+        """往本张图的峰表里追加一行（多曲线合并图逐条累加）。"""
+        if not hasattr(self, '_last_peaks') or self._last_peaks is None:
+            self._last_peaks = []
+        self._last_peaks.append({'样品': sample,
+                                 '峰位(nm)': float(pw),
+                                 '峰高': float(pi)})
+
+    def _export_peak_table(self):
+        """把最近一次绘图检测到的峰导出成 CSV/XLSX（v5.0.2）。"""
+        rows = getattr(self, '_last_peaks', None) or []
+        if not rows:
+            QMessageBox.warning(
+                self, "没有峰数据",
+                "当前没有可导出的峰检测结果。\n\n"
+                "请先勾选「标记峰」并完成一次绘图，再导出峰表。")
+            self.status_bar.showMessage("导出峰表取消：暂无峰数据")
+            return
+        try:
+            from PyQt5.QtWidgets import QFileDialog
+            import pandas as pd
+            base = self._safe_filename(self._current_plot_title() or 'peaks')
+            default = str(Path(self._dialog_start_dir()) / f"{base}_peaks.csv")
+            path, _flt = QFileDialog.getSaveFileName(
+                self, "导出峰表", default,
+                "CSV 表格 (*.csv);;Excel 工作簿 (*.xlsx)")
+            if not path:
+                return
+            out = Path(path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            df = pd.DataFrame(rows)
+            # 相对峰高：以本表最大峰为 1，跨样品快速比较用（不用心算）
+            try:
+                ymax = float(pd.to_numeric(df['峰高'], errors='coerce').max())
+                df['相对峰高'] = (pd.to_numeric(df['峰高'], errors='coerce')
+                                  / ymax).round(4) if ymax > 0 else np.nan
+            except Exception:
+                pass
+            if out.suffix.lower() == '.xlsx':
+                df.to_excel(out, index=False)
+            else:
+                # utf-8-sig：Excel 直接双击打开中文不乱码
+                df.to_csv(out, index=False, encoding='utf-8-sig')
+            self.status_bar.showMessage(
+                f"已导出 {len(rows)} 个峰 → {out.name}")
+            # 「表比图上的数字多」是正常的：合并图为了标注不糊成一团，
+            # 单条曲线通常只标最强的一个峰（v4.46 的显示优化），而峰表是
+            # 完整的数据产物。这一点要主动讲清楚，否则用户会以为表算错了。
+            n_samples = len({r.get('样品', '') for r in rows})
+            QMessageBox.information(
+                self, "成功",
+                f"已导出 {len(rows)} 个峰位到:\n{out}\n\n"
+                f"覆盖 {n_samples} 个样品，口径与图上标注同源（同一次峰检测）。\n"
+                f"注：合并图为了让标注不重叠，每条曲线通常只标最强的一个峰，"
+                f"所以表里的行数可能比图上数字多——表是完整的检测结果。")
+        except Exception as e:
+            log_exception("导出峰表失败", e)
+            QMessageBox.critical(self, "错误", f"导出峰表失败：{e}")
+
     # ---------- 出版图预设（D6） ----------
 
     def _pub_preset(self):
@@ -1971,16 +2069,11 @@ class PlotMixin:
                 exported += [fit_path, peaks_path]
             msg = "已导出:\n" + "\n".join(str(p) for p in exported)
             if result:
-                import json as _json
-                from plot_lifetime import NumpyTypeEncoder
-                json_path = out_dir / f"{name}_fit_result.json"
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    # v4.44：ensure_ascii=False —— 否则中文样品名/单位会被转义成
-                    # \uXXXX，产物无法直接阅读或用 grep 检索（同仓 3D 的 stats.json
-                    # 本来就是写对的，这里是漏网的一处）。
-                    _json.dump(result, f, cls=NumpyTypeEncoder,
-                               ensure_ascii=False, indent=2)
+                json_path, curve_path = self._write_lifetime_result_files(
+                    result, out_dir, name)
                 msg += f"\n{json_path}"
+                if curve_path is not None:
+                    msg += f"\n{curve_path}（原始曲线，json 里不再重复存）"
             self.progress_bar.setVisible(False)
             QMessageBox.information(self, "成功", msg)
             self.status_bar.showMessage(
@@ -1988,6 +2081,97 @@ class PlotMixin:
         except Exception as e:
             self.progress_bar.setVisible(False)
             QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
+
+    def _write_lifetime_result_files(self, result, out_dir, name):
+        """把寿命拟合结果写盘：**瘦身 json** + 原始曲线 csv（v5.0.2）。
+
+        原实现把 `result` 整体 dump：单个样品 149 KB，其中 `time`/`decay`
+        各 4000 点是原始测量数据（能从源文件重读），`info` 里还塞着
+        `y_fitted`/`residuals`/`irf_shifted` 三条同长度曲线，真正结论字段
+        只有几十个。批量 20 个样品就是 3 MB 纯冗余。
+
+        现在拆成两个产物：
+          · ``*_fit_result.json`` —— 只留结论（τ、占比、χ²R、拟合区间…）；
+          · ``*_curve.csv`` —— 曲线（时间/衰减/IRF/拟合/残差/τ 分布），
+            给想复核拟合质量的人用，Excel 直接可读。
+        两者都在同一目录，json 里用 ``_curve_file`` 指过去。
+        """
+        import csv as _csv
+        import json as _json
+        from plot_lifetime import NumpyTypeEncoder
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        HEAVY_TOP = ('time', 'decay', 'irf', 'k', 'k_distribution')
+        HEAVY_INFO = ('y_fitted', 'residuals', 'irf_shifted', 'peak_fit',
+                      'lambda_scan_chi2')
+
+        # ---- ① 曲线 csv ----
+        info = result.get('info', {}) or {}
+        time = np.asarray(result.get('time', []), dtype=float)
+        columns = []           # [(列名, 数组)]
+        for key, col in (('time', 'time'), ('decay', 'decay'), ('irf', 'irf')):
+            arr = result.get(key)
+            if arr is not None and np.size(arr):
+                columns.append((col, np.asarray(arr, dtype=float)))
+        if time.size:
+            fs = int(info.get('fit_start', 0) or 0)
+            fe = int(info.get('fit_end', 0) or 0)
+            for key, col in (('irf_shifted', 'irf_shifted'),
+                             ('y_fitted', 'y_fitted'), ('residuals', 'residuals')):
+                arr = info.get(key)
+                if arr is None or not np.size(arr):
+                    continue
+                a = np.asarray(arr, dtype=float)
+                # y_fitted / residuals 只覆盖拟合区间，前面补空对齐到 time
+                if col in ('y_fitted', 'residuals') and a.size == max(fe - fs, 0):
+                    buf = np.full(time.size, np.nan)
+                    buf[fs:fs + a.size] = a
+                    a = buf
+                elif a.size < time.size:
+                    buf = np.full(time.size, np.nan)
+                    buf[:a.size] = a
+                    a = buf
+                else:
+                    a = a[:time.size]
+                columns.append((col, a))
+        curve_path = None
+        if columns:
+            n = max(len(a) for _c, a in columns)
+            curve_path = out_dir / f"{name}_curve.csv"
+            with open(curve_path, 'w', newline='', encoding='utf-8-sig') as f:
+                w = _csv.writer(f)
+                w.writerow([c for c, _a in columns])
+                for i in range(n):
+                    w.writerow([
+                        (f"{a[i]:.10g}" if i < len(a) and np.isfinite(a[i])
+                         else '')
+                        for _c, a in columns])
+
+        # ---- ② 瘦身 json ----
+        slim = {k: v for k, v in result.items() if k not in HEAVY_TOP}
+        slim_info = {k: v for k, v in (result.get('info') or {}).items()
+                     if k not in HEAVY_INFO}
+        slim['info'] = slim_info
+        # τ 分布（k + 分布强度）是结论本身，不能全丢——抽稀到 ≤200 点保留形状
+        k = np.asarray(result.get('k', []), dtype=float)
+        dist = np.asarray(result.get('k_distribution', []), dtype=float)
+        if k.size and dist.size == k.size:
+            step = max(int(np.ceil(k.size / 200.0)), 1)
+            slim['k_thinned'] = k[::step].tolist()
+            slim['k_distribution_thinned'] = dist[::step].tolist()
+        if curve_path is not None:
+            slim['_curve_file'] = curve_path.name
+        slim['_note'] = ('v5.0.2 起 json 只存结论；原始曲线/拟合曲线/残差'
+                         '见同目录 *_curve.csv（time/decay/irf 等大数组已移出）')
+        json_path = out_dir / f"{name}_fit_result.json"
+        with open(json_path, 'w', encoding='utf-8') as f:
+            # v4.44：ensure_ascii=False —— 否则中文样品名/单位会被转义成
+            # \uXXXX，产物无法直接阅读或用 grep 检索。
+            _json.dump(slim, f, cls=NumpyTypeEncoder,
+                       ensure_ascii=False, indent=2)
+        return json_path, curve_path
 
     def _do_lifetime_plot(self, params=None):
         """荧光寿命拟合绘图（后台线程执行：解析→预处理→MEM 拟合→高斯分解→出图）。
@@ -2131,20 +2315,65 @@ class PlotMixin:
         fig = self.canvas.fig
         gs = GridSpec(2, 1, height_ratios=[7, 3])
         ax1 = fig.add_subplot(gs[0])
+
+        # v5.0.2：颜色改从主题取。此前是硬编码的 #66ccee/#ccbb44/#ee6677，
+        # 只按「深色够亮」挑过，没对白底核算：对 #ffffff 只有 1.84/1.95/3.09:1，
+        # 低于图形元素 3:1 门槛，浅色与打印友好主题下散点和 IRF 几乎看不见。
+        _LC = self._mpl_colors()
+        n_fit = max(int(info['fit_end']) - int(info['fit_start']), 1)
         ax1.scatter(time_d, decay, s=2, alpha=0.6, marker='o',
-                    edgecolors='none', color="#66ccee", label='实验数据')
-        ax1.plot(time_d, irf_shifted, linewidth=0.8, color="#ccbb44",
-                 label=f'IRF（平移 {qshift_disp:.2g} {lts}）')
+                    edgecolors='none', color=_LC['life_data'],
+                    label='实验数据')
+        ax1.plot(time_d, irf_shifted, linewidth=0.8, color=_LC['life_irf'],
+                 label=f'IRF（平移 {self._fmt_shift(qshift_disp)} {lts}）')
         ax1.plot(fit_time_d, y_fitted, linewidth=max(1.0, linewidth),
-                 color="#ee6677", label=f"{info.get('method', 'MEM')} 拟合")
+                 color=_LC['life_fit'], label=f"{info.get('method', 'MEM')} 拟合")
         ax1.set_yscale('log')
         ax1.set_ylim(bottom=1)
+        # v5.0.2：log 轴的上限显式按数据定，不吃 matplotlib 的自动缩放。
+        # 原因：IRF 是高斯型，两翼会衰减到 ≈0 的正数；log 轴自动缩放遇到
+        # 「下限被 ylim(bottom=1) 钉死、数据又趋近 0」会给出荒谬的上界
+        # （实测 5.97e19，纵轴跨 19 个数量级，衰减曲线被压成一条贴 1e3 的
+        # 直线，寿命图完全读不出来）。上限取所有曲线最大值的 3 倍即可。
+        try:
+            _all_y = [np.asarray(decay, dtype=float),
+                      np.asarray(irf_shifted, dtype=float),
+                      np.asarray(y_fitted, dtype=float)]
+            _pos = [a[a > 0] for a in _all_y if np.size(a)]
+            _ymax = max((float(np.nanmax(a)) for a in _pos if a.size),
+                        default=1.0)
+            if np.isfinite(_ymax) and _ymax > 1:
+                ax1.set_ylim(1.0, _ymax * 3.0)
+        except Exception as e:
+            logging.debug("设定寿命主轴 y 上限失败，保留自动缩放: %s", e)
         ax1.set_ylabel('Counts (log)')
         ax1.legend(fontsize=9)
         ax1.set_title(custom_title or f"荧光寿命拟合 - {file_name}", fontsize=13)
+        # 拟合窗口画成浅色阴影带：即使不看诊断页也知道"哪一段参与了拟合"
+        try:
+            ax1.axvspan(fit_time_d[0], fit_time_d[-1],
+                        color=_LC['life_mark'], alpha=0.07, zorder=0,
+                        label='拟合窗口')
+        except Exception:
+            pass
+
+        # v5.0.2：按拟合区间裁时间轴。此前直接用原始通道全长的 xlim，Ce6 数据
+        # 轴 0–399 900 ns 而拟合只用 23 300–89 400 ns，图上右侧 78% 的面积全是
+        # 平的噪声地板，衰减曲线被挤在左边不到 1/4，IRF 只剩一条竖线。
+        # 前留 15%（看清基线）、后留 40%（看清衰减拖尾），至少各留 20 个点。
+        _pad_lo = max(int(0.15 * n_fit), 20)
+        _pad_hi = max(int(0.40 * n_fit), 20)
+        _i_lo = max(0, int(info['fit_start']) - _pad_lo)
+        _i_hi = min(len(time_d) - 1, int(info['fit_end']) + _pad_hi)
+        if _i_hi > _i_lo:
+            ax1.set_xlim(time_d[_i_lo], time_d[_i_hi])
+        # ⚠️ 只锁 X，**不要** set_autoscale_on(False)：那会在 y 自动缩放尚未
+        # 计算时就把它冻住（matplotlib 是延到绘制时才算的），log 轴于是从默认
+        # 区间 (0,1) 推出 1e0–1e18 —— 实测纵轴跨 18 个数量级、曲线被压成一条
+        # 贴在 1e3 的直线。set_xlim 本身已经关掉 X 的自动缩放，Y 交给它自己算。
 
         ax2 = fig.add_subplot(gs[1], sharex=ax1)
-        ax2.plot(fit_time_d, residuals, linewidth=0.3, color="#ee6677")
+        ax2.plot(fit_time_d, residuals, linewidth=0.3, color=_LC['life_fit'])
         ax2.axhline(0, color=self._mpl_colors()['zero'], linewidth=0.5)
         ax2.set_xlabel(f'Time ({lts})')
         ax2.set_ylabel('残差')
@@ -2175,6 +2404,26 @@ class PlotMixin:
         ax3.set_xscale('log')
         if dist.max() > 0:
             ax3.set_ylim(top=dist.max() * 1.4)
+        # v5.0.2：按分布质量分位裁 τ 轴。τ 网格默认 0.01–100 ns 跨 4 个数量级，
+        # 而 Ce6 的 MEM 分布 99% 质量只落在 69.2–100 ns（0.16 个数量级）——
+        # 图上左边 99% 的横轴是紧贴零线的一条直线，真正的峰挤在最右端贴着边框。
+        # 取 0.2% / 99.8% 分位各放宽 2 倍，最多仍保留原始网格范围。
+        try:
+            _d = np.asarray(dist, dtype=float)
+            _tot = float(np.nansum(_d))
+            if _tot > 0 and np.isfinite(_tot) and tau_d.size > 4:
+                _cdf = np.cumsum(np.nan_to_num(_d, nan=0.0)) / _tot
+                _lo = float(tau_d[min(int(np.searchsorted(_cdf, 0.002)),
+                                      tau_d.size - 1)])
+                _hi = float(tau_d[min(int(np.searchsorted(_cdf, 0.998)),
+                                      tau_d.size - 1)])
+                _lo, _hi = min(_lo, _hi), max(_lo, _hi)
+                if _lo > 0 and _hi > _lo:
+                    _g_lo = float(np.min(tau_d[tau_d > 0])) if np.any(tau_d > 0) else _lo
+                    _g_hi = float(np.max(tau_d))
+                    ax3.set_xlim(max(_g_lo, _lo / 2.0), min(_g_hi, _hi * 2.0))
+        except Exception as e:
+            logging.debug("按分布质量裁 τ 轴失败，保留默认范围: %s", e)
         ax3.set_xlabel(rf'$\tau$ ({lts})')
         ax3.set_ylabel('分布强度')
         ax3.set_title(f"{custom_title} - 寿命分布" if custom_title
@@ -2210,6 +2459,30 @@ class PlotMixin:
         return fig
 
     # ---------- C4/C5：拟合诊断图 + 拟合质量指标 ----------
+
+    @staticmethod
+    def _fmt_shift(v):
+        """IRF 平移量的可读格式（v5.0.2）。
+
+        此前用 ``:.2g``：qshift = 22.4 ch × 66.9 ns/ch = 1499 ns 被格式化成
+        ``2.2e+03``。这是给人看、给人抄的参数，科学计数法既难读也难输。
+        现在按量级选：≥1000 用千位分隔（2,240），≥1 用 3 位有效数字，
+        极小值退回科学计数法（保持 ≤3 字符宽度，不撑爆图例）。
+        """
+        try:
+            v = float(v)
+        except Exception:
+            return str(v)
+        if not np.isfinite(v):
+            return '—'
+        a = abs(v)
+        if a >= 1000:
+            return f"{v:,.0f}"
+        if a >= 1:
+            return f"{v:.3g}"
+        if a == 0:
+            return '0'
+        return f"{v:.2g}"
 
     @staticmethod
     def _fit_quality_metrics(result):
@@ -2272,16 +2545,22 @@ class PlotMixin:
 
         fig = self.diag_canvas.fig
         fig.clf()
-        gs = GridSpec(2, 1, height_ratios=[3, 2], hspace=0.35)
+        # v5.0.2：两图间距从 0.35 提到 0.55。原值下图 xlabel 的 bbox 是
+        # y=(239,255)、上图（残差自相关）title 的 bbox 是 y=(222,239)，
+        # **间距 0 px** —— 两行字上下紧贴，视觉上糊成一句乱文。
+        gs = GridSpec(2, 1, height_ratios=[3, 2], hspace=0.55)
         ax1 = fig.add_subplot(gs[0])
         ax2 = fig.add_subplot(gs[1])
 
-        # 辅助元素按主题取色（深色底上原来的 #7C3AED 只有 2.75:1，看不见）
-        dark = getattr(self, 'theme', 'light') == 'dark'
-        c_irf_raw = '#94a3b8' if dark else '#888888'
-        c_marker = '#4ade80' if dark else '#16A34A'
-        c_acf = '#a78bfa' if dark else '#7C3AED'
-        c_ci = '#fb923c' if dark else '#EA580C'
+        # 辅助元素按主题取色（v5.0.2：改从 THEMES 的 MPL_LIFE_* 取。
+        # 原先是硬编码。注意旧实现的判据是 `theme == 'dark'` 二分支，
+        # 而仓库有**三套**主题——contrast（打印友好）走的是 light 分支，
+        # 但它的语义要求更高对比度，二分支根本表达不出来。）
+        _LC = self._mpl_colors()
+        c_irf_raw = _LC['life_irf_raw']
+        c_marker = _LC['life_mark']
+        c_acf = _LC['life_acf']
+        c_ci = _LC['life_ci']
 
         # ---- 上：IRF（原始/平移后）+ 衰减 + 拟合区间 ----
         scale = float(np.nanmax(decay)) if decay.size else 0.0
@@ -2296,21 +2575,38 @@ class PlotMixin:
                      label='IRF（原始）')
         if irf_shifted.size:
             ax1.plot(time_d[:len(irf_shifted)], _n(irf_shifted), linewidth=0.9,
-                     color='#ccbb44',
-                     label=f'IRF（平移 {qshift:.3g} ch = '
-                           f'{qshift * dt / ltu:.3g} {lts}）')
-        ax1.plot(time_d, _n(decay), linewidth=0.8, color='#66ccee', label='衰减数据')
+                     color=_LC['life_irf'],
+                     label=f'IRF（平移 {self._fmt_shift(qshift)} ch = '
+                           f'{self._fmt_shift(qshift * dt / ltu)} {lts}）')
+        ax1.plot(time_d, _n(decay), linewidth=0.8, color=_LC['life_data'],
+                 label='衰减数据')
         if y_fitted.size:
             ax1.plot(time_d[fit_start:fit_start + len(y_fitted)], _n(y_fitted),
-                     linewidth=1.1, color='#ee6677', label='拟合')
-        for x, lab, ha in ((time_d[fit_start], '拟合起点', 'left'),
-                           (time_d[min(fit_end, len(time) - 1)], '拟合终点', 'right')):
+                     linewidth=1.1, color=_LC['life_fit'], label='拟合')
+        # v5.0.2：两个标注重叠时上下错开。拟合区间相对全长常常很窄
+        # （实测 233–894 ch 落在 0–400000 ns 上，只占左边 22%），两个文字
+        # 会挤成「拟合起..合终点」读不出来。
+        # 判据不依赖 transData（出图前画布还没拿到真实尺寸，换算出来的像素
+        # 距离不可靠——实测同一条轴上"出图前算 104 px、draw 后算 104 px"却
+        # 给出了相反的判定）。改用**数据尺度**：拟合区间跨度占全时间轴的
+        # 比例小于 35% 时，两个 4 字标注（约 100 px @ 900 px 宽画布）必然相撞。
+        _x_start = time_d[fit_start]
+        _x_end = time_d[min(fit_end, len(time) - 1)]
+        _t_lo = float(np.nanmin(time_d)) if time_d.size else 0.0
+        _t_hi = float(np.nanmax(time_d)) if time_d.size else 1.0
+        _total = (_t_hi - _t_lo) or 1.0
+        _too_close = abs(_x_end - _x_start) < 0.35 * _total
+        for x, lab, ha, ypos in (
+                (_x_start, '拟合起点', 'left', 0.94),
+                (_x_end, '拟合终点', 'right', 0.80 if _too_close else 0.94)):
             ax1.axvline(x, color=c_marker, linestyle='--', linewidth=0.8)
-            ax1.annotate(lab, xy=(x, 0.94), xycoords=('data', 'axes fraction'),
+            ax1.annotate(lab, xy=(x, ypos), xycoords=('data', 'axes fraction'),
                          xytext=(4 if ha == 'left' else -4, 0),
                          textcoords='offset points',
                          ha=ha, va='top', fontsize=9, color=c_marker)
-        ax1.set_xlabel(f'Time ({lts})')
+        # v5.0.2：上图不再单独给 xlabel —— 它与下图标题只隔 0.55 行距，
+        # 此前就是"上图 xlabel"压"下图 title"（间距实测 0 px）。上图有标题
+        # 「IRF / 拟合区间诊断」已足够说明内容，横轴量纲由下图 xlabel 承担。
         ax1.set_ylabel('归一化强度')
         ax1.set_title('IRF / 拟合区间诊断', fontsize=12)
         ax1.legend(fontsize=8, loc='upper right')
@@ -2326,14 +2622,17 @@ class PlotMixin:
             ax2.axhline(-ci, color=c_ci, linestyle='--', linewidth=0.8)
             ax2.axhline(0, color=self._mpl_colors()['zero'], linewidth=0.5)
             n_exceed = int(np.sum(np.abs(acf[1:]) > ci))
+            # 标题缩短：原字符串带「→ 越多说明残差越有结构」，宽度接近整张画布，
+            # 既压上图 xlabel 又在窄画布上被裁掉。判读口径移到 ylabel 旁说明。
             ax2.set_title(
-                f"残差自相关（|ACF| > {ci:.3g} 的滞后点: {n_exceed} 个"
-                f" → 越多说明残差越有结构）", fontsize=11)
+                f"残差自相关（|ACF| > {ci:.3g} 的超限滞后点：{n_exceed} 个）",
+                fontsize=11)
         else:
             ax2.text(0.5, 0.5, "无残差数据", ha='center', va='center',
                      transform=ax2.transAxes,
                      color=self._mpl_colors()['muted'])
-        ax2.set_xlabel('滞后 (通道)')
+        ax2.set_xlabel(f'滞后 (通道)　横轴 = 滞后阶数，纵轴 = 自相关；'
+                       f'超出虚线带的滞后点越多，说明残差越有结构')
         ax2.set_ylabel('ACF')
         self._grid(ax2, dashed=True)
 
@@ -2580,6 +2879,7 @@ class PlotMixin:
 
         # 标记差谱上的峰（发射用 find_peaks，吸收沿用 find_absorption_peaks）
         if mark_peaks:
+            _diff_label = f"{name_a_disp} − {name_b_disp}"
             try:
                 if self.spectrum_type == 'emission':
                     y_scale = np.nanmax(np.abs(y))
@@ -2588,19 +2888,21 @@ class PlotMixin:
                             np.abs(y), height=y_scale * peak_height,
                             distance=peak_distance, prominence=y_scale * 0.03)
                         for pw, pi in zip(wl[peaks], y[peaks]):
-                            ax.annotate(self._peak_label(pw), xy=(pw, pi), xytext=(0, 5),
-                                        textcoords='offset points', fontsize=9,
-                                        color=colors[0], ha='center', va='bottom')
+                            self._add_peak(_diff_label, pw, pi)
+                            self._annotate_peak(ax, pw, pi, xytext=(0, 5),
+                                                textcoords='offset points', fontsize=9,
+                                                color=colors[0], ha='center', va='bottom')
                 else:
                     temp_data = {'wl': wl, 'absorption': y}
                     peaks = find_absorption_peaks(temp_data, min_height=peak_height,
                                                   min_distance=peak_distance)
                     for pw, pi in zip(peaks.get('peak_wavelengths', []),
                                       peaks.get('peak_intensities', [])):
-                        ax.annotate(self._peak_label(pw), xy=(pw, pi), xytext=(0, 6),
-                                    textcoords='offset points', fontsize=11,
-                                    color=colors[0], ha='center', va='bottom',
-                                    fontweight='bold')
+                        self._add_peak(_diff_label, pw, pi)
+                        self._annotate_peak(ax, pw, pi, xytext=(0, 6),
+                                            textcoords='offset points', fontsize=11,
+                                            color=colors[0], ha='center', va='bottom',
+                                            fontweight='bold')
             except Exception:
                 pass
 
@@ -2681,6 +2983,15 @@ class PlotMixin:
                 if 'peak_wavelengths' in peaks and 'peak_intensities' in peaks:
                     peak_wls = peaks['peak_wavelengths']
                     peak_intens = peaks['peak_intensities']
+                    # 峰表记录**全部检出的峰**（下面裁剪之前）。
+                    # v5.0.2：这里的裁剪是为「标注不糊成一团」做的**显示优化**
+                    # （v4.46：曲线多时只标最强那条；单条也常只标最强一个，
+                    # 因为每条曲线的峰位往往重合）。但峰表是**数据产物**，
+                    # 用户拿它做后续计算，若跟着显示规则一起裁，就会出现
+                    # 「这条曲线明明有两个峰，表里只有一行」——比没有表更糟。
+                    for _pw, _pi in zip(peak_wls, peak_intens):
+                        self._add_peak(self._sample_name(file_name, data),
+                                       _pw, _pi)
                     # v4.46：曲线多时只标**最强那条曲线**的峰。
                     # 26 条同类样品峰位几乎重合，逐条标注会让数字堆在一处糊成
                     # 一团（实测 188 对两两重叠）。注意判据是"整体只标一条曲线"，
@@ -2693,9 +3004,8 @@ class PlotMixin:
                         peak_wls = [peak_wls[k]]
                         peak_intens = [peak_intens[k]]
                     for pw, pi in zip(peak_wls, peak_intens):
-                        ax.annotate(
-                            self._peak_label(pw),
-                            xy=(pw, pi),
+                        self._annotate_peak(
+                            ax, pw, pi,
                             xytext=(0, 3),
                             textcoords='offset points',
                             fontsize=9 if len(valid_files) > 6 else 10,
@@ -2758,10 +3068,11 @@ class PlotMixin:
             if 'peak_wavelengths' in peaks and 'peak_intensities' in peaks:
                 peak_wls = peaks['peak_wavelengths']
                 peak_intens = peaks['peak_intensities']
+                _sname = self._sample_name(file_name, data)
                 for pw, pi in zip(peak_wls, peak_intens):
-                    ax.annotate(
-                        self._peak_label(pw),
-                        xy=(pw, pi),
+                    self._add_peak(_sname, pw, pi)
+                    self._annotate_peak(
+                        ax, pw, pi,
                         xytext=(0, 6),
                         textcoords='offset points',
                         fontsize=11,
@@ -2887,6 +3198,12 @@ class PlotMixin:
                         intensity, height=height, distance=peak_distance,
                         prominence=y_max * 0.03
                     )
+                    # 峰表记录**全部检出的峰**（下面裁剪之前）。
+                    # v5.0.2：下面的裁剪是为「标注不糊成一团」做的显示优化；
+                    # 峰表是数据产物，跟着裁会变成"曲线有两个峰、表里只有一行"。
+                    for _pw, _pi in zip(wl[peaks], intensity[peaks]):
+                        self._add_peak(self._sample_name(file_name, data),
+                                       _pw, _pi)
                     # v4.46：曲线多时**只给最强的那条曲线标峰**。
                     # 26 条同类样品的峰位几乎重合在同一波长上，逐条标注会让
                     # 26 个数字堆在一处糊成一团（实测 188 对两两重叠，整块不可读）。
@@ -2899,10 +3216,10 @@ class PlotMixin:
                     if len(peaks) > 1:
                         peaks = [int(peaks[int(np.argmax(intensity[peaks]))])]
                     for pw, pi in zip(wl[peaks], intensity[peaks]):
-                        ax.annotate(self._peak_label(pw), xy=(pw, pi), xytext=(0, 5),
-                                    textcoords='offset points', fontsize=9,
-                                    color=colors[i], ha='center', va='bottom',
-                                    fontweight='bold' if len(valid_files) > 6 else 'normal')
+                        self._annotate_peak(ax, pw, pi, xytext=(0, 5),
+                                            textcoords='offset points', fontsize=9,
+                                            color=colors[i], ha='center', va='bottom',
+                                            fontweight='bold' if len(valid_files) > 6 else 'normal')
                 except Exception:
                     pass
 
@@ -2950,9 +3267,11 @@ class PlotMixin:
                 peaks, props = find_peaks(intensity, height=height, distance=peak_distance,
                                           prominence=y_max * 0.03)
                 for pw, pi in zip(wl[peaks], intensity[peaks]):
-                    ax.annotate(self._peak_label(pw), xy=(pw, pi), xytext=(0, 8),
-                                textcoords='offset points', fontsize=11,
-                                color=colors[0], ha='center', va='bottom', fontweight='bold')
+                    self._add_peak(self._sample_name(file_name, data), pw, pi)
+                    self._annotate_peak(ax, pw, pi, xytext=(0, 8),
+                                        textcoords='offset points', fontsize=11,
+                                        color=colors[0], ha='center', va='bottom',
+                                        fontweight='bold')
             except Exception:
                 pass
 
@@ -3515,10 +3834,10 @@ class PlotMixin:
                         y, height=height, distance=peak_distance,
                         prominence=y_max * 0.03)
                     for pw, pi in zip(wl[peaks], y[peaks]):
-                        ax.annotate(self._peak_label(pw), xy=(pw, pi), xytext=(0, 8),
-                                    textcoords='offset points', fontsize=11,
-                                    color=colors[0], ha='center', va='bottom',
-                                    fontweight='bold')
+                        self._annotate_peak(ax, pw, pi, xytext=(0, 8),
+                                            textcoords='offset points', fontsize=11,
+                                            color=colors[0], ha='center', va='bottom',
+                                            fontweight='bold')
                 except Exception:
                     pass
         else:
@@ -3532,8 +3851,8 @@ class PlotMixin:
                                               min_distance=peak_distance)
                 for pw, pi in zip(peaks.get('peak_wavelengths', []),
                                   peaks.get('peak_intensities', [])):
-                    ax.annotate(
-                        self._peak_label(pw), xy=(pw, pi), xytext=(0, 6),
+                    self._annotate_peak(
+                        ax, pw, pi, xytext=(0, 6),
                         textcoords='offset points', fontsize=11,
                         color=colors[0], ha='center', va='bottom',
                         rotation=0, alpha=0.9, fontweight='bold')
@@ -3604,11 +3923,11 @@ class PlotMixin:
                             y, height=height, distance=peak_distance,
                             prominence=y_max * 0.03 if y_max > 0 else None)
                         for pw, pi in zip(wl[pk], y[pk]):
-                            ax.annotate(self._peak_label(pw), xy=(pw, pi),
-                                        xytext=(0, 6),
-                                        textcoords='offset points', fontsize=10,
-                                        color=colors[i], ha='center',
-                                        va='bottom', alpha=0.8)
+                            self._annotate_peak(ax, pw, pi,
+                                                xytext=(0, 6),
+                                                textcoords='offset points', fontsize=10,
+                                                color=colors[i], ha='center',
+                                                va='bottom', alpha=0.8)
                     else:
                         pk = find_absorption_peaks(
                             {'wl': wl, 'absorption': y},
@@ -3616,11 +3935,11 @@ class PlotMixin:
                             min_distance=peak_distance)
                         for pw, pi in zip(pk.get('peak_wavelengths', []),
                                           pk.get('peak_intensities', [])):
-                            ax.annotate(self._peak_label(pw), xy=(pw, pi),
-                                        xytext=(0, 5),
-                                        textcoords='offset points', fontsize=10,
-                                        color=colors[i], ha='center',
-                                        va='bottom', alpha=0.8)
+                            self._annotate_peak(ax, pw, pi,
+                                                xytext=(0, 5),
+                                                textcoords='offset points', fontsize=10,
+                                                color=colors[i], ha='center',
+                                                va='bottom', alpha=0.8)
                 except Exception:
                     pass          # 单条标峰失败不影响整张导出图
 
