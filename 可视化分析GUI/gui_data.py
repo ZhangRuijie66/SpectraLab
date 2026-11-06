@@ -435,7 +435,28 @@ class DataMixin:
 
         try:
             # 白名单控件循环恢复（E1）
-            for key, attr, kind in self._SESSION_SPECS:
+            # v4.45：τ 的两个框必须**先 τ_max 后 τ_min** 恢复。
+            # 反过来的话，先设的 τ_min（比如 500）会触发 _sync_lifetime_tau_range
+            # 把 τ_max 抬到 5000，接着设 τ_max=10 又被 τ_min 顶回去，来回互踩；
+            # 若两个值恰好相等（如都 0.001）则谁也拆不开，最终停在
+            # τ_min == τ_max 的非法状态，而 _collect_plot_params 会静默回退默认
+            # 范围 —— 界面显示与实际拟合用的范围不一致（实测复现）。
+            specs = list(self._SESSION_SPECS)
+            _tau_max_first = []
+            _others = []
+            for item in specs:
+                key = item[0]
+                if key.endswith("lifetime_taumax"):
+                    _tau_max_first.append(item)
+                else:
+                    _others.append(item)
+            # τ_min 排到 τ_max 之后
+            ordered = [it for it in _others
+                       if not it[0].endswith("lifetime_taumin")]
+            ordered += _tau_max_first
+            ordered += [it for it in _others
+                        if it[0].endswith("lifetime_taumin")]
+            for key, attr, kind in ordered:
                 w = getattr(self, attr, None)
                 if w is None:
                     continue
@@ -709,9 +730,15 @@ class DataMixin:
     def _cancel_plotting(self, wait_ms=5000):
         """中止正在进行的后台绘图/拟合（D3/D7）。
 
-        先请 worker 取消（寿命拟合内部会轮询 cancel 标志），再 wait 等线程结束，
-        然后断开信号——调用方接下来会清缓存/切模式，旧结果不该再回调回来。
+        v4.45：改为「代次失效 + 非阻塞」为主，wait 只用来争取干净收尾：
+        · 先递增代次——即使线程还在跑、wait 超时，它算完后的回调也会因代次
+          不匹配被丢弃（旧实现只 wait(5000)，超时后线程成孤儿，会把寿命拟合图
+          画到已经切过去的吸收模式画布上，实测复现）；
+        · wait 的返回值不再重要，超时也只记一条日志，不阻塞主线程更久。
         """
+        # 关键：先让在途结果失效，再尝试停止线程
+        if hasattr(self, '_bump_generation'):
+            self._bump_generation()
         worker = getattr(self, 'plot_worker', None)
         if worker is not None and worker.isRunning():
             try:
@@ -720,21 +747,20 @@ class DataMixin:
                 pass
             if wait_ms:
                 try:
-                    worker.wait(wait_ms)
+                    finished = worker.wait(wait_ms)
+                    if not finished:
+                        # 线程仍未停：结果已由代次作废，这里只是如实记一笔
+                        log_exception(
+                            "后台线程未在 {} ms 内结束，已作废其结果".format(wait_ms),
+                            RuntimeError("worker.wait timeout"))
                 except Exception:
                     pass
-            try:
-                worker.finished.disconnect()
-            except Exception:
-                pass
-            try:
-                worker.error.disconnect()
-            except Exception:
-                pass
-            try:
-                worker.progress.disconnect()
-            except Exception:
-                pass
+            # 断开信号（若线程稍后才结束，就不会再回调到主线程）
+            for sig in ('finished', 'error', 'progress'):
+                try:
+                    getattr(worker, sig).disconnect()
+                except Exception:
+                    pass
         self._plotting = False
         self._fit_cancelled = False
         self._long_task = False
@@ -889,6 +915,26 @@ class DataMixin:
                 self.spectrum_type_combo.blockSignals(True)
                 self.spectrum_type_combo.setCurrentIndex(idx)
                 self.spectrum_type_combo.blockSignals(False)
+            except Exception:
+                pass
+            return
+        # v4.45：正在加载文件夹时不允许切模式。
+        # 加载过程中会 processEvents（为了让进度条动），期间用户若切模式，
+        # 这里会清空 data_cache 并重新加载，而外层加载循环仍在往 data_cache
+        # 里塞——两边互相踩，实测 40 个文件会静默丢 5 个（丢的还是随机的）。
+        # 做法：把下拉框拨回原值并提示，等这次加载结束再切。
+        if getattr(self, '_loading', False):
+            try:
+                idx = getattr(self, 'MODE_INDEX', {}).get(
+                    getattr(self, 'spectrum_type', 'absorption'), 0)
+                self.spectrum_type_combo.blockSignals(True)
+                self.spectrum_type_combo.setCurrentIndex(idx)
+                self.spectrum_type_combo.blockSignals(False)
+            except Exception:
+                pass
+            try:
+                self.status_bar.showMessage(
+                    "正在加载数据，请等加载完成后再切换模式", 4000)
             except Exception:
                 pass
             return

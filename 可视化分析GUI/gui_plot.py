@@ -48,6 +48,80 @@ class NumericTableItem(QTableWidgetItem):
 class PlotMixin:
     """绘图、颜色方案、导出图片。"""
 
+    # ---------- v4.45：统一后台任务启动器 + 代次校验 ----------
+    #
+    # 改造前有三条各自手写线程启动的路径（update_plot / _run_overlay_lifetime /
+    # _run_batch_export），其中后两条把 ``self._plotting = True`` 写在 try 之外，
+    # 一旦 start() 抛异常（线程对象创建失败、参数收集出错等），_plotting 就**永久
+    # 停在 True**：此后 update_plot 在开头直接 return，实时预览彻底失效且没有任何
+    # 提示，用户只能重启程序。
+    #
+    # 另外 _cancel_plotting 只 wait(5000)，超时后线程成孤儿——它计算完了仍会回写
+    # 画布与 _last_*_result，把旧模式的结果画到新模式的界面上（实测：切到吸收模式
+    # 后，寿命拟合图被画到了吸收模式的画布上）。
+    #
+    # 这里用「代次（generation）」一次性解决三个问题：
+    #   · 启动：_begin_task() 递增代次、置 _plotting，且由调用方用 try/finally 保证复位；
+    #   · 取消/切模式：_bump_generation() 让所有在途结果失效（不依赖 wait 是否成功）；
+    #   · 回调：_is_stale(gen) 为真就直接丢弃，绝不写画布/写 _last_*。
+    def _begin_task(self, long_task=False):
+        """开始一个后台任务：递增代次、占用 _plotting，返回本次任务代次。"""
+        self._plot_gen = int(getattr(self, '_plot_gen', 0)) + 1
+        self._plotting = True
+        self._fit_cancelled = False
+        self._long_task = bool(long_task)
+        try:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+        except Exception:
+            pass
+        return self._plot_gen
+
+    def _bump_generation(self):
+        """让所有在途后台任务的结果失效（切模式 / 换文件夹 / 取消时调用）。"""
+        self._plot_gen = int(getattr(self, '_plot_gen', 0)) + 1
+        return self._plot_gen
+
+    def _is_stale(self, gen):
+        """该代次的结果是否已过期（任务已被更新的任务取代）。"""
+        return gen is not None and gen != getattr(self, '_plot_gen', None)
+
+    def _start_worker(self, func, params, on_finished, *, long_task=False,
+                      dialog_text="正在生成图表…", indeterminate=True):
+        """统一的后台任务启动：保证 _plotting 在任何异常路径下都能复位。
+
+        返回本次任务代次；回调需自行携带并在开头用 ``_is_stale(gen)`` 判断。
+        注意 ``params`` 会被就地塞入 ``worker`` 键（既有 _do_* 函数依赖它）。
+        """
+        gen = self._begin_task(long_task=long_task)
+        try:
+            params['worker'] = None          # 先占位，便于异常时统一清理
+            worker = PlotWorker(func, params)
+            params['worker'] = worker
+            worker.finished.connect(lambda fig, g=gen: on_finished(fig, g))
+            worker.error.connect(lambda msg, g=gen: self._on_plot_error(msg, g))
+            worker.progress.connect(self._on_worker_progress)
+            self.plot_worker = worker
+            self._set_canvas_busy(True)
+            self._start_progress_dialog(dialog_text, indeterminate=indeterminate)
+            worker.start()
+            return gen
+        except Exception as e:
+            # 任何启动期异常都必须把状态复位，否则 _plotting 泄漏 = 预览永久失效
+            self._plotting = False
+            self._fit_cancelled = False
+            self._long_task = False
+            self._bump_generation()          # 让可能已启动的部分结果失效
+            try:
+                self._set_canvas_busy(False)
+                self.progress_bar.setVisible(False)
+                self._close_progress_dialog()
+            except Exception:
+                pass
+            log_exception("启动后台任务失败", e)
+            QMessageBox.critical(self, "错误", f"启动绘图失败: {str(e)}")
+            return None
+
     def on_plot_type_changed(self, index):
         """图表类型改变事件"""
         self.current_plot_type = "combined" if index == 0 else "single"
@@ -891,36 +965,27 @@ class PlotMixin:
             return
 
         try:
-            self._plotting = True
-            self._fit_cancelled = False
-            # 寿命拟合是长任务（1–2 分钟）：切模式/关窗时要问用户；
-            # 普通绘图是短任务，静默中止即可（见 gui_data._confirm_interrupt_plotting）
-            self._long_task = (self.spectrum_type == "lifetime")
-            if self.spectrum_type == "lifetime":
+            # v4.45：改用统一启动器——_plotting 的置位与复位都由它保证，
+            # 不再依赖外层的 try/except（旧写法下若非启动期异常，_plotting 仍会泄漏）。
+            is_lifetime = (self.spectrum_type == "lifetime")
+            if is_lifetime:
                 self.status_bar.showMessage(
                     "正在拟合荧光寿命（MEM 最大熵，可能需要 1–2 分钟，请耐心等待）...")
             else:
                 self.status_bar.showMessage("正在生成图表...")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setRange(0, 0)
-
             # D4：控件值在主线程先读成参数字典，worker 内部不再碰 Qt 控件
             params = self._collect_plot_params()
-            # 在后台线程中绘图
-            self.plot_worker = PlotWorker(self._do_plot, params)
-            params['worker'] = self.plot_worker
-            self.plot_worker.finished.connect(self._on_plot_finished)
-            self.plot_worker.error.connect(self._on_plot_error)
-            self.plot_worker.progress.connect(self._on_worker_progress)
-            self._set_canvas_busy(True)
-            self._start_progress_dialog(
-                "正在拟合荧光寿命…" if self.spectrum_type == "lifetime"
-                else "正在生成图表…",
-                indeterminate=(self.spectrum_type != "lifetime"))
-            self.plot_worker.start()
+            self._start_worker(
+                self._do_plot, params, self._on_plot_finished,
+                long_task=is_lifetime,
+                dialog_text=("正在拟合荧光寿命…" if is_lifetime
+                             else "正在生成图表…"),
+                indeterminate=(not is_lifetime))
 
         except Exception as e:
+            # _start_worker 内部已复位状态；这里只兜住「参数收集」阶段抛出的异常
             self._plotting = False
+            self._bump_generation()
             self._set_canvas_busy(False)
             log_exception("启动绘图线程失败", e)
             QMessageBox.critical(self, "错误", f"绘图失败: {str(e)}")
@@ -1309,23 +1374,15 @@ class PlotMixin:
             return
         if getattr(self, '_plotting', False):
             return
-        self._plotting = True
-        self._fit_cancelled = False
-        self._long_task = True   # 并行拟合同样是长任务（D3）
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
+        # v4.45：改用统一启动器（原来 _plotting=True 写在 try 外，启动期抛异常
+        # 会永久泄漏，导致实时预览彻底失效且无提示）。
         # D4：参数在主线程读好
         params = self._collect_plot_params()
         msg = self._batch_fit_status_text(params)
         self.status_bar.showMessage(msg)
-        self.plot_worker = PlotWorker(self._do_overlay_lifetime, params)
-        params['worker'] = self.plot_worker
-        self.plot_worker.finished.connect(self._on_overlay_finished)
-        self.plot_worker.error.connect(self._on_plot_error)
-        self.plot_worker.progress.connect(self._on_worker_progress)
-        self._set_canvas_busy(True)
-        self._start_progress_dialog(msg.rstrip('.'), indeterminate=True)
-        self.plot_worker.start()
+        self._start_worker(
+            self._do_overlay_lifetime, params, self._on_overlay_finished,
+            long_task=True, dialog_text=msg.rstrip('.'), indeterminate=True)
 
     def _batch_fit_status_text(self, params):
         """批量拟合前的提示文案：说明有多少样品可以直接复用已有结果（v4.23）。
@@ -1373,24 +1430,15 @@ class PlotMixin:
             QFileDialog.ShowDirsOnly)
         if not save_dir:
             return
-        self._plotting = True
-        self._long_task = True
-        self._fit_cancelled = False
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
+        # v4.45：改用统一启动器（理由同 _run_overlay_lifetime）
         params = self._collect_plot_params()
         params['kind'] = kind
         params['save_dir'] = save_dir
         msg = self._batch_fit_status_text(params)
         self.status_bar.showMessage(msg)
-        self.plot_worker = PlotWorker(self._do_batch_export, params)
-        params['worker'] = self.plot_worker
-        self.plot_worker.finished.connect(self._on_batch_export_finished)
-        self.plot_worker.error.connect(self._on_plot_error)
-        self.plot_worker.progress.connect(self._on_worker_progress)
-        self._set_canvas_busy(True)
-        self._start_progress_dialog(msg.rstrip('.'), indeterminate=True)
-        self.plot_worker.start()
+        self._start_worker(
+            self._do_batch_export, params, self._on_batch_export_finished,
+            long_task=True, dialog_text=msg.rstrip('.'), indeterminate=True)
 
     def _lifetime_fit_kwargs(self, params):
         """把主线程参数快照转成 plot_lifetime 的拟合参数（fit_many / MEMFitter.fit）。"""
@@ -1473,16 +1521,43 @@ class PlotMixin:
 
         if todo:
             fit_kwargs = self._lifetime_fit_kwargs(params)
+            # v4.45：把「取消」与「进度」真正传进 fit_many。
+            # 此前只在 fit_many **全部返回之后**才检查 worker.is_cancelled()，
+            # 于是点取消后 7/7 个样品照样全部算完（用户等了全程）。
+            cancel_cb = (worker.is_cancelled
+                         if worker is not None and hasattr(worker, 'is_cancelled')
+                         else None)
+            progress_cb = None
+            if worker is not None and hasattr(worker, 'report'):
+                total_todo = len(todo)
+
+                def progress_cb(done, _total, _w=worker, _n=total_todo):
+                    try:
+                        _w.report(done / max(_n, 1),
+                                  f"已拟合 {done}/{_n} 个样品…")
+                    except Exception:
+                        pass
             try:
-                fitted = _pl.fit_many(todo, fit_kwargs=fit_kwargs)
+                fitted = _pl.fit_many(todo, fit_kwargs=fit_kwargs,
+                                      cancel_cb=cancel_cb,
+                                      progress_cb=progress_cb)
             except (OSError, RuntimeError) as e:
                 log_exception("并行拟合不可用，退回串行", e)
-                fitted = _pl.fit_many(todo, max_workers=1, fit_kwargs=fit_kwargs)
+                fitted = _pl.fit_many(todo, max_workers=1, fit_kwargs=fit_kwargs,
+                                      cancel_cb=cancel_cb,
+                                      progress_cb=progress_cb)
             for i, r in zip(todo_idx, fitted):
                 results[i] = r
                 if r:
                     # 回写缓存：之后单文件查看 / 再次导出可直接命中
                     cache[self._lifetime_cache_key(names[i], params)] = r
+        # 被取消时：未启动的样品结果为 None，如实上报（不再谎报"全部完成"）
+        n_cancelled = sum(1 for i in todo_idx if results[i] is None)
+        if n_cancelled and worker is not None and worker.is_cancelled():
+            # v4.45：_fit_cancelled 在 _begin_task 里才初始化；回归测试会绕过
+            # 启动器直接调本函数，这里用赋值而不是依赖属性已存在。
+            self._fit_cancelled = True
+        self._fit_skipped = n_cancelled if getattr(self, '_fit_cancelled', False) else 0
         return results, n_reused, len(todo)
 
     def _do_batch_export(self, params=None):
@@ -1512,7 +1587,11 @@ class PlotMixin:
                   f"复用 {n_reused} + 新拟合 {n_fitted}")
         return f"已保存（{len(results)} 个样品，{detail}）：\n{path}"
 
-    def _on_batch_export_finished(self, msg):
+    def _on_batch_export_finished(self, msg, gen=None):
+        """批量导出完成（v4.45：过期任务不再弹"成功"框）"""
+        if self._is_stale(gen):
+            logging.info("丢弃过期的批量导出回调（代次 %s）", gen)
+            return
         self._plotting = False
         self._long_task = False
         self._set_canvas_busy(False)
@@ -1593,8 +1672,11 @@ class PlotMixin:
         self._overlay_results = results
         return fig
 
-    def _on_overlay_finished(self, fig):
-        """并行叠加拟合完成（主线程）"""
+    def _on_overlay_finished(self, fig, gen=None):
+        """并行叠加拟合完成（主线程）。v4.45：过期结果丢弃。"""
+        if self._is_stale(gen):
+            logging.info("丢弃过期的叠加拟合结果（代次 %s）", gen)
+            return
         cancelled = getattr(self, '_fit_cancelled', False)
         self._fit_cancelled = False
         self._plotting = False
@@ -2736,8 +2818,18 @@ class PlotMixin:
         if xlim:
             self._apply_xlim(ax, xlim)
 
-    def _on_plot_finished(self, fig):
-        """绘图完成回调（主线程）"""
+    def _on_plot_finished(self, fig, gen=None):
+        """绘图完成回调（主线程）。
+
+        v4.45：``gen`` 是发起本次任务时的代次。切模式/换文件夹/取消都会递增
+        代次，于是**过期任务的结果被直接丢弃**——不再出现「旧线程算完后把
+        寿命拟合图画到吸收模式画布上」。gen 为 None 时按当前任务处理（兼容
+        回归测试直接调用本函数）。
+        """
+        if self._is_stale(gen):
+            logging.info("丢弃过期的绘图结果（代次 %s，当前 %s）",
+                         gen, getattr(self, '_plot_gen', None))
+            return
         cancelled = getattr(self, '_fit_cancelled', False)
         self._fit_cancelled = False
         self._plotting = False
@@ -2782,8 +2874,11 @@ class PlotMixin:
         self._sync_empty_state()
         self._update_status_badges()
 
-    def _on_plot_error(self, error_msg):
-        """绘图错误回调"""
+    def _on_plot_error(self, error_msg, gen=None):
+        """绘图错误回调（v4.45：过期任务的错误同样丢弃，避免切模式后弹旧错误）"""
+        if self._is_stale(gen):
+            logging.info("丢弃过期的错误回调（代次 %s）", gen)
+            return
         self._plotting = False
         self._fit_cancelled = False
         self._long_task = False
@@ -2909,12 +3004,73 @@ class PlotMixin:
 
         if file_path:
             try:
-                self._savefig_pub(canvas.fig, file_path)
+                fig = self._make_current_export_fig(canvas)
+                if fig is not None:
+                    # 重画路径：自己新建的 fig，用完要关掉
+                    try:
+                        self._savefig_pub(fig, file_path)
+                    finally:
+                        plt.close(fig)
+                else:
+                    self._savefig_pub(canvas.fig, file_path)
                 QMessageBox.information(self, "成功", f"图片已保存到:\n{file_path}")
                 self.status_bar.showMessage(f"图片已保存: {file_path}")
             except Exception as e:
                 log_exception(f"导出图片失败: {file_path}", e)
                 QMessageBox.critical(self, "错误", f"导出失败: {str(e)}")
+
+    def _make_current_export_fig(self, canvas):
+        """为「导出当前图」新建一张与「导出全部」同口径的 fig（v4.45）。
+
+        背景：此前 ``export_plot`` 直接 ``savefig(canvas.fig)``，而画布的 fig 是
+        按屏幕尺寸建的、字号也停在界面字号；``_apply_pub_rc`` 只影响**此后新建**
+        的 fig。于是选了「单栏 3.5 in」预设后，画布 fig 被 ``set_size_inches(3.5, 2.6)``
+        硬塞进去、字号仍是 13pt，``bbox_inches='tight'`` 一膨胀就变成 4.013 in，
+        **超出 3.5 in 栏宽 15%**，投稿排版放不进；而「导出全部」走重画路径得到
+        3.508 in（正确）。同一张图两个按钮给出两种物理尺寸，且峰标注/显示范围
+        也可能不同。
+
+        解决：吸收/发射的「预览」页走与「导出全部」完全相同的渲染函数，
+        画布只当预览、不当导出源。其他页（数据比较 / 诊断 / 寿命分布）没有
+        对应渲染器，仍存画布 fig（返回 None 表示"用画布"）。
+
+        返回新建的 fig；返回 None 表示调用方应回退到 canvas.fig。
+        """
+        try:
+            if canvas is not getattr(self, 'canvas', None):
+                return None                      # 其它标签页：没有独立渲染器
+            if self.spectrum_type not in ('absorption', 'emission'):
+                return None                      # 3D 等由各自的导出路径处理
+            sub_cfg = self._get_subtract_config()
+            if sub_cfg and sub_cfg.get('mode') == 'diff':
+                return None                      # 差谱只有画布那一张
+            export_files = [f for f in self.get_checked_files()
+                            if f in self.data_cache]
+            if not export_files:
+                return None
+            linewidth = self.linewidth_spin.value()
+            mark_peaks = self.mark_peaks_check.isChecked()
+            peak_height = self.peak_height_spin.value()
+            peak_distance = self.peak_distance_spin.value()
+            custom_title = self.title_edit.text().strip()
+            xlim = self._get_xlim()
+            if self.current_plot_type == 'single':
+                target = self._single_plot_target()
+                if not target or target not in self.data_cache:
+                    return None
+                fig, _t = self._render_single_export_fig(
+                    target, linewidth, mark_peaks, peak_height, peak_distance,
+                    sub_cfg, custom_title, xlim=xlim)
+                return fig
+            fig, _t = self._render_combined_export_fig(
+                export_files, linewidth, sub_cfg, custom_title,
+                mark_peaks=mark_peaks, peak_height=peak_height,
+                peak_distance=peak_distance, xlim=xlim)
+            return fig
+        except Exception as e:
+            # 重画失败就回退到画布（宁可尺寸不准，也不要导不出图）
+            logging.warning("重画导出图失败，回退到画布 fig: %s", e)
+            return None
 
     def export_all_plots(self):
         """导出所有图表"""
@@ -3000,7 +3156,8 @@ class PlotMixin:
                 try:
                     fig, title = self._render_single_export_fig(
                         file_name, linewidth, mark_peaks, peak_height,
-                        peak_distance, sub_cfg, custom_title)
+                        peak_distance, sub_cfg, custom_title,
+                        xlim=self._get_xlim())
                     base = self._safe_filename(title)
                     if custom_title:      # 自定义标题时补上样品名，避免同名
                         base = f"{base}_{self._safe_filename(self._sample_name(file_name))}"
@@ -3017,9 +3174,14 @@ class PlotMixin:
                     logging.warning("导出 %s 失败: %s", file_name, e)
 
             # 导出合并图（只导出勾选的数据）
+            # v4.45：把 mark_peaks / peak_height / peak_distance / xlim 一起传下去。
+            # 此前这三个变量在上面读出来却只喂给单图渲染，合并图那条完全没用上，
+            # 导致「导出全部」的合并图永远没有峰标注、也丢显示范围。
             try:
                 fig, title = self._render_combined_export_fig(
-                    export_files, linewidth, sub_cfg, custom_title)
+                    export_files, linewidth, sub_cfg, custom_title,
+                    mark_peaks=mark_peaks, peak_height=peak_height,
+                    peak_distance=peak_distance, xlim=self._get_xlim())
                 base = _unique(self._safe_filename(title))
                 for ext in exts:
                     self._savefig_pub(fig, plots_dir / f"{base}{ext}", dpi)
@@ -3094,10 +3256,12 @@ class PlotMixin:
 
     def _render_single_export_fig(self, file_name, linewidth, mark_peaks,
                                   peak_height, peak_distance, sub_cfg,
-                                  custom_title=""):
+                                  custom_title="", xlim=None):
         """「导出全部」用：渲染单个文件的光谱图（吸收/发射风格与预览一致）。
 
         返回 (fig, 标题)；标题同时用作导出文件名。
+        v4.45：补 xlim —— 此前导出图丢失画布的显示范围（画布 500–600 nm，
+        导出却是全谱 361–926 nm）。
         """
         fig, ax = plt.subplots(figsize=self._pub_figsize((8.0, 5.0)))
         self.setup_chinese_font()
@@ -3156,12 +3320,24 @@ class PlotMixin:
             title = custom_title
         ax.set_title(title)
         self._grid(ax)
+        # v4.45：与预览一致地应用显示范围（放在 grid 之后、tight_layout 之前）
+        if xlim:
+            self._apply_xlim(ax, xlim)
         fig.tight_layout()
         return fig, title
 
     def _render_combined_export_fig(self, export_files, linewidth, sub_cfg,
-                                    custom_title=""):
-        """「导出全部」用：渲染合并图（吸收/发射风格与预览一致）。返回 (fig, 标题)。"""
+                                    custom_title="", mark_peaks=False,
+                                    peak_height=0.05, peak_distance=20,
+                                    xlim=None):
+        """「导出全部」用：渲染合并图（吸收/发射风格与预览一致）。返回 (fig, 标题)。
+
+        v4.45：补 mark_peaks / peak_height / peak_distance / xlim。
+        此前这个函数**根本没有峰标注代码**（调用点 :export_all_plots 读了
+        mark_peaks 等三个变量却只喂给单图渲染），于是「导出全部」得到的合并图
+        上一个峰标注都没有，而画布上明明有；显示范围同样丢失（画布 500–600 nm，
+        导出却是全谱 361–926 nm）。两套渲染逻辑不一致 = 同一张图两个结果。
+        """
         fig, ax = plt.subplots(figsize=self._pub_figsize())
         self.setup_chinese_font()
         is_emission = self.spectrum_type == "emission"
@@ -3189,6 +3365,35 @@ class PlotMixin:
                         and self.show_ex_check.isChecked() and ex_wl is not None):
                     ax.axvline(ex_wl, color=colors[i], linestyle='--',
                                linewidth=1, alpha=0.5)
+            # v4.45：合并图的峰标注（与预览 _plot_*_combined 同一套判据）
+            if mark_peaks:
+                try:
+                    if is_emission:
+                        y_max = np.nanmax(y) if y.size else 0
+                        height = y_max * peak_height if y_max > 0 else 0.05
+                        pk, _p = find_peaks(
+                            y, height=height, distance=peak_distance,
+                            prominence=y_max * 0.03 if y_max > 0 else None)
+                        for pw, pi in zip(wl[pk], y[pk]):
+                            ax.annotate(self._peak_label(pw), xy=(pw, pi),
+                                        xytext=(0, 6),
+                                        textcoords='offset points', fontsize=10,
+                                        color=colors[i], ha='center',
+                                        va='bottom', alpha=0.8)
+                    else:
+                        pk = find_absorption_peaks(
+                            {'wl': wl, 'absorption': y},
+                            min_height=peak_height,
+                            min_distance=peak_distance)
+                        for pw, pi in zip(pk.get('peak_wavelengths', []),
+                                          pk.get('peak_intensities', [])):
+                            ax.annotate(self._peak_label(pw), xy=(pw, pi),
+                                        xytext=(0, 5),
+                                        textcoords='offset points', fontsize=10,
+                                        color=colors[i], ha='center',
+                                        va='bottom', alpha=0.8)
+                except Exception:
+                    pass          # 单条标峰失败不影响整张导出图
 
         ax.set_xlabel('波长 (nm)')
         ax.set_ylabel('归一化强度' if normalize
@@ -3197,5 +3402,8 @@ class PlotMixin:
         ax.set_title(title)
         self._apply_legend(ax)
         self._grid(ax)
+        # v4.45：与预览一致地应用显示范围
+        if xlim:
+            self._apply_xlim(ax, xlim)
         fig.tight_layout()
         return fig, title

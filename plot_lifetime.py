@@ -2081,7 +2081,7 @@ def _safe_fit_one(task):
 
 
 def fit_many(datasets, max_workers=None, fit_kwargs=None, post_kwargs=None,
-             verbose=True):
+             verbose=True, cancel_cb=None, progress_cb=None):
     """
     并行拟合多个数据集（多进程），用于批量/多样品对比。
 
@@ -2090,8 +2090,16 @@ def fit_many(datasets, max_workers=None, fit_kwargs=None, post_kwargs=None,
         max_workers: 进程数；默认 CPU 核数 - 1（至少 1）
         fit_kwargs: 传给 MEMFitter.fit 的参数（method/n_rates/k_min/…）
         post_kwargs: 传给 MEMFitter.postprocess 的参数
+        cancel_cb: 可选，无参可调用对象；返回 True 表示用户已请求取消（v4.45）。
+            因为单个样品的 MEM 拟合不可中断，取消语义是「不再启动后续样品」：
+            已开始的算完（结果照常返回），未开始的直接跳过（结果为 None）。
+            为了让取消来得及生效，一旦提供了 cancel_cb 就走**分批串行**，
+            每批之间检查一次取消标志。
+        progress_cb: 可选，``progress_cb(done, total)``；每完成一个样品回调一次
+            （v4.45：此前批量拟合全程无进度，实测 7 个样品时最长 9.78 秒
+            看不到任何反馈）。
 
-    返回与输入同序的结果列表（单条失败的位置为 None）。
+    返回与输入同序的结果列表（单条失败/被跳过/被取消的位置为 None）。
     多进程不可用时（打包环境/权限限制等）自动退回串行，不会让整批失败。
     """
     tasks = []
@@ -2103,19 +2111,110 @@ def fit_many(datasets, max_workers=None, fit_kwargs=None, post_kwargs=None,
                       dict(fit_kwargs or {}), post_kwargs))
     if not tasks:
         return []
+    total = len(tasks)
     if max_workers is None:
         max_workers = max(1, (os.cpu_count() or 2) - 1)
-    if len(tasks) == 1 or max_workers <= 1:
-        return [_safe_fit_one(t) for t in tasks]
+
+    def _cancelled():
+        if cancel_cb is None:
+            return False
+        try:
+            return bool(cancel_cb())
+        except Exception:
+            return False
+
+    # ---- 有取消需求时：分批串行，批间检查取消标志（v4.45）----
+    # 进程池的 ex.map 是一口气把任务全派发出去的，中途无法"不再启动后续"；
+    # 因此提供 cancel_cb 时改用分批提交：每批 max_workers 个，批间看标志。
+    if cancel_cb is not None:
+        out = [None] * total
+        done = 0
+        workers = max(1, int(max_workers))
+        try:
+            import concurrent.futures as _cf
+            ex = _cf.ProcessPoolExecutor(max_workers=workers)
+            own_ex = True
+        except Exception as e:
+            if verbose:
+                _safe_print(f"  [WARN] 并行拟合不可用（{type(e).__name__}: {e}），"
+                            f"退回串行")
+            ex, own_ex = None, False
+        try:
+            for start in range(0, total, workers):
+                if _cancelled():
+                    if verbose:
+                        _safe_print(f"  [取消] 已完成 {done}/{total}，不再启动后续样品")
+                    break
+                batch = tasks[start:start + workers]
+                if ex is not None:
+                    try:
+                        res = list(ex.map(_safe_fit_one, batch))
+                    except Exception:
+                        res = [_safe_fit_one(t) for t in batch]
+                else:
+                    res = [_safe_fit_one(t) for t in batch]
+                for k, r in enumerate(res):
+                    out[start + k] = r
+                done += len(batch)
+                if progress_cb is not None:
+                    try:
+                        progress_cb(done, total)
+                    except Exception:
+                        pass
+        finally:
+            if own_ex and ex is not None:
+                # 中断时已排队的进程要撤销，避免它们继续算下去
+                try:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                except TypeError:            # Python < 3.9 没有 cancel_futures
+                    try:
+                        ex.shutdown(wait=False)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        return out
+
+    # ---- 无取消需求：沿用原来的整批派发 ----
+    if total == 1 or max_workers <= 1:
+        out = []
+        for i, t in enumerate(tasks, 1):
+            out.append(_safe_fit_one(t))
+            if progress_cb is not None:
+                try:
+                    progress_cb(i, total)
+                except Exception:
+                    pass
+        return out
     try:
         import concurrent.futures as _cf
         with _cf.ProcessPoolExecutor(max_workers=max_workers) as ex:
-            return list(ex.map(_safe_fit_one, tasks))
+            futures = [ex.submit(_safe_fit_one, t) for t in tasks]
+            out = []
+            for i, f in enumerate(futures, 1):
+                try:
+                    out.append(f.result())
+                except Exception:
+                    out.append(None)
+                if progress_cb is not None:
+                    try:
+                        progress_cb(i, total)
+                    except Exception:
+                        pass
+            return out
     except Exception as e:
         if verbose:
             _safe_print(f"  [WARN] 并行拟合不可用（{type(e).__name__}: {e}），"
                         f"退回串行")
-        return [_safe_fit_one(t) for t in tasks]
+        out = []
+        for i, t in enumerate(tasks, 1):
+            out.append(_safe_fit_one(t))
+            if progress_cb is not None:
+                try:
+                    progress_cb(i, total)
+                except Exception:
+                    pass
+        return out
 
 
 def fit_global(datasets, method='MEM', n_rates=201, k_min=0.01, k_max=100.0,

@@ -30,7 +30,7 @@ APP_NAME = "光谱可视化分析工具"
 # 且「数字去点拼接」的文件名规则不可逆（v105 会被解析成 1.05）。
 # 校验脚本 检查版本一致性.py 的 version_from_filename / parse_version_tuple
 # 已同步改为三段式解析（见该文件头部的规则说明）。
-APP_VERSION = "4.44.0"
+APP_VERSION = "4.45.0"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-11-06"
 

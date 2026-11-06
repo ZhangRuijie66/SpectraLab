@@ -51,24 +51,71 @@ def check(name):
 _SESSION_KEY_PREFIXES = ("ui/", "defaults/", "param/", "help_dialog/")
 _SESSION_KEY_EXACT = ("last_mode", "last_folder", "theme", "workspace",
                       "recent_folders")
+# v4.45：隔离用的临时 ini 路径（_session_settings_lend 首次调用时创建）
+_TEST_SETTINGS_INI = None
 
 
 def _session_settings_lend():
-    """摘下回归测试敏感的会话设置，返回 (QSettings, 备份字典)。"""
-    from PyQt5.QtCore import QSettings
-    from gui_config import APP_ORG, APP_NAME
-    s = QSettings(APP_ORG, APP_NAME)
-    keys = [k for k in s.allKeys()
-            if k.startswith(_SESSION_KEY_PREFIXES) or k in _SESSION_KEY_EXACT]
-    saved = {k: s.value(k) for k in keys}
-    for k in keys:
-        s.remove(k)
-    s.sync()
-    return s, saved
+    """把回归测试与会话设置**彻底隔离**，返回 (QSettings, 备份字典)（v4.45）。
+
+    旧实现是「摘下真实注册表里几个会话键 → 跑测试 → 再回填」。这在两种情况下
+    会漏：
+      · 测试中途异常退出/被中断，回填没执行，注册表就留在被改过的状态；
+      · 测试自己写入的键不在 ``_SESSION_KEY_PREFIXES`` 白名单里（如
+        ``show_ex``、``subtract_enable``、``param/*``），根本不会被清掉。
+    后果实测过：注册表里残留 ``show_ex=true`` 会让「减法扣本底」那项测试
+    多画两条 EX 竖线（期望 2 条线、实际 4 条），报出一个**假失败**。
+
+    现在改为：所有 GUI 模块里的 ``QSettings`` 符号替换成一个固定落到临时 ini
+    文件的子类——测试全程不碰真实注册表，也就不需要"备份/回填"那套脆弱逻辑
+    （备份字典仍返回，但恒为空 dict，保持调用方签名兼容）。
+    """
+    import tempfile
+    from PyQt5.QtCore import QSettings as _RealQSettings
+
+    global _TEST_SETTINGS_INI
+    if _TEST_SETTINGS_INI is None:
+        d = tempfile.mkdtemp(prefix='spectra_reg_settings_')
+        _TEST_SETTINGS_INI = os.path.join(d, 'settings.ini')
+
+    class _IsolatedSettings(_RealQSettings):
+        """强制落到临时 ini，绝不写注册表。"""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(_TEST_SETTINGS_INI, _RealQSettings.IniFormat)
+
+        def __del__(self):
+            try:
+                self.sync()
+            except Exception:
+                pass
+
+    # 必须在 GUI 模块 import 之前/之后都替换一次：模块里是
+    # `from PyQt5.QtCore import QSettings`，拿到的是符号副本，得逐个改。
+    import PyQt5.QtCore as _QtCore
+    _QtCore.QSettings = _IsolatedSettings
+    for mod_name in ('absorption_gui', 'gui_data', 'gui_ui', 'gui_plot',
+                     'gui_components', 'gui_launcher', 'gui_help', 'gui_splash'):
+        try:
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, 'QSettings'):
+                mod.QSettings = _IsolatedSettings
+        except Exception:
+            pass
+    try:
+        s = _IsolatedSettings()
+        for k in s.allKeys():
+            s.remove(k)
+        s.sync()
+    except Exception as e:
+        print(f"  [WARN] 隔离设置初始化失败：{e}")
+    return _IsolatedSettings(), {}
 
 
 def _session_settings_return(s, saved):
-    """把会话设置原样放回（测试结束/异常都走这里）。"""
+    """兼容旧签名（隔离后无需回填，真实注册表从未被改动）。"""
+    if not saved:
+        return
     try:
         for k, v in saved.items():
             s.setValue(k, v)
@@ -2755,12 +2802,40 @@ def t_export_current_tab():
             f"默认文件名应是数据比较图：{suggested[-1]}"
         assert w._current_export_title().startswith('数据比较'), w._current_export_title()
 
-        # ② 预览页 → 还是光谱图
+        # ② 预览页 → 光谱图
+        # v4.45：预览页改为**重画**（与「导出全部」同一条渲染路径），不再直接存
+        # canvas.fig。原因：画布 fig 按屏幕尺寸建、字号停在界面字号，选了
+        # 「单栏 3.5 in」预设后被 set_size_inches 硬塞 + bbox_inches='tight'
+        # 一膨胀就变成 4.013 in，**超出栏宽 15%**；而「导出全部」走重画得到
+        # 3.508 in。同一张图两个按钮给出两种物理尺寸 = 错配。
+        # 因此这里改成断言「导出的是一张**新建的**光谱图，而不是画布本体」，
+        # 并顺带校验它带了和画布一致的峰标注与显示范围。
         QFileDialog.getSaveFileName = staticmethod(
             lambda *a, **k: (os.path.join(tmp, 'b.png'), ''))
         w.tab_widget.setCurrentWidget(w.preview_tab)
+        n_before = len(saved)
+        # 在 _fake_save 里就把曲线数抓下来：export_plot 会在 finally 里
+        # plt.close(fig)，close 之后再访问 fig.axes 不可靠。
+        captured = {}
+
+        def _fake_save2(fig, path, dpi=None):
+            try:
+                captured['n_lines'] = sum(len(ax.get_lines()) for ax in fig.axes)
+                captured['fig'] = fig
+            except Exception:
+                pass
+            saved.append((fig, str(path)))
+            _Path(path).write_bytes(b'PNG')
+
+        w._savefig_pub = _fake_save2
         w.export_plot()
-        assert saved[-1][0] is w.canvas.fig, "预览页应导出光谱画布"
+        assert len(saved) > n_before, "预览页应产生一次导出"
+        assert captured.get('fig') is not None, "预览页应走重画路径"
+        assert captured['fig'] is not w.canvas.fig, \
+            "v4.45 起预览页必须重画（不再直接存画布 fig，否则单栏预设会超宽）"
+        assert captured.get('n_lines', 0) > 0, \
+            "预览页导出的光谱图应含曲线"
+        w._savefig_pub = _fake_save
 
         # ③ 取消保存时不写文件、不抛异常
         QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: ('', ''))

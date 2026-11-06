@@ -1147,12 +1147,21 @@ class UiMixin:
             not checked and "MEM" in self.lifetime_method_combo.currentText())
 
     def _sync_lifetime_tau_range(self, *args):
-        """保证寿命范围满足 τ_min < τ_max（v4.38）。
+        """保证寿命范围满足 τ_min < τ_max（v4.38 / v4.45 加固）。
 
         两个框都不设实际上限，用户完全可能把 τ_min 填到比当前 τ_max 还大
         （或反过来）。这里让**被动的那一个框自动让路**，而不是留给
         `_collect_plot_params` 静默回退默认范围——否则用户会觉得"填了没生效"。
         谁被改动谁的信号触发本槽，用 sender() 判断主动方。
+
+        v4.45 加固：会话恢复（_restore_session 批量 setValue）时 sender() 为
+        None，旧代码会误判成"改的是 τ_min"，于是把 τ_max 抬成 lo*10 —— 而
+        lo 恰好等于 hi 时两侧同值、谁也拆不开，最终停在 τ_min == τ_max == 0.001
+        （实测复现）。此后 _collect_plot_params 发现非法就**静默回退默认
+        0.01–100 ns**，于是「界面显示的范围」与「实际拟合用的范围」不一致，
+        用户完全看不出来。
+        现在：sender() 为空（非用户操作）时按"哪个值越界"决定让路方向；
+        仍然解不开时（两者相等）按 10 倍拉开，保证严格 <。
         """
         if getattr(self, '_tau_range_syncing', False):
             return
@@ -1163,12 +1172,37 @@ class UiMixin:
                 return
             self._tau_range_syncing = True
             try:
-                if self.sender() is self.lifetime_taumax_spin:
+                sender = self.sender()
+                if sender is self.lifetime_taumax_spin:
+                    # 用户改的 τ_max：让它站住，τ_min 退到 τ_max/10
                     self.lifetime_taumin_spin.setValue(hi / 10.0)
+                elif sender is self.lifetime_taumin_spin:
+                    # 用户改的 τ_min：让它站住，τ_max 抬到 τ_min*10
+                    self.lifetime_taumax_spin.setValue(lo * 10.0)
                 else:
+                    # 非用户操作（会话恢复/默认值套用）：没有"主动方"，
+                    # 保留 τ_min（它是更常见的约束方向），把 τ_max 抬上去。
                     self.lifetime_taumax_spin.setValue(lo * 10.0)
             finally:
                 self._tau_range_syncing = False
+            # 兜底复查：若上面因为量程夹取（QDoubleSpinBox 上限 1e9）仍不满足，
+            # 直接把 τ_max 顶到量程上限、τ_min 压到 1/10，确保**严格** τ_min < τ_max
+            lo2 = float(self.lifetime_taumin_spin.value())
+            hi2 = float(self.lifetime_taumax_spin.value())
+            if lo2 >= hi2:
+                self._tau_range_syncing = True
+                try:
+                    if hi2 <= self.lifetime_taumax_spin.maximum():
+                        self.lifetime_taumax_spin.setValue(
+                            min(hi2 * 10.0, self.lifetime_taumax_spin.maximum())
+                            if hi2 > 0 else 100.0)
+                    lo3 = float(self.lifetime_taumin_spin.value())
+                    hi3 = float(self.lifetime_taumax_spin.value())
+                    if lo3 >= hi3:
+                        self.lifetime_taumin_spin.setValue(max(hi3 / 10.0,
+                                                               self.lifetime_taumin_spin.minimum()))
+                finally:
+                    self._tau_range_syncing = False
             if hasattr(self, 'status_bar'):
                 self.status_bar.showMessage(
                     f"寿命范围已自动调整：τ_min = {self.lifetime_taumin_spin.value():g} ns"
