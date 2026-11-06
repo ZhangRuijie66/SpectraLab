@@ -32,7 +32,7 @@ APP_NAME = "光谱可视化分析工具"
 # v5.0.0 的两条 MAJOR 理由：
 #   1. plot_zn_rb_analysis → plot_ref_ratio_analysis（外部脚本 import 会断）；
 #   2. 版本号体系本身重构：PATCH 位从"永远 .0"改为承载可判定的修复类别。
-APP_VERSION = "5.0.0"
+APP_VERSION = "5.0.1"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-11-06"
 

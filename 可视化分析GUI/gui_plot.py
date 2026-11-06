@@ -1392,11 +1392,14 @@ class PlotMixin:
             ax = self.canvas.fig.add_subplot(111, projection='3d')
             surf, _, _ = _p3.draw_surface(ax, prep, label=label,
                                           log_scale=log_scale)
-            cbar = self.canvas.fig.colorbar(surf, ax=ax, shrink=0.55,
-                                            aspect=18, pad=0.10)
+            # v5.0.1：调大色标占比。原来 shrink=0.55 + aspect=18 让 colorbar
+            # 只剩约 15px 宽、右侧还空出 224px（实测 3D 曲面只占画布 56% 宽），
+            # 而窄到那个程度的色标根本读不出刻度。改为 shrink=0.85 + aspect=12。
+            cbar = self.canvas.fig.colorbar(surf, ax=ax, shrink=0.85,
+                                            aspect=12, pad=0.06)
             cbar.set_label(cbar_label)
-            self.canvas.fig.subplots_adjust(left=0.02, right=0.86,
-                                            top=0.95, bottom=0.05)
+            self.canvas.fig.subplots_adjust(left=0.02, right=0.93,
+                                            top=0.95, bottom=0.06)
         elif mode_text.startswith('等高线'):
             ax = self.canvas.fig.add_subplot(111)
             cf, _, _ = _p3.draw_contour(ax, prep, label=label)

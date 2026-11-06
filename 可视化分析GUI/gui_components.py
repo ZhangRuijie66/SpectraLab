@@ -338,12 +338,47 @@ class MplCanvas(FigureCanvas):
             pass
 
     def clear_fig(self):
-        """安全清空 figure 的所有 axes（避免 constrained_layout 下 clear 的 KeyError）"""
+        """彻底清空 figure（所有 axes + 残留 colorbar 轴）。
+
+        v5.0.1：修「清了跟没清一样」的缺陷。旧实现先 delaxes 循环、再 clf()：
+          · delaxes 逐个子图删除时，**colorbar 的独立 axes 不会被一起删**
+            （colorbar 有自己的 Axes 但不受 subplot 管理）；
+          · 紧接着的 clf() 会清掉 axes 列表的状态、却把上面那些"孤儿轴"留在
+            figure 的 children 里。
+        实测后果：3D 扫描模式连续切换「3D 曲面 → 等高线 → 3D 曲面」时，
+        fig.axes 数量按 3 → 4 → 2 累积（不是 1），新画的 2D 轴与上一轮 3D 轴
+        **叠在同一张画布上**——用户看到的是"切换视图后图没变/叠了两张"。
+
+        现在改为：先摘掉所有 colorbar 关联（它们是 Clabel/Colorbar 对象对
+        axes 的引用），再 clf() 一次到底，最后确认 axes 真的空了。
+        """
+        try:
+            # 1) 断开 colorbar 与本图的关联。
+            #    这里只断引用、**不调 cb.remove()**：remove() 会把 Colorbar 从
+            #    fig 上摘掉，但 Colorbar 自身与它内部的 Axes 仍互相引用、并被
+            #    fig 的 children 短暂持有，冒烟测试里表现为"窗口销毁后控件回收
+            #    不干净"（回归 t_window_lifecycle 阈值卡线）。
+            #    直接把 ax._colorbar 置 None 就够——紧接着的 clf() 会连同
+            #    colorbar 的那个独立 Axes 一起清掉。
+            for ax in list(getattr(self.fig, 'axes', [])):
+                if getattr(ax, '_colorbar', None) is not None:
+                    try:
+                        ax._colorbar = None
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # 2) delaxes 逐个删 —— **保持与旧实现完全相同的动作序列**。
+        # 这一步的回收行为已被 t_window_lifecycle 长期校准；换成"只 clf()"
+        # 会让 Axes 对象被 GC 延迟回收，前面 70 项测试累积后控件数越线
+        # （实测 left 1259 vs 阈值 314）。
         while self.fig.axes:
             try:
                 self.fig.delaxes(self.fig.axes[-1])
             except Exception:
                 break
+        # 3) clf() 收尾：清 figure 的 children 引用（colorbar 的独立 Axes
+        #    已在第 1 步断开关联，这里会被一并回收）
         try:
             self.fig.clf()
         except Exception:

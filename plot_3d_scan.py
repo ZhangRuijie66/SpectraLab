@@ -821,11 +821,17 @@ def draw_surface(ax, prep, cmap='viridis', alpha=0.95, elev=25, azim=-60,
                            rstride=stride, cstride=stride)
     ax.set_xlabel('EX 波长 (nm)', fontsize=11, labelpad=8)
     ax.set_ylabel('EM 波长 (nm)', fontsize=11, labelpad=8)
-    ax.set_zlabel('log10 强度' if log_scale else '强度 (AU)',
-                  fontsize=11, labelpad=8)
+    # v5.0.1：z 轴**不设标签**，单位与量名统一交给 colorbar。
+    # 原因：3D 视角下 z 轴标签默认落在右侧，正好与 colorbar 重叠
+    # （实测「强度」被色标压住一半，既看不清又重复表达同一个量）。
+    # colorbar 的 label 才是"刻度数值对应什么"的正规去处。
+    ax.set_zlabel('')
     ax.set_title(f'{label} — 3D 扫描曲面' if label else '3D 扫描曲面', fontsize=13)
     ax.view_init(elev=elev, azim=azim)
-    ax.invert_yaxis()
+    # v5.0.1：**不再倒置 Y 轴**（与 draw_contour 同一理由）。
+    # EEM 曲面的通行朝向是 EX 向右、EM 向里（都随波长增大而远离原点），
+    # 这样对角散射脊线是单调斜向；invert_yaxis() 会让 EM 轴反向，
+    # 与等高线视图、与仪器软件都不一致，切换视图时方向会"跳一下"。
     return surf, vmin, vmax
 
 
@@ -847,7 +853,12 @@ def draw_contour(ax, prep, cmap='viridis', n_levels=30, fill=True,
     ax.set_ylabel('EM 波长 (nm)', fontsize=12)
     ax.set_title(f'{label} — 等高线图 (俯视图)' if label else '等高线图 (俯视图)',
                  fontsize=13)
-    ax.invert_yaxis()
+    # v5.0.1：**不再倒置 Y 轴**。EEM 等高图的通行画法是横轴 EX、纵轴 EM、
+    # 两个波长都随数值增大向上/向右，这样"激发越红、发射越红"在对角线上单调
+    # 递增，Rayleigh/Raman 散射带也呈从左上到右下的斜向条纹，一眼能认。
+    # 旧代码 ax.invert_yaxis() 把 EM 翻成"大波长在下"，整张图上下颠倒，
+    # 与文献/仪器软件（如 Horiba、Edinburgh 的 EEM 视图）相反，用户读图时
+    # 要先在脑子里翻转一次，很容易看错峰位归属。
     ax.grid(True, alpha=0.25, linestyle='--')
     return cf, vmin, vmax
 
