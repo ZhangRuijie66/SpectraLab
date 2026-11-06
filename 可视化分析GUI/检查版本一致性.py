@@ -92,9 +92,9 @@ AUX_MODULES = ["read_xlsx_info", "curve_colors"]
 
 # glob 出来的 plot_*.py 里，下面这些**不是 GUI 模块**，不参与打包，故不要求 hidden-import：
 #   plot_absorption_test.py —— 早期单模块测试脚本（无 GUI 集成）
-#   plot_zn_rb_analysis.py  —— 另一课题（Zn-Rb 分析）的独立模块，GUI 未集成
+#   plot_ref_ratio_analysis.py  —— 另一课题（Zn-Rb 分析）的独立模块，GUI 未集成
 # 若哪天它们被 GUI 集成，下面的 check_plot_modules() 会直接报 FAIL 提醒。
-PLOT_MODULE_EXCLUDE = {"plot_absorption_test", "plot_zn_rb_analysis"}
+PLOT_MODULE_EXCLUDE = {"plot_absorption_test", "plot_ref_ratio_analysis"}
 
 # 需要扫描硬编码版本号的源码（不含 gui_config.py 本身——那里是唯一合法来源）
 VERSION_SCAN_FILES = ["gui_ui.py", "start_gui.py", "launch_hidden.py", "entry_gui.py"]

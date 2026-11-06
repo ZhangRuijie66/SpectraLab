@@ -63,7 +63,7 @@ python plot_lifetime.py -i "decay.csv" -o ./plots/lifetime
 | `plot_lifetime.py` | 荧光寿命 MEM 拟合 |
 | `plot_3d_scan.py` | 3D 扫描（EEM）绘图 |
 | `plot_compare.py` | 按变量比较样品读数 |
-| `plot_zn_rb_analysis.py` | 峰查找、峰表导出、归一化浓度图 |
+| `plot_ref_ratio_analysis.py` | 峰查找、峰表导出、归一化浓度图 |
 | `read_xlsx_info.py` | 说明.xlsx 样品信息读取与图例增强 |
 | `curve_colors.py` | 曲线配色 |
 

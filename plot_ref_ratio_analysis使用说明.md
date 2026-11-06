@@ -1,12 +1,18 @@
-# 📊 plot_zn_rb_analysis.py 使用说明
+# 📊 plot_ref_ratio_analysis.py 使用说明
 
-> Zn 系列 + RB（参照）光谱分析与绘图（可复用源码）
+> **参照比值分析**：以参照物的峰值为内标，对浓度系列做局部放大、找峰与归一化浓度图
+> （可复用源码）
+>
+> 模块只提供**通用能力**，不绑定具体体系——把「参照物」换成任意内标染料、
+> 把「待测物」换成任意浓度系列，用法完全一样。当前业务语境是
+> Zn 系列 + RB（参照），因此公开函数名里保留了 `zn_rb`（`analyze_zn_rb_folder` 等），
+> **函数名与参数保持不变**，仅模块文件名做了通用化。
 >
 > 功能：
 > 1. **单独光谱图**（多光谱逐条成图，可选）：`plot_individual`
-> 2. **合并局部放大图**（默认 300–500 nm），RB 自动标注为 "RB（参照）"
+> 2. **合并局部放大图**（默认 300–500 nm），参照物自动标注为 "RB（参照）"
 > 3. **区间峰值查找**（默认 400–500 nm）+ 峰表 CSV
-> 4. **RB 归一化浓度图**（RB 峰值 = 1，横轴为 ZnPcS4 浓度）
+> 4. **参照峰归一化浓度图**（参照峰值 = 1，横轴为浓度）
 >
 > **多光谱数据直接引用函数**：多个样品时，`analyze_zn_rb_folder(..., individual=True)`
 > 一键同时输出【每条单独图】+【合并放大图】+ 峰表 + 浓度图；
@@ -21,7 +27,7 @@
 ```python
 import sys
 sys.path.insert(0, r'D:\北大\光谱工具')   # 项目根（plot_*.py 所在目录）
-from plot_zn_rb_analysis import analyze_zn_rb_folder, read_zn_info
+from plot_ref_ratio_analysis import analyze_zn_rb_folder, read_zn_info
 
 info = read_zn_info(r'...\20260731\说明.xlsx')   # 读取说明.xlsx 全部浓度/备注
 
@@ -83,7 +89,7 @@ analyze_zn_rb_folder(
 每个环节也可独立使用：
 
 ```python
-from plot_zn_rb_analysis import (
+from plot_ref_ratio_analysis import (
     load_emission_datasets,
     plot_individual,          # 单独图（每条一张）
     plot_combined_zoom,       # 合并局部放大图

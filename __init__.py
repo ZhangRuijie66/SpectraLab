@@ -29,7 +29,7 @@ from plot_3d_scan import (
     plot_waterfall,
 )
 
-from plot_zn_rb_analysis import (
+from plot_ref_ratio_analysis import (
     read_zn_info,
     load_emission_datasets,
     find_main_peak,
@@ -82,7 +82,7 @@ __all__ = [
     'plot_3d_surface',
     'plot_contour',
     'plot_waterfall',
-    # plot_zn_rb_analysis
+    # plot_ref_ratio_analysis
     'read_zn_info',
     'load_emission_datasets',
     'find_main_peak',

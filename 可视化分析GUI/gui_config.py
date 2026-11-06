@@ -24,13 +24,15 @@ APP_ORG = "SpectraLab"
 APP_NAME = "光谱可视化分析工具"
 
 # 版本号（窗口标题 / 应用版本信息）
-# 编号规则见项目文档与本机 spectra-module-dev 技能第 4 章：
-#   MAJOR = 产物格式/数据口径不兼容；MINOR = 用户可感知的新功能；PATCH = 纯修复。
-# v4.44 起把原两段式（4.43）扩展为三段式 4.44.0 —— 两段式无法承载补丁号，
-# 且「数字去点拼接」的文件名规则不可逆（v105 会被解析成 1.05）。
-# 校验脚本 检查版本一致性.py 的 version_from_filename / parse_version_tuple
-# 已同步改为三段式解析（见该文件头部的规则说明）。
-APP_VERSION = "4.47.0"
+# 编号规则见 spectra-module-dev 技能第 4 章。三段各自有**可判定**的职责：
+#   MAJOR = 破坏性变更（外部 import 路径、导出产物字段、设置键、算法默认值）
+#   MINOR = 用户可感知的新功能（新模式 / 新图型 / 新导出通道）
+#   PATCH = 不改变行为的修复，且**必须能说出属于哪一类**（见下方 PATCH 分类）
+#
+# v5.0.0 的两条 MAJOR 理由：
+#   1. plot_zn_rb_analysis → plot_ref_ratio_analysis（外部脚本 import 会断）；
+#   2. 版本号体系本身重构：PATCH 位从"永远 .0"改为承载可判定的修复类别。
+APP_VERSION = "5.0.0"
 # 最近一次更新的日期（入口界面"帮助"中显示）
 RELEASE_DATE = "2026-11-06"
 
