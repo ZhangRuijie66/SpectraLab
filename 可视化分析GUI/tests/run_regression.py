@@ -3120,6 +3120,164 @@ def t_export_current_tab():
         QFileDialog.getSaveFileName = real_dialog
 
 
+# ------------------------------------------------------------- 测试安全网新增
+# 这两条是「先把测试补上，再动结构」的前置安全网（见 2026-11-07 改进建议总报告 §3.0）。
+# 实测背景：v5.0.2 提交标题「导出口径统一 + 峰表通道」改的正是这批函数，而用
+# sys.settrace 跑完整套回归后逐行统计，它们的覆盖率只有 0.9–2.0%
+# （_plot_combined 0.9% / _do_export_all 0.9% / _savefig_pub 1.1% /
+#   _plot_single 1.5% / _export_peak_table 2.0%）——等于靠人眼看图验证。
+# 下面两条把这批改动里「最容易悄悄退化」的两个不变量固化成断言。
+# 注：本次只加测试、不改生产代码，按技能规范不单独发版（攒到下一个有效版本）。
+def _fig_signature(fig):
+    """把一张 fig 压成可比较的签名：线几何 / 文本 / 坐标轴范围。
+
+    只取「导出和预览应当完全一致」的那些量。刻意**不**比颜色、字号、
+    图例位置——这些在不同 fig 尺寸下本来就会变，拿来断言只会制造假失败。
+    """
+    lines, texts, ranges = [], [], []
+    for ax in fig.axes:
+        for ln in ax.get_lines():
+            xd = np.asarray(ln.get_xdata(), dtype=float)
+            yd = np.asarray(ln.get_ydata(), dtype=float)
+            if xd.size == 0 or yd.size == 0:
+                continue
+            lines.append((round(float(xd[0]), 6), round(float(xd[-1]), 6),
+                          round(float(np.nanmin(yd)), 6),
+                          round(float(np.nanmax(yd)), 6),
+                          round(float(ln.get_linewidth()), 3)))
+        for t in ax.texts:
+            s = t.get_text().strip()
+            if s:
+                texts.append(s)
+        lo, hi = ax.get_xlim()
+        ranges.append((round(float(lo), 3), round(float(hi), 3)))
+    return {'lines': sorted(lines), 'texts': sorted(texts),
+            'xlim': sorted(ranges)}
+
+
+@check("导出＝预览：「导出当前图」与画布同口径（安全网）")
+def t_export_matches_preview():
+    """「导出当前图」重画出的 fig 必须与画布预览同口径。
+
+    v4.45 修过一对真实事故：``export_plot`` 曾直接 ``savefig(canvas.fig)``，
+    而画布 fig 是按屏幕尺寸建的、字号停在界面字号；``_apply_pub_rc`` 只影响
+    **此后新建**的 fig。于是选了「单栏 3.5 in」预设后画布 fig 被硬塞进 3.5 in、
+    字号仍是 13pt，``bbox_inches='tight'`` 一膨胀就到 4.013 in，**超出栏宽 15%**；
+    而「导出全部」走重画路径得到 3.508 in（正确）。
+    v4.45 让预览页也走同一套渲染器（``_make_current_export_fig``），
+    本条测试把这个不变量锁住：若将来有人把导出改回 ``canvas.fig``、
+    或改渲染器时只改了一边，这里立刻失败。
+
+    覆盖到 ``_plot_combined`` / ``_render_combined_export_fig``（原本各 0.9% / 未覆盖）。
+    """
+    app, w = _make_gui()
+    wl = np.arange(400.0, 601.0, 1.0)
+    y1 = 100.0 * np.exp(-((wl - 500.0) / 25.0) ** 2)
+    y2 = 60.0 * np.exp(-((wl - 460.0) / 20.0) ** 2)
+    _install_spectra(w, {'s-1 (Emission)': (wl, y1), 's-2 (Emission)': (wl, y2)})
+
+    # 同时打开三个「导出与预览容易走散」的开关：峰标注、显示范围、自定义标题
+    w.mark_peaks_check.setChecked(True)
+    w.wl_min_spin.setValue(430)
+    w.wl_max_spin.setValue(560)
+    w.title_edit.setText('同口径检查')
+    w.current_plot_type = 'combined'
+    w._do_plot()
+
+    prev = _fig_signature(w.canvas.fig)
+    assert prev['lines'], "预览画布上没有曲线，测试前提不成立"
+
+    fig = w._make_current_export_fig(w.canvas)
+    assert fig is not None, \
+        "合并图应走重画路径（返回 None 表示回退到画布 fig，尺寸/字号会不准）"
+    try:
+        exp = _fig_signature(fig)
+
+        # ① 曲线几何必须一致（同一条数据、同一线宽、同一显示范围裁剪）
+        assert exp['lines'] == prev['lines'], (
+            "导出图的曲线与预览不一致\n"
+            f"  预览 {len(prev['lines'])} 条 / 导出 {len(exp['lines'])} 条\n"
+            f"  预览: {prev['lines']}\n  导出: {exp['lines']}")
+
+        # ② 峰位标注文本必须一致（v4.45 前导出图上一个峰标注都没有）
+        assert exp['texts'] == prev['texts'], (
+            f"峰标注不一致：预览 {prev['texts']} / 导出 {exp['texts']}")
+
+        # ③ 显示范围必须一致（v4.45 前导出是全谱，画布却是 430–560）
+        assert exp['xlim'] == prev['xlim'], (
+            f"显示范围不一致：预览 {prev['xlim']} / 导出 {exp['xlim']}")
+        for lo, hi in exp['xlim']:
+            assert abs(lo - 430.0) < 0.5 and abs(hi - 560.0) < 0.5, \
+                f"导出图没有应用显示范围：{[lo, hi]}"
+    finally:
+        w._dispose_fig(fig)
+
+
+@check("峰表：行数不受显示范围裁剪，且不比图上标注少（安全网）")
+def t_peak_table_not_trimmed_by_display():
+    """峰表必须记录**全部检出的峰**，不能被「标注不糊成一团」的显示规则连带裁掉。
+
+    v5.0.2 在 ``_plot_combined`` / ``_plot_emission_combined`` 里做了两件不同的事：
+      ① 峰表记录（``_add_peak``）——数据产物，要完整；
+      ② 标注裁剪（曲线多时只标最强那条、单条也只标最强峰）——显示优化。
+    两者顺序不能倒，否则会出现「这条曲线明明有两个峰，表里只有一行」，
+    比没有表更糟。本次实测：双峰合成数据在 430–470 nm 窄显示范围下，
+    峰表仍是 2 行（含显示范围外的 550 nm 峰）——正是期望行为。
+
+    覆盖到 ``_export_peak_table`` / ``_add_peak`` / ``_record_peaks``（原本 2.0% / 未覆盖）。
+    """
+    app, w = _make_gui()
+    wl = np.arange(400.0, 601.0, 1.0)
+    # 两个分离的峰：一个落在显示范围内，一个落在范围外
+    y = (100.0 * np.exp(-((wl - 450.0) / 6.0) ** 2)
+         + 80.0 * np.exp(-((wl - 550.0) / 6.0) ** 2))
+    _install_spectra(w, {'dual (Emission)': (wl, y)})
+    w.mark_peaks_check.setChecked(True)
+    w.peak_height_spin.setValue(0.05)
+    w.peak_distance_spin.setValue(5)
+    w.current_plot_type = 'combined'
+
+    def _peaks_now():
+        w._do_plot()
+        return list(getattr(w, '_last_peaks', None) or [])
+
+    # ① 全谱显示 → 两个峰
+    w.wl_min_spin.setValue(200)
+    w.wl_max_spin.setValue(900)
+    rows_full = _peaks_now()
+    assert len(rows_full) == 2, \
+        f"全谱下应检出 2 个峰，实际 {len(rows_full)}：{[r['峰位(nm)'] for r in rows_full]}"
+
+    # ② 只显示左峰范围 → 峰表**不应**跟着变少（这是本条的核心断言）
+    w.wl_min_spin.setValue(430)
+    w.wl_max_spin.setValue(470)
+    rows_narrow = _peaks_now()
+    assert len(rows_narrow) == len(rows_full), (
+        "峰表被显示范围裁掉了——峰表是数据产物，不能跟显示优化一起裁\n"
+        f"  全谱 {len(rows_full)} 行 / 窄范围 {len(rows_narrow)} 行")
+
+    # ③ 峰位与峰高要真的对得上（不能只对个数）
+    pos_full = sorted(round(r['峰位(nm)'], 1) for r in rows_full)
+    pos_narrow = sorted(round(r['峰位(nm)'], 1) for r in rows_narrow)
+    assert pos_full == pos_narrow, f"峰位变了：{pos_full} → {pos_narrow}"
+    for want in (450.0, 550.0):
+        assert any(abs(p - want) < 1.5 for p in pos_narrow), \
+            f"峰表里找不到 {want} nm 的峰：{pos_narrow}"
+
+    # ④ 峰表行数 ≥ 图上实际标注的峰数（表可以比图全，不能比图少）
+    annotated = sum(1 for ax in w.canvas.fig.axes for t in ax.texts
+                    if t.get_text().strip())
+    assert len(rows_narrow) >= annotated, (
+        f"峰表比图上标注还少：表 {len(rows_narrow)} 行 / 图 {annotated} 个标注")
+
+    # ⑤ 换图后必须清空（v5.0.2 的 _invalidate_results 漏过这一项，
+    #    会让「导出峰表」写出上一批数据的样品名）
+    w.mark_peaks_check.setChecked(False)
+    w._do_plot()
+    assert not (getattr(w, '_last_peaks', None) or []), \
+        "关闭「标记峰」重绘后峰表未清空，导出会写出上一张图的峰"
+
+
 def main():
     strict = '--strict' in sys.argv
 
