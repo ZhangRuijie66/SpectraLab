@@ -3278,6 +3278,160 @@ def t_peak_table_not_trimmed_by_display():
         "关闭「标记峰」重绘后峰表未清空，导出会写出上一张图的峰"
 
 
+@check("GUI：Ctrl+T 循环三套主题，能到「高对比」（v5.0.4）")
+def t_ctrl_t_cycles_three_themes():
+    """原实现：Ctrl+T 绑的是 toggle_theme（v4.30 前的两态兼容层）。
+
+    而 gui_help 的快捷键说明（gui_ui.py:1076）与主题按钮 tooltip 都写着
+    「循环切换三套主题（浅色 → 深色 → 高对比打印友好）」。实测按键序列是
+    light→dark→light→dark —— **永远到不了第三套「高对比」主题**，
+    只有用鼠标点按钮才行。cycle_theme 的 docstring 本来就注明
+    「主题按钮 / Ctrl+T」，说明原本就该这样绑。
+    """
+    from gui_config import THEME_ORDER
+    app, w = _make_gui()
+
+    ctrl_t = None
+    for sc in getattr(w, '_shortcuts', []):
+        if sc.key().toString() == 'Ctrl+T':
+            ctrl_t = sc
+            break
+    assert ctrl_t is not None, "Ctrl+T 快捷键没有注册"
+
+    start = THEME_ORDER[0]
+    w.set_theme(start)
+    seq = [w.theme]
+    for _ in range(len(THEME_ORDER)):
+        ctrl_t.activated.emit()
+        seq.append(w.theme)
+
+    assert set(seq) == set(THEME_ORDER), \
+        f"Ctrl+T 到不了全部主题：{seq}（期望覆盖 {THEME_ORDER}）"
+    # 必须是**纯循环**，不能停在某一套上重复
+    assert seq[0] == seq[len(THEME_ORDER)], f"不是循环：{seq}"
+    assert len(set(seq[:len(THEME_ORDER)])) == len(THEME_ORDER), \
+        f"循环里有重复：{seq}"
+
+
+@check("寿命：τ 范围不足时判据报警，自动建议范围可解（v5.0.4）")
+def t_tau_range_guard():
+    """默认 τ 0.01–100 ns 用在 μs 级磷光上，会把寿命算错两个数量级。
+
+    实测 示例数据/03-荧光寿命-Ce6（其实是 μs 级磷光）：
+        默认 0.01–100 ns → τ = 85.8 ns, χ²R = 75.5
+        放宽到 1e6 ns    → τ = 5653 ns, χ²R = 2.77   （差 65.9 倍）
+    而 85.8 这个错值看起来完全正常，用户会直接抄进报告。
+
+    本条测三件事（不跑真实拟合，只用合成数据 + 判据函数，保证秒级完成）：
+      1. suggest_tau_range() 能从数据本身推出覆盖真实量级的范围；
+      2. tau_range_complaint() 对"强度堆在最慢端"报警、对正常分布不报；
+      3. 判据用的是十分位占比而不是 grid_edges（后者区分度不够）。
+    """
+    import plot_lifetime as pl
+
+    # ---- 1. 合成一条 μs 级衰减：τ = 5000 ns，通道间隔 50 ns ----
+    rng = np.random.default_rng(7)
+    dt, tau_true = 50.0, 5000.0
+    t = np.arange(0.0, 200000.0, dt)
+    irf_w = 300.0                                  # IRF FWHM ~300 ns
+    irf = np.exp(-0.5 * ((t - 1000.0) / (irf_w / 2.355)) ** 2)
+    decay = np.convolve(np.exp(-(t - 1000.0) / tau_true) * (t >= 1000.0),
+                        irf, mode='full')[:t.size]
+    decay = decay / max(decay.max(), 1e-12) * 20000.0
+    decay = decay + rng.normal(0, 5.0, decay.size).clip(min=0)
+
+    s = pl.suggest_tau_range(t, decay, irf)
+    assert s['tau_max_ns'] > 100.0, \
+        f"建议上界 {s['tau_max_ns']:.4g} ns 没覆盖 μs 级寿命（τ_true={tau_true}）"
+    assert s['tau_max_ns'] > tau_true, \
+        f"建议上界 {s['tau_max_ns']:.4g} 小于真实寿命 {tau_true}"
+    assert 0 < s['tau_min_ns'] < s['tau_max_ns'], s
+    # 下界不能瞎给：至少是通道间隔的 3 倍
+    assert s['tau_min_ns'] >= dt * 3.0 - 1e-9, \
+        f"下界 {s['tau_min_ns']:.4g} 低于通道间隔的 3 倍（{dt*3}）"
+
+    # μs 单位换算自洽
+    s_us = pl.suggest_tau_range(t, decay, irf, time_unit='us')
+    assert abs(s_us['tau_max'] * 1000 - s['tau_max_ns']) < 1e-6
+
+    # ---- 2. 判据：强度堆在最慢端 → 报警 ----
+    bad = {'intensity_share_slowest_decade': 1.0,
+           'intensity_share_fastest_decade': 0.0}
+    msg = pl.tau_range_complaint(bad)
+    assert msg is not None, "100% 强度在 τ_max 一侧却不报警"
+    assert 'τ_max' in msg
+
+    good = {'intensity_share_slowest_decade': 0.0,
+            'intensity_share_fastest_decade': 0.0}
+    assert pl.tau_range_complaint(good) is None, "正常分布被误报"
+
+    fast = {'intensity_share_slowest_decade': 0.0,
+            'intensity_share_fastest_decade': 1.0}
+    assert pl.tau_range_complaint(fast) is not None, "τ_min 一侧堆积却不报警"
+
+    # ---- 3. 区分度：默认范围下 grid_edges 只有 ~50%，十分位才是 100% ----
+    # （实测值来自 03-Ce6 的两次真实拟合；这里只断言判据选择，不重跑拟合）
+    assert pl.tau_range_complaint(
+        {'intensity_share_slowest_decade': 1.0,
+         'intensity_share_grid_edges': 0.5166}) is not None, \
+        "判据不该依赖 grid_edges（它在默认范围下只有 51.66%，区分度不足）"
+
+
+@check("发射模式：时间扫描/衰减文件被拒收，不再伪装成光谱（v5.0.4）")
+def t_decay_rejected_by_emission():
+    """寿命衰减文件曾被「发射光谱」模式静默当成发射光谱读入。
+
+    根因：``detect_format`` 用 ``'Fixed/Offset' in head and 'XAxis' in head``
+    判 flwinlab，而 Horiba/DeltaHub 的衰减文件 header 同样含这两个字段
+    （真身是 ``Type,Time Scan`` / ``XAxis,Time(ns)``）。于是
+    ``parse_flwinlab_csv`` 把"前两列都是数值"的行全当光谱点，
+    一份 400 µs 的衰减曲线变成"波长 0–399900 nm 的发射光谱"，
+    ``_load_errors`` 一条不记、弹窗一条不出。
+
+    同时覆盖审计 D-M2：真实 PerkinElmer 导出用的是 ``Xaxis``（小写 a），
+    而旧判据大小写敏感。
+    """
+    import plot_emission as pe
+    from pathlib import Path as _Path
+
+    root = _Path(GUI_DIR).parent
+    decay_file = root / '示例数据' / '03-荧光寿命-Ce6' / 'Ce6 lifetime.csv'
+
+    if not decay_file.exists():
+        raise Skip("缺少示例数据 Ce6 lifetime.csv")
+
+    # ① 判别器认得出来，并给出可读的证据
+    is_decay, ev = pe.detect_decay_file(decay_file)
+    assert is_decay, "没能识别出这是时间扫描文件"
+    assert ev, "识别出来了但没给证据"
+
+    # ② load_spectra 不再返回伪光谱，且失败原因可见（不再是静默丢弃）
+    errors = []
+    ds = pe.load_spectra([str(decay_file)], verbose=False, errors=errors)
+    assert len(ds) == 0, f"衰减文件仍被当成光谱收下：{[d['label'] for d in ds]}"
+    assert len(errors) == 1, f"失败原因没被记录：{errors}"
+    name, reason = errors[0]
+    assert '寿命' in reason, f"提示没说该用哪个模式：{reason}"
+
+    # ③ 正常发射光谱不受影响
+    emi = root / '示例数据' / '02-发射-RF6000-RB与R101' / '1#RB.csv'
+    if emi.exists():
+        is_decay2, _ = pe.detect_decay_file(emi)
+        assert not is_decay2, "发射光谱被误判成衰减文件"
+        assert len(pe.load_spectra([str(emi)], verbose=False)) == 1, \
+            "发射光谱解析被误伤"
+
+    # ④ PerkinElmer 的小写 Xaxis 也能解析（D-M2）
+    pe_dir = root / '示例数据' / '测试数据' / 'esipt-root'
+    if pe_dir.is_dir():
+        csvs = sorted(pe_dir.glob('*.csv'))
+        if csvs:
+            got = sum(1 for f in csvs
+                      if len(pe.load_spectra([str(f)], verbose=False)) == 1)
+            assert got == len(csvs), \
+                f"PerkinElmer（Xaxis 小写）只有 {got}/{len(csvs)} 个能解析"
+
+
 def main():
     strict = '--strict' in sys.argv
 

@@ -1930,7 +1930,13 @@ class DataMixin:
             QMessageBox.warning(self, "错误", f"选择文件失败: {str(e)}")
 
     def _show_lifetime_info(self, file_name, data):
-        """荧光寿命模式下，在信息页展示文件基本特征"""
+        """荧光寿命模式下，在信息页展示文件基本特征。
+
+        v5.0.4：增加「τ 范围建议」。默认 τ 0.01–100 ns 对 μs 级磷光完全不够，
+        会把寿命算错到两个数量级（实测 03-Ce6：85.8 ns vs 正确 5653 ns，
+        差 65.9 倍），而错值看起来完全正常，用户会直接抄进报告。
+        这里在**拟合之前**就把建议范围摆出来，并提供一键采用按钮。
+        """
         time = np.asarray(data.get('time'), dtype=float)
         decay = np.asarray(data.get('decay'), dtype=float)
         irf = np.asarray(data.get('irf'), dtype=float)
@@ -1944,6 +1950,35 @@ class DataMixin:
             idx = np.where(irf >= half)[0]
             info_text += f"IRF 峰计数: {irf.max():.4g}\n"
             info_text += f"IRF FWHM: {time[idx[-1]] - time[idx[0]]:.4g} ns\n"
+
+        # ---- τ 范围建议（v5.0.4）----
+        self._tau_suggestion = None
+        try:
+            import plot_lifetime as _pl
+            sugg = _pl.suggest_tau_range(time, decay, irf)
+            self._tau_suggestion = sugg
+            cur_lo = self.lifetime_taumin_spin.value()
+            cur_hi = self.lifetime_taumax_spin.value()
+            factor = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+            unit_sym = self.tau_unit_symbol()
+            s_lo, s_hi = sugg['tau_min'] * factor, sugg['tau_max'] * factor
+            covered = (cur_lo <= s_lo * 1.5) and (cur_hi >= s_hi / 1.5)
+            info_text += (f"\n建议 τ 范围: {s_lo:.4g} – {s_hi:.4g} {unit_sym}"
+                          f"（{sugg['reason']}）\n")
+            if not covered:
+                d_lo = cur_lo / s_lo if s_lo > 0 else 0
+                d_hi = s_hi / cur_hi if cur_hi > 0 else 0
+                info_text += (
+                    f"⚠ 当前设置 {cur_lo:g} – {cur_hi:g} 与数据可能不匹配：\n"
+                    f"   建议上限至少 {s_hi:.4g}"
+                    f"{f'（当前上限的 {d_hi:.0f} 倍）' if d_hi > 1.5 else ''}。\n"
+                    f"   范围设窄会把真实寿命截断在网格端点，"
+                    f"报出的 τ 偏小且 χ²R 偏大。\n")
+            else:
+                info_text += "✓ 当前 τ 设置覆盖了建议范围\n"
+        except Exception as e:            # 建议失败不能挡住信息页
+            logging.debug("τ 范围建议失败: %s", e)
+
         info_text += "\n点击「开始拟合」按钮启动 MEM 拟合\n（结果将显示在预览图与本页）"
         self.info_label.setText(info_text)
         if self.plot_type_combo.currentIndex() == 1:

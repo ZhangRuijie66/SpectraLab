@@ -1575,6 +1575,126 @@ class MEMFitter:
 
 # ======================== 2.5 导出拟合结果 ========================
 
+def suggest_tau_range(time, decay, irf=None, fit_start=None, fit_end=None,
+                      time_unit='ns'):
+    """从衰减数据本身推断合理的 τ 搜索范围（v5.0.4）。
+
+    为什么需要它
+    ------------
+    GUI 默认 τ 范围是 0.01–100 ns，这个默认值对 ns 级荧光的染料很合适，
+    对 **μs 级磷光**（如 1O₂ 的 1270 nm 发射、稀土配合物、长寿命探针）却是
+    灾难：网格最慢端（100 ns）成了"能表示的最长寿命"，熵分布把全部强度堆在
+    边界上。实测 ``示例数据/03-荧光寿命-Ce6``（其实是 μs 级磷光）：
+
+        默认 0.01–100 ns  → τ = 85.8 ns,   χ²R = 75.5
+        放宽到 1e6 ns     → τ = 5653 ns,   χ²R = 2.77      （差 65.9 倍）
+
+    而 **85.8 ns 这个错值看起来完全正常**——它落在默认范围里、有合理的量级，
+    用户会直接抄进报告。程序其实已经算出铁证
+    （``intensity_share_slowest_decade = 100%``：全部强度堆在网格最慢端），
+    但只在拟合完之后给一句"建议放宽 τ 范围复算"，τ 值本身一字不改。
+
+    判据
+    ----
+    * **下界** τ_min：受时间分辨率限制，不能远小于 IRF 宽度或通道间隔。
+      取 ``max(IRF_FWHM/10, 3×通道间隔, 1e-3 ns)``。
+      取 IRF/10 是因为比 IRF 窄得多的分量本来就无法从卷积里解出。
+    * **上界** τ_max：必须覆盖"峰后衰减到噪声地板"所需的时间。
+      取 ``max(3×峰后窗口长度, 100×τ_min)``。
+      系数 3 是为了让分布有空间拖尾——紧贴窗口末尾会再次造成边界堆积。
+
+    参数
+    ----
+    time, decay : array
+        时间轴（ns）与衰减计数。
+    irf : array | None
+        仪器响应函数；None 时只用通道间隔定下界。
+    fit_start, fit_end : int | None
+        拟合窗口（``MEMFitter.preprocess()`` 后的 ``info['fit_start'/'fit_end']``）。
+        省略时用整条曲线。
+    time_unit : str
+        输出单位（'ns' 默认；'us' 时按 1000 换算）。
+
+    返回
+    ----
+    dict: ``{'tau_min_ns', 'tau_max_ns', 'tau_min', 'tau_max',
+             'reason', 'channel_ns', 'irf_fwhm_ns', 'tail_ns'}``
+    ``tau_min``/``tau_max`` 已换算到 ``time_unit``，供界面直接填。
+    """
+    t = np.asarray(time, dtype=float).ravel()
+    y = np.asarray(decay, dtype=float).ravel()
+    if t.size < 3 or y.size != t.size:
+        raise ValueError("时间轴与衰减长度不匹配或点数过少，无法推断 τ 范围")
+
+    dt = float(np.median(np.diff(t)))
+    dt = abs(dt) if np.isfinite(dt) and dt > 0 else 1.0
+
+    lo = 0 if fit_start is None else max(int(fit_start), 0)
+    hi = y.size if fit_end is None else min(int(fit_end), y.size)
+    if hi - lo < 3:                       # 窗口非法就退回整条曲线
+        lo, hi = 0, y.size
+    tw, yw = t[lo:hi], y[lo:hi]
+
+    # IRF 宽度（FWHM）
+    irf_fwhm = 0.0
+    if irf is not None:
+        irf_arr = np.asarray(irf, dtype=float).ravel()
+        if irf_arr.size == t.size:
+            seg = irf_arr[lo:hi]
+            peak = float(np.nanmax(seg)) if seg.size else 0.0
+            if peak > 0:
+                above = np.where(seg >= peak * 0.5)[0]
+                if above.size >= 2:
+                    irf_fwhm = float(tw[above[-1]] - tw[above[0]])
+
+    # 峰位（IRF 位置）与峰后可用窗口
+    try:
+        i_pk = int(np.nanargmax(yw))
+    except ValueError:
+        i_pk = 0
+    tail = float(tw[-1] - tw[i_pk]) if tw.size > i_pk else 0.0
+    tail = max(tail, 0.0)
+
+    tau_min = max(irf_fwhm / 10.0, dt * 3.0, 1e-3)
+    tau_max = max(tail * 3.0, tau_min * 100.0)
+
+    factor = 1000.0 if _normalize_time_unit(time_unit) == 'us' else 1.0
+    reason = (f"通道间隔 {dt / factor:.4g} {unit_symbol(time_unit)}、"
+              f"IRF FWHM {irf_fwhm / factor:.4g} {unit_symbol(time_unit)}、"
+              f"峰后窗口 {tail / factor:.4g} {unit_symbol(time_unit)}")
+    return {
+        'tau_min_ns': tau_min, 'tau_max_ns': tau_max,
+        'tau_min': tau_min / factor, 'tau_max': tau_max / factor,
+        'reason': reason,
+        'channel_ns': dt, 'irf_fwhm_ns': irf_fwhm, 'tail_ns': tail,
+    }
+
+
+def tau_range_complaint(info):
+    """检查一次拟合的 τ 范围是否明显不够，返回人话理由（None = 没问题）。
+
+    判据来自 ``MEMFitter`` 已经算好的分布诊断量（v5.0.4）：
+
+    * ``intensity_share_slowest_decade > 0.5`` —— 过半强度堆在网格**最慢**的
+      一个数量级里，说明真实寿命超出 τ_max，此时报出的 τ 只是网格端点的值。
+    * ``intensity_share_fastest_decade > 0.5`` —— 对称的情形，τ_min 设得太大。
+
+    用十分位占比而不是 ``intensity_share_grid_edges``：后者的阈值不好定
+    （实测默认范围下也只有 51.66%，而正确范围下是 0%），十分位判据在
+    实测数据上是 100% vs 0%，区分度干净得多。
+    """
+    slow = info.get('intensity_share_slowest_decade')
+    fast = info.get('intensity_share_fastest_decade')
+    bits = []
+    if slow is not None and np.isfinite(slow) and slow > 0.5:
+        bits.append(f"{slow * 100:.0f}% 的发光强度堆在 τ_max 一侧"
+                    f"（真实寿命可能超出上限，当前报出的 τ 只是网格端点）")
+    if fast is not None and np.isfinite(fast) and fast > 0.5:
+        bits.append(f"{fast * 100:.0f}% 的发光强度堆在 τ_min 一侧"
+                    f"（真实寿命可能低于下限）")
+    return '；'.join(bits) if bits else None
+
+
 def _scalar(x, default=float('nan')):
     """把 numpy 标量 / 数组 / 列表安全转成 python float（取首项）；失败返回 default。"""
     try:

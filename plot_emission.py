@@ -127,6 +127,8 @@ def detect_format(filepath):
       - 'flwinlab': PerkinElmer FL WinLab 风格（Labels/Type/Fixed-Offset/XAxis）→ 本批新增
       - 'rf6000': LabSolutions RF / RF-6000 格式
       - 'spectracle': Spectracle / FE30 格式
+        （返回 'spectracle' 但文件其实是寿命衰减时，由 :func:`detect_decay_file`
+         在调用方拦下——见该函数说明）
     """
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -143,7 +145,11 @@ def detect_format(filepath):
         return 'rf6000'
     # PerkinElmer FL WinLab 风格：元数据含 Fixed/Offset、XAxis 字段
     # （如 Labels,EmScan1, / Type,Emission Scan / Fixed/Offset,570.00 / XAxis,Wavelength）
-    elif 'Fixed/Offset' in head and 'XAxis' in head:
+    # 注意：Horiba/DeltaHub 的寿命衰减文件**同样**含 Fully/Offset 与 XAxis 字段
+    # （Type,Time Scan / XAxis,Time(ns)），此前被这里一并判成 flwinlab 而当成
+    # 发射光谱收下。判别交给 detect_decay_file()，本函数保持"格式族"语义不变。
+    elif ('Fixed/Offset' in head or 'Fixed/Offsets' in head) and (
+            'XAxis' in head or 'Xaxis' in head):
         return 'flwinlab'
     elif '波长' in head or '发射数据组' in head:
         return 'spectracle'
@@ -153,6 +159,40 @@ def detect_format(filepath):
             return 'rf6000'
         # 默认尝试 spectracle
         return 'spectracle'
+
+
+# 时间扫描文件的判别标记：XAxis 声明的量 + Type 声明的扫描类型。
+# 两者任一命中即视为"寿命/衰减"数据，不该进发射光谱模式（v5.0.4）。
+_DECAY_XAXIS_PAT = re.compile(r'^\s*XAxis\s*,\s*(Time|Temps?|Channel)', re.IGNORECASE)
+_DECAY_TYPE_PAT = re.compile(r'(Time\s*Scan|Decay|Lifetime|Phosphorescence\s*Decay)',
+                             re.IGNORECASE)
+
+
+def detect_decay_file(filepath):
+    """判断一个 CSV 是不是**时间扫描/衰减**数据（而非光谱）。
+
+    返回 ``(is_decay, evidence)``；``evidence`` 是命中的原文，便于在提示里
+    告诉用户"凭什么认为它是衰减文件"。
+
+    v5.0.4 新增。此前 ``detect_format`` 把 Horiba/DeltaHub 的衰减文件判成
+    'flwinlab'，``parse_flwinlab_csv`` 又把"前两列都是数值"的行全当光谱点，
+    于是一份 400 µs 的衰减曲线被当成"波长 0–399900 nm 的发射光谱"收下，
+    ``_load_errors`` 一条不记、弹窗一条不出。实测该文件 header 里
+    ``Type,Time Scan`` 与 ``XAxis,Time(ns)`` 都写得明明白白——
+    解析器读到了，却没有任何地方消费。
+
+    只读文件头 60 行，不做完整解析，成本可忽略。
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            head = ''.join(f.readline() for _ in range(60))
+    except OSError:
+        return False, ''
+    for pat in (_DECAY_XAXIS_PAT, _DECAY_TYPE_PAT):
+        m = pat.search(head)
+        if m:
+            return True, m.group(1).strip()
+    return False, ''
 
 
 def parse_rf6000_csv(filepath):
@@ -474,8 +514,16 @@ def parse_flwinlab_csv(filepath):
 
 def parse_csv(filepath):
     """
-    统一入口：自动检测格式并解析
+    统一入口：自动检测格式并解析。
+
+    v5.0.4：**时间扫描/衰减文件直接抛错**，不再当成发射光谱返回。
+    见 :func:`detect_decay_file` 的说明。
     """
+    is_decay, ev = detect_decay_file(filepath)
+    if is_decay:
+        raise ValueError(
+            f"这是时间扫描/衰减数据（头部命中「{ev}」），不是发射光谱。"
+            f"请用「荧光寿命」模式打开。")
     fmt = detect_format(filepath)
     print(f"  📋 检测到格式: {fmt}")
     if fmt == 'rf6000':
@@ -500,7 +548,7 @@ def _expand_files(files):
     return out
 
 
-def load_spectra(files, skip_excitation=True, verbose=True):
+def load_spectra(files, skip_excitation=True, verbose=True, errors=None):
     """批量解析多个 CSV 文件，返回全部光谱数据集（扁平列表）。
 
     参数
@@ -511,6 +559,10 @@ def load_spectra(files, skip_excitation=True, verbose=True):
         是否跳过 Spectrum Type=Excitation 的激发光谱（默认跳过）。
     verbose : bool
         是否打印解析进度。
+    errors : list | None
+        v5.0.4：传入列表时，把**每个失败文件**的原因追加进去
+        ``(文件名, 原因)``。此前失败原因直接被丢弃，GUI 只能报"跳过 N 个"
+        而说不出为什么——衰减文件被误当光谱收下时用户更无从发现。
 
     返回
     ----
@@ -525,6 +577,8 @@ def load_spectra(files, skip_excitation=True, verbose=True):
             datasets, _ = parse_csv(f)
         except Exception as e:
             print(f"  ❌ 解析失败: {e}")
+            if errors is not None:
+                errors.append((Path(f).name, str(e)))
             continue
         for ds in datasets:
             stype = str(ds.get('spectrum_type', ''))

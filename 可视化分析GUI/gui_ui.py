@@ -297,7 +297,13 @@ class UiMixin:
             ("Ctrl+Shift+E", self.export_all_plots),
             ("Ctrl+D", self._copy_integration_results),
             ("Ctrl+F", self._focus_file_search),
-            ("Ctrl+T", lambda: self.toggle_theme()),  # E5：切换主题
+            # Ctrl+T 走 **三态循环**（浅色 → 深色 → 高对比打印友好），与主题按钮
+            # 和帮助里「循环切换三套主题」的承诺一致。
+            # 旧实现绑的是 toggle_theme（v4.30 前的两态兼容层），实测按键序列是
+            # light→dark→light→dark，**永远到不了第三套「高对比」主题**——而
+            # gui_help 与按钮 tooltip 都写着三套循环。cycle_theme 的 docstring
+            # 本来就注明「主题按钮 / Ctrl+T」，说明原本就该这样绑。
+            ("Ctrl+T", lambda: self.cycle_theme()),  # E5：切换主题（三态循环）
             # v4.29：布局预设（三栏停靠体系的快捷入口）
             ("Ctrl+1", lambda: self.apply_layout_preset("fit")),
             ("Ctrl+2", lambda: self.apply_layout_preset("plot")),
@@ -1292,6 +1298,44 @@ class UiMixin:
         except Exception:
             pass
 
+    def _apply_suggested_tau_range(self):
+        """「采用建议范围」：按当前数据自动填 τ 范围（v5.0.4）。
+
+        建议值来自 ``plot_lifetime.suggest_tau_range()``，在
+        ``_show_lifetime_info`` 里随信息页一起算好并存进
+        ``self._tau_suggestion``。没有数据时提示先加载。
+
+        必须临时置位 ``_tau_range_syncing``：两个 spin 的 ``valueChanged``
+        都连着 ``_sync_lifetime_tau_range``，否则先写 τ_min 会立刻把 τ_max
+        顶成 τ_min×10，建议值被覆盖。
+        """
+        sugg = getattr(self, '_tau_suggestion', None)
+        if not sugg:
+            QMessageBox.information(
+                self, "提示",
+                "还没有可用的建议范围。\n\n"
+                "请先在「荧光寿命」模式下加载数据，信息页会给出该数据"
+                "对应的建议 τ 范围。")
+            return
+        factor = float(getattr(self, 'lifetime_unit_factor', 1.0) or 1.0)
+        lo = sugg['tau_min'] * factor
+        hi = sugg['tau_max'] * factor
+        self._tau_range_syncing = True
+        try:
+            self.lifetime_taumin_spin.setValue(lo)
+            self.lifetime_taumax_spin.setValue(hi)
+        finally:
+            self._tau_range_syncing = False
+        unit = self.tau_unit_symbol()
+        self.status_bar.showMessage(
+            f"已采用建议 τ 范围 {lo:.4g} – {hi:.4g} {unit}"
+            f"（{sugg['reason']}）")
+        try:
+            logging.getLogger('spectra').info(
+                "采用建议 τ 范围: %.6g – %.6g %s", lo, hi, unit)
+        except Exception:
+            pass
+
     def create_tree_panel(self):
         """创建目录树面板：直接浏览电脑目录并点击选取文件夹"""
         # v4.29：本栏由 QDockWidget 承载，标题在 dock 标题栏上，这里不再套
@@ -1755,6 +1799,21 @@ class UiMixin:
             self.on_auto_lambda_toggled)
         lifetime_options.addWidget(self.lifetime_auto_lambda_check)
         self.on_auto_lambda_toggled(True)                  # 同步禁用 λ 输入框
+
+        # 采用建议范围（v5.0.4）：默认 τ 0.01–100 ns 对 μs 级磷光完全不够，
+        # 会把寿命算错到两个数量级（实测 03-Ce6：85.8 ns vs 正确 5653 ns）。
+        # 这里给一个一键采用，省得用户自己算该填多少。
+        self.lifetime_suggest_btn = QPushButton("采用建议范围")
+        self.lifetime_suggest_btn.setProperty("variant", "secondary")
+        self.lifetime_suggest_btn.setCursor(Qt.PointingHandCursor)
+        self.lifetime_suggest_btn.setToolTip(
+            "按当前数据的时间分辨率与衰减窗口，自动填一组合适的 τ 范围。\n"
+            "判据：下界取 IRF 宽度的 1/10（更快的分量本来就解不出）、\n"
+            "上界取峰后窗口的 3 倍（保证分布有拖尾空间）。\n"
+            "μs 级磷光样品（1O₂、稀土配合物）默认 100 ns 上限会把寿命截断，\n"
+            "拟合完会提示「结果不可信」，点本按钮即可修正。")
+        self.lifetime_suggest_btn.clicked.connect(self._apply_suggested_tau_range)
+        lifetime_options.addWidget(self.lifetime_suggest_btn)
 
         # 存为默认值（v4.22 修订）：把当前拟合参数固定为每次启动的默认值
         self.lifetime_save_defaults_btn = QPushButton("存为默认值")

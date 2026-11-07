@@ -2720,6 +2720,23 @@ class PlotMixin:
             lines.append(f"⚠️ 拟合质量：{info['quality'].upper()} —— {notes}")
         if info.get('peaks_dropped'):
             lines.append(f"⚠️ 有 {info['peaks_dropped']} 个分量因超出 max_peaks 被丢弃")
+        # v5.0.4：τ 范围不足时要**改变对结果的解读**，不能只提示一句算完。
+        # 默认 0.01–100 ns 用在 μs 级磷光上，报出的 τ 只是网格端点值：
+        # 实测 03-Ce6 默认范围给 85.8 ns、χ²R 75.5，放宽后是 5653 ns、χ²R 2.77，
+        # 差 65.9 倍——而 85.8 这个数看起来完全正常，用户会直接抄进报告。
+        try:
+            import plot_lifetime as _plt
+            _bad = _plt.tau_range_complaint(info)
+        except Exception:
+            _bad = None
+        if _bad:
+            lines.append("")
+            lines.append("❌ 结果不可信：τ 搜索范围明显不足")
+            lines.append(f"   {_bad}")
+            lines.append("   图中的寿命数值只是网格端点的值，不是真实寿命。")
+            lines.append("   请点「采用建议范围」或手动放宽 τ_max 后重新拟合，")
+            lines.append("   在修正之前不要使用这组 τ / 占比数据。")
+            lines.append("")
         if info.get('intensity_share_grid_edges', 0) > 0.05:
             lines.append(f"⚠️ {info['intensity_share_grid_edges'] * 100:.1f}% 的发光强度"
                          "落在寿命范围两端（可能为边界堆积，建议放宽 τ 范围复算）")
