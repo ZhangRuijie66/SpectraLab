@@ -484,7 +484,381 @@ def points_to_csv(points, x_var, metric_label, path):
     return path
 
 
-# ======================== 4. 一键 / 命令行 ========================
+# ======================== 4. 数据可比性预检（v5.0.6） ========================
+
+# 检查级别的严重度（数字越大越严重），供排序与 UI 配色用
+_SEV_RANK = {'info': 0, 'warn': 1, 'error': 2}
+
+
+def _fmt_num(v, unit=''):
+    """把元数据值格式化成短字符串；None 显示「未声明」。"""
+    if v is None:
+        return '未声明'
+    try:
+        s = f'{float(v):g}'
+    except (TypeError, ValueError):
+        s = str(v)
+    return f'{s}{unit}' if unit else s
+
+
+def check_comparability(samples, headers=None, group_of=None, kind='emission',
+                        peak_tol_nm=20.0, scatter_tol_nm=15.0,
+                        completeness_tol=0.01):
+    """检查一批光谱**能不能放在一起求均值**（v5.0.6）。
+
+    为什么需要它
+    ------------
+    ``说明.xlsx`` 只给编号（R1/R2/S1…），同编号的多个 CSV 会被自动当成
+    "同一条件的平行测量"，画成均值 ± 标准差。但现实里同编号的文件常常
+    **不是**同一种测量。实测 ``示例数据/05-数据比较-浓度梯度`` 的 x=10 一组
+    6 个文件，其中 4 个各有一类问题：
+
+        R1.csv      header 声明 320–800nm/0.5nm（应 961 点），实际只有 294 点（截断）
+        R1.csv      带宽 3.0 nm，其余 5 个是 5.0 nm
+        R1-3.csv    激发波长 650 nm，其余 5 个是 520 nm
+        R1-5/6.csv  全谱最大点紧贴 EX（Δ≈−1nm）→ 峰强取到了瑞利散射峰
+
+    软件把它们统一算成 mean=11706.9 / RSD=55.5%，用户的全部信息只有一句
+    「12 个样品 → 3 个点」。而**Grubbs 离群检验抓不到**：实测 G=1.78 < 临界
+    1.887（离群点自己把 SD 撑大了，这是单变量离群检验的经典盲区）。
+    必须靠「测量条件元数据 + 谱形一致性」判断，不能靠数值统计。
+
+    参数
+    ----
+    samples : list
+        每条为 ``(显示名, 文件名, wl, y)`` 或带更多字段的 tuple/dict。
+        只需要 ``wl`` 与 ``y``（用来做谱形与散射检查）。
+    headers : dict | None
+        ``{文件名: read_measurement_header() 的结果}``。给了才做元数据/完整性
+        两项检查；为 None 时只做谱形与散射检查。
+    group_of : callable | None
+        ``group_of(文件名) -> 分组键``（通常是说明.xlsx 的编号）。
+        为 None 时全部算同一组。
+    kind : str
+        ``'emission'`` 时做散射检查（用 EX 波长），``'absorption'`` 时跳过。
+    peak_tol_nm : float
+        组内峰位偏离中位数超过该值 → 判为"谱形不一致"。
+    scatter_tol_nm : float
+        全谱最大点距 EX 小于该值 → 判为"峰强可能取到散射峰"。
+    completeness_tol : float
+        实际点数比声明点数少超过该比例 → 判为"扫描被截断"。
+
+    返回
+    ----
+    dict::
+
+        {'issues':    [{'level', 'code', 'title', 'detail', 'samples'}, ...],
+         'groups':    {组键: {'n', 'issues': [...], 'comparable_n'}},
+         'n_ok':      可比的样品数,
+         'n_flagged': 被标记的样品数,
+         'summary':   一行中文结论}
+
+    每个 issue 的 ``level`` 取 ``'error'``（不该参与平均）/ ``'warn'``
+    （可以平均但要记着）/ ``'info'``（仅提示）。
+    """
+    issues = []
+    samples = list(samples or [])
+
+    def _parts(s):
+        """把 sample 统一成 (name, filename, wl, y)。"""
+        if isinstance(s, dict):
+            wl = s.get('wl', s.get('wavelength'))
+            y = s.get('y', s.get('intensity', s.get('absorption')))
+            return (s.get('name') or s.get('label') or '',
+                    s.get('file') or s.get('filename') or '', wl, y)
+        name = s[0] if len(s) > 0 else ''
+        fname = s[1] if len(s) > 1 else ''
+        wl = s[2] if len(s) > 2 else None
+        y = s[3] if len(s) > 3 else None
+        return name, fname, wl, y
+
+    norm = [_parts(s) for s in samples]
+    if not norm:
+        return {'issues': [], 'groups': {}, 'n_ok': 0, 'n_flagged': 0,
+                'summary': '没有样品可检查'}
+
+    def _grp(fname, name):
+        if group_of is None:
+            return None
+        try:
+            return group_of(fname or name)
+        except Exception:
+            return None
+
+    groups = {}
+    for name, fname, wl, y in norm:
+        groups.setdefault(_grp(fname, name), []).append((name, fname, wl, y))
+
+    flagged = set()         # 被标为 error 的样品名（用于算 comparable_n）
+
+    def _add(level, code, title, detail, who):
+        issues.append({'level': level, 'code': code, 'title': title,
+                       'detail': detail, 'samples': list(who)})
+        if level == 'error':
+            flagged.update(who)
+
+    # ---------- ① 元数据一致性（同组内测量条件必须相同） ----------
+    if headers:
+        fields = [('ex_wl', '激发波长', ' nm'),
+                  ('em_bw', '发射带宽', ' nm'),
+                  ('ex_bw', '激发带宽', ' nm'),
+                  ('em_start', '扫描起点', ' nm'),
+                  ('em_end', '扫描终点', ' nm'),
+                  ('interval', '数据间隔', ' nm')]
+        for gkey, members in groups.items():
+            if len(members) < 2:
+                continue
+            for fkey, label, unit in fields:
+                vals = {}
+                for _n, fname, _wl, _y in members:
+                    h = headers.get(fname) or {}
+                    v = h.get(fkey)
+                    if v is None:
+                        continue
+                    vals.setdefault(_fmt_num(v, unit), []).append(fname)
+                if len(vals) < 2:
+                    continue
+                # 多数派 = 出现次数最多的取值
+                major = max(vals.items(), key=lambda kv: len(kv[1]))
+                odd = [fn for val, fns in vals.items() if val != major[0]
+                       for fn in fns]
+                if not odd:
+                    continue
+                detail = ('同一编号（' + str(gkey) + '）下的文件'
+                          + f'{label}不一致：多数为 {major[0]}'
+                          + f'（{len(major[1])} 个），'
+                          + '；'.join(f'{val}（{", ".join(fns)}）'
+                                      for val, fns in vals.items()
+                                      if val != major[0])
+                          + '。条件不同的测量不能当作平行样平均。')
+                _add('error', 'meta_' + fkey, f'{label}不一致', detail, odd)
+
+    # ---------- ② 数据完整性（声明点数 vs 实际点数） ----------
+    if headers:
+        for name, fname, wl, _y in norm:
+            h = headers.get(fname) or {}
+            start, end, step = h.get('em_start'), h.get('em_end'), h.get('interval')
+            if not (start is not None and end is not None and step
+                    and float(step) > 0 and float(end) > float(start)):
+                continue
+            try:
+                expect = int(round((float(end) - float(start)) / float(step))) + 1
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            try:
+                actual = int(np.asarray(wl, float).size)
+            except Exception:
+                continue
+            if expect <= 0 or actual <= 0:
+                continue
+            missing = 1.0 - actual / expect
+            if missing > completeness_tol:
+                detail = (f'文件头声明 {_fmt_num(start, " nm")}–'
+                          f'{_fmt_num(end, " nm")}、步长 {_fmt_num(step, " nm")}，'
+                          f'应为 {expect} 点，实际只有 {actual} 点'
+                          f'（缺 {missing * 100:.0f}%）。'
+                          '扫描被截断时数据"是真的但残缺"，'
+                          '区间积分与峰面积会整体偏小，'
+                          '而且不会报任何错。')
+                _add('error', 'truncated', '扫描数据不完整', detail, [fname])
+
+    # ---------- ③ 谱形一致性（同组峰位不能差太远） ----------
+    # 判据说明：只在**多数派内部**找离群，而不是把整组中位数当基准。
+    # 早期实现用「组内中位数」，实测在 05 数据的 R1 组上误报 6 个文件：
+    # 该组谱形分成两派（570 nm 与 519 nm 各一半），中位数落在两派之间的
+    # 544.5 nm，于是**两派都被判偏离**——真正该标的是少数派，不是所有人。
+    for gkey, members in groups.items():
+        if len(members) < 3:          # 少于 3 个无法区分多数派/少数派
+            continue
+        peaks = {}
+        for name, fname, wl, y in members:
+            try:
+                arr_wl = np.asarray(wl, float)
+                arr_y = np.asarray(y, float)
+                if arr_wl.size == 0 or arr_wl.size != arr_y.size:
+                    continue
+                finite = np.isfinite(arr_y)
+                if not finite.any():
+                    continue
+                i = int(np.nanargmax(np.where(finite, arr_y, -np.inf)))
+                peaks[fname] = float(arr_wl[i])
+            except Exception:
+                continue
+        if len(peaks) < 3:
+            continue
+        med = float(np.median(list(peaks.values())))
+        # 先取「距中位数最近的那一批」当参考簇，再找偏离参考簇的点
+        near = {fn: p for fn, p in peaks.items() if abs(p - med) <= peak_tol_nm}
+        if len(near) < 2:
+            # 两派各占一半、谁都不在容差内：用最密的一派（按 2×tol 聚类）
+            buckets = {}
+            for fn, p in peaks.items():
+                key = int(round(p / (2 * peak_tol_nm)))
+                buckets.setdefault(key, []).append(fn)
+            biggest = max(buckets.values(), key=len)
+            if len(biggest) < 2 or len(biggest) == len(peaks):
+                continue
+            ref_med = float(np.median([peaks[fn] for fn in biggest]))
+            near = {fn: peaks[fn] for fn in biggest}
+        else:
+            ref_med = float(np.median(list(near.values())))
+        odd = [fn for fn, p in peaks.items()
+               if fn not in near and abs(p - ref_med) > peak_tol_nm]
+        if not odd:
+            continue
+        detail = ('同一编号（' + str(gkey) + '）下的文件谱形不一致：'
+                  f'{len(near)} 个文件的峰位集中在 {ref_med:.1f} nm，'
+                  + '；'.join(f'{fn} 却在 {peaks[fn]:.1f} nm'
+                              f'（偏离 {peaks[fn] - ref_med:+.1f} nm）'
+                              for fn in odd)
+                  + f'。偏离超过 ±{peak_tol_nm:g} nm 通常意味着测的不是同一个东西'
+                    '（激发波长不同 / 样品不同 / 串了别的谱），'
+                    '不该当作同一条件的平行样。')
+        _add('error', 'peak_shift', '谱形不一致（峰位）', detail, odd)
+
+    # ---------- ④ 散射污染（发射谱：峰强是否取到了散射/拉曼峰） ----------
+    # 两类都要报，但成因不同、修法也不同：
+    #   · 瑞利线：峰位几乎压着 EX（实测 R1-5/R1-6 在 EX−1.0/−1.5 nm）；
+    #   · 拉曼/散射带：峰位在 EX 之后十几 nm，且**是一条有宽度的带**
+    #     （实测 S3/S4 系列在 EX+13.5~14.5 nm、半高宽约 23 nm、
+    #      强度 9.3~11.6 万，而荧光区只有 1.4~1.7 万——是散射带不是荧光）。
+    # 只看"距 EX < 15 nm"会把后者当成宽度为零的瑞利线，也把 EX+13 这种
+    # 真实散射带误判成"紧贴"；所以两者合并成一个「贴近 EX 的强带」判据，
+    # 但按距离给不同措辞。
+    if kind == 'emission' and headers:
+        scatter_hits = []          # [(fname, peak_wl, ex, delta, ratio)]
+        for name, fname, wl, y in norm:
+            h = headers.get(fname) or {}
+            ex = h.get('ex_wl')
+            if ex is None:
+                continue
+            try:
+                arr_wl = np.asarray(wl, float)
+                arr_y = np.asarray(y, float)
+                if arr_wl.size == 0 or arr_wl.size != arr_y.size:
+                    continue
+                finite = np.isfinite(arr_y)
+                if not finite.any():
+                    continue
+                arr_y = np.where(finite, arr_y, -np.inf)
+                i = int(np.argmax(arr_y))
+                peak_wl = float(arr_wl[i])
+                delta = peak_wl - float(ex)
+            except Exception:
+                continue
+            if abs(delta) > scatter_tol_nm:
+                continue
+            try:
+                far = arr_wl > float(ex) + 40.0
+                fluor = float(arr_y[far].max()) if far.any() else float('nan')
+            except Exception:
+                fluor = float('nan')
+            ratio = (arr_y[i] / fluor) if np.isfinite(fluor) and fluor > 0 else float('nan')
+            scatter_hits.append((fname, peak_wl, float(ex), delta, ratio, fluor))
+
+        # 按 (成因类型, EX 波长) 归类合并：S3/S4 各 4 个文件其实是同一件事，
+        # 逐个报 8 条会把信息页刷满，反而不容易看出「这批全中招了」。
+        buckets = {}
+        for hit in scatter_hits:
+            fname, peak_wl, ex, delta, ratio, fluor = hit
+            tag = 'rayleigh' if abs(delta) <= 3.0 else 'raman'
+            buckets.setdefault((tag, round(ex, 1)), []).append(hit)
+
+        for (tag, ex), hits in sorted(buckets.items()):
+            fnames = [h[0] for h in hits]
+            deltas = [h[3] for h in hits]
+            peaks = [h[1] for h in hits]
+            ratios = [h[4] for h in hits if np.isfinite(h[4])]
+            fluor = hits[0][5]
+            d_lo, d_hi = min(deltas), max(deltas)
+            d_txt = (f'{d_lo:+.1f}' if abs(d_hi - d_lo) < 0.2
+                     else f'{d_lo:+.1f} ~ {d_hi:+.1f}')
+            if tag == 'rayleigh':
+                cause = '几乎压在激发波长上，是瑞利（激发）散射线'
+            else:
+                cause = ('落在激发波长之后十几 nm，通常对应溶剂拉曼峰'
+                         '（水的 Raman 位移约 3350 cm⁻¹）或杂散散射带')
+            ratio_txt = ''
+            if ratios:
+                r_lo, r_hi = min(ratios), max(ratios)
+                r_txt = (f'{r_lo:.1f}' if abs(r_hi - r_lo) < 0.15
+                         else f'{r_lo:.1f}~{r_hi:.1f}')
+                ratio_txt = (f'它的强度是荧光区最大值（约 {fluor:.0f}）的 '
+                             f'{r_txt} 倍，')
+            detail = (f'{len(fnames)} 个文件的全谱最大点都落在 '
+                      f'{min(peaks):.1f}–{max(peaks):.1f} nm，'
+                      f'距激发波长 {ex:g} nm 为 {d_txt} nm——{cause}。'
+                      + ratio_txt
+                      + '「峰强度（全谱最大）」会把它们当成发光强度，'
+                        '做浓度标定时斜率是错的，而图上看不出异常。'
+                        f'建议纵轴口径改成「指定区间内的最大值」，'
+                        f'区间下限取 {ex + 30:g} nm 之后。')
+            _add('warn', 'scatter_' + tag, '峰强可能取到散射/拉曼峰',
+                 detail, fnames)
+
+    # ---------- 汇总 ----------
+    all_names = set()
+    for name, fname, _wl, _y in norm:
+        all_names.add(fname or name)
+    flagged = {f for f in flagged if f in all_names}
+
+    by_group = {}
+    for gkey, members in groups.items():
+        gfiles = {fn or nm for nm, fn, _w, _y in members}
+        g_issues = [it for it in issues if gfiles & set(it['samples'])]
+        bad = set()
+        for it in g_issues:
+            if it['level'] == 'error':
+                bad |= (gfiles & set(it['samples']))
+        by_group[str(gkey)] = {
+            'n': len(members),
+            'issues': g_issues,
+            'comparable_n': len(members) - len(bad),
+        }
+
+    n_err = sum(1 for it in issues if it['level'] == 'error')
+    n_warn = sum(1 for it in issues if it['level'] == 'warn')
+    if not issues:
+        summary = f'{len(all_names)} 个样品通过可比性检查（未发现条件差异）'
+    else:
+        bits = []
+        if n_err:
+            bits.append(f'{n_err} 项会影响结论（error）')
+        if n_warn:
+            bits.append(f'{n_warn} 项需留意（warn）')
+        summary = (f'{len(all_names)} 个样品中发现 {len(issues)} 个可比性问题：'
+                   + '，'.join(bits) + f'；{len(flagged)} 个样品存在条件差异')
+    return {'issues': issues, 'groups': by_group,
+            'n_ok': len(all_names) - len(flagged),
+            'n_flagged': len(flagged), 'summary': summary}
+
+
+def format_comparability_report(result, max_detail=6):
+    """把 check_comparability() 的结果排成给人看的纯文本（供 GUI 信息页/日志）。
+
+    ``max_detail`` 限制最多展开几项（其余只报个数），避免信息页被几十条
+    「带宽不一致」刷屏——同一种问题常常每个文件各报一条。
+    """
+    if not result or not result.get('issues'):
+        return (result or {}).get('summary', '') or '未发现问题'
+    lines = [result.get('summary', ''), '']
+    order = {'error': 0, 'warn': 1, 'info': 2}
+    mark = {'error': '❌', 'warn': '⚠️', 'info': 'ℹ️'}
+    shown = 0
+    for it in sorted(result['issues'], key=lambda x: order.get(x['level'], 9)):
+        if shown >= max_detail:
+            break
+        lines.append(f"{mark.get(it['level'], '')} {it['title']}")
+        lines.append(f"   涉及：{', '.join(it['samples'])}")
+        lines.append(f"   {it['detail']}")
+        lines.append('')
+        shown += 1
+    if len(result['issues']) > shown:
+        lines.append(f"… 另有 {len(result['issues']) - shown} 项未展开")
+    return '\n'.join(lines).rstrip()
+
+
+# ======================== 5. 一键 / 命令行 ========================
 
 def _load_spectra(files, kind='emission'):
     """懒加载光谱（避免模块导入就拉起绘图模块）。返回 [(显示名, 文件名, wl, y)]。"""

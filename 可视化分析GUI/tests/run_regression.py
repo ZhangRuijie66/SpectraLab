@@ -3593,6 +3593,148 @@ def t_standard_buttons_chinese():
     assert install_zh_standard_buttons(app) is tr
 
 
+@check("数据比较：可比性预检抓出条件不一致 / 截断 / 散射（v5.0.6）")
+def t_comparability_precheck():
+    """同编号的多个文件会被自动当平行样求均值±SD，但同编号里常有
+    「不是同一种测量」的文件混进来。实测示例数据 05 的 x=10 一组
+    6 个文件，其中 4 个各有一类问题：
+
+        R1.csv      header 声明 320–800nm/0.5nm（应 961 点），实际 294 点
+        R1.csv      带宽 3.0 nm，其余 5 个是 5.0 nm
+        R1-3.csv    激发波长 650 nm，其余 5 个是 520 nm
+        R1-5/6.csv  全谱最大点紧贴 EX（Δ≈−1nm）→ 取到了瑞利散射线
+
+    软件把它们算成 mean=11706.9 / RSD=55.5%。**Grubbs 离群检验抓不到**：
+    实测 G=1.78 < 临界 1.887（离群点自己把 SD 撑大了，这是单变量离群
+    检验的经典盲区）——必须靠元数据 + 谱形判断。
+
+    本条用合成数据覆盖四类检查，避免依赖示例数据是否在场：
+      A. 元数据一致性（EX 波长不一致）
+      B. 数据完整性（声明点数 vs 实际点数）
+      C. 谱形一致性（同组峰位差太远）
+      D. 散射污染（峰强落在 EX 附近）
+    并断言「条件一致的好数据不报警」，防止变成无差别告警。
+    """
+    import plot_compare as pc
+
+    def mk(wl, y):
+        return np.asarray(wl, float), np.asarray(y, float)
+
+    wl = np.arange(300.0, 801.0, 1.0)
+
+    # ---- A + B：元数据不一致 + 截断 ----
+    # EX=450、荧光峰 500：拉开 50 nm，避免峰强落在 EX 附近被 scatter 检查
+    # 顺带命中（否则这条测试会因为"碰巧 scatter 也报了"而变得语义不清）。
+    y_a = 100.0 * np.exp(-((wl - 500.0) / 30.0) ** 2)
+    samples = [('a1', 'a1.csv') + mk(wl, y_a),
+               ('a2', 'a2.csv') + mk(wl, y_a),
+               ('a3', 'a3.csv') + mk(wl, y_a)]
+    headers = {
+        'a1.csv': {'ex_wl': 450.0, 'em_start': 300.0, 'em_end': 800.0,
+                   'interval': 1.0, 'em_bw': 5.0},
+        'a2.csv': {'ex_wl': 450.0, 'em_start': 300.0, 'em_end': 800.0,
+                   'interval': 1.0, 'em_bw': 5.0},
+        # a3：EX 改成 600，且数据被截断到一半
+        'a3.csv': {'ex_wl': 600.0, 'em_start': 300.0, 'em_end': 800.0,
+                   'interval': 1.0, 'em_bw': 5.0},
+    }
+    samples[2] = ('a3', 'a3.csv') + mk(wl[:250], y_a[:250])
+    res = pc.check_comparability(samples, headers=headers,
+                                 group_of=lambda fn: 'A')
+    codes = {it['code'] for it in res['issues']}
+    assert 'meta_ex_wl' in codes, \
+        f"没抓出激发波长不一致：{sorted(codes)}"
+    assert 'truncated' in codes, \
+        f"没抓出扫描截断（声明 501 点实际 250 点）：{sorted(codes)}"
+    trunc = [it for it in res['issues'] if it['code'] == 'truncated'][0]
+    assert '501' in trunc['detail'] and '250' in trunc['detail'], \
+        f"截断详情没说清点数为 {trunc['detail']}"
+
+    # ---- C：谱形不一致（多数派 500nm，少数派 600nm）----
+    y_shift = 100.0 * np.exp(-((wl - 600.0) / 30.0) ** 2)
+    s_c = [('c1', 'c1.csv') + mk(wl, y_a),
+           ('c2', 'c2.csv') + mk(wl, y_a),
+           ('c3', 'c3.csv') + mk(wl, y_a),
+           ('c4', 'c4.csv') + mk(wl, y_shift)]     # 少数派
+    res_c = pc.check_comparability(s_c, group_of=lambda fn: 'C')
+    shift = [it for it in res_c['issues'] if it['code'] == 'peak_shift']
+    assert shift, "没抓出谱形不一致"
+    assert shift[0]['samples'] == ['c4.csv'], (
+        f"只该标少数派 c4，实际标了 {shift[0]['samples']}"
+        "（早期实现用组内中位数当基准，两派会被一起标）")
+
+    # ---- D：散射污染（峰强落在 EX 附近）----
+    ex = 500.0
+    y_sc = (200.0 * np.exp(-((wl - ex) / 2.0) ** 2)        # 瑞利线，最强
+            + 50.0 * np.exp(-((wl - 570.0) / 30.0) ** 2))  # 真实荧光
+    s_d = [('d1', 'd1.csv') + mk(wl, y_sc)]
+    h_d = {'d1.csv': {'ex_wl': ex}}
+    res_d = pc.check_comparability(s_d, headers=h_d, group_of=lambda fn: 'D')
+    scat = [it for it in res_d['issues'] if it['code'].startswith('scatter')]
+    assert scat, f"没抓出散射污染：{[i['code'] for i in res_d['issues']]}"
+    assert scat[0]['level'] == 'warn', "散射应为 warn（可画但需留意）"
+
+    # ---- 好数据不能报警（防止变成无差别告警）----
+    # 注意：荧光峰必须与 EX 拉开足够距离（真实荧光 Stokes 位移通常 ≥40 nm），
+    # 否则峰强本来就落在 EX 附近，报"散射"反而是对的。
+    # 这里 EX=450、荧光峰 500——早期把两者都设成 500，
+    # 结果好数据被 scatter 误报，是**测试数据造错**而非实现错。
+    y_ok = 100.0 * np.exp(-((wl - 500.0) / 30.0) ** 2)
+    s_ok = [('e1', 'e1.csv') + mk(wl, y_ok),
+            ('e2', 'e2.csv') + mk(wl, y_ok * 1.05)]
+    h_ok = {
+        'e1.csv': {'ex_wl': 450.0, 'em_start': 300.0, 'em_end': 800.0,
+                   'interval': 1.0, 'em_bw': 5.0},
+        'e2.csv': {'ex_wl': 450.0, 'em_start': 300.0, 'em_end': 800.0,
+                   'interval': 1.0, 'em_bw': 5.0},
+    }
+    res_ok = pc.check_comparability(s_ok, headers=h_ok,
+                                    group_of=lambda fn: 'E')
+    assert not res_ok['issues'], (
+        '条件一致的数据被误报：'
+        + str([(it['code'], it['samples']) for it in res_ok['issues']]))
+    assert res_ok['n_flagged'] == 0
+
+    # ---- 报告文本可读 ----
+    txt = pc.format_comparability_report(res)
+    assert '❌' in txt and 'a3.csv' in txt, f'报告文本不合格：{txt[:120]}'
+
+
+@check("发射模式：数据集带上来源路径，可比性预检才读得到文件头（v5.0.6）")
+def t_source_path_preserved():
+    """``load_spectra`` 把多个文件的数据集拍平成一个列表后，**文件与数据集
+    的对应关系会丢**，GUI 只能用 ``Path('<emission>')`` 占位。
+
+    后果实测：可比性预检想读文件头时无路径可读，
+    ``read_measurement_header`` 对不存在的路径静默返回全 None，
+    于是元数据/完整性/散射三项检查**全部静默失效**，只剩谱形一项能命中
+    （26 个样品从 7 个问题缩成 1 个）。
+
+    修法：``parse_csv`` 给每个数据集补 ``_source_path``。
+    """
+    import plot_emission as pe
+    from pathlib import Path as _Path
+
+    root = _Path(GUI_DIR).parent
+    emi = root / '示例数据' / '02-发射-RF6000-RB与R101' / '1#RB.csv'
+    if not emi.exists():
+        raise Skip("缺少示例发射数据 1#RB.csv")
+
+    ds = pe.load_spectra([str(emi)], verbose=False)
+    assert len(ds) == 1, f"应有 1 条光谱，实际 {len(ds)}"
+    src = ds[0].get('_source_path')
+    assert src, "数据集没有 _source_path，GUI 无法回溯来源文件"
+    assert _Path(src).exists(), f"_source_path 指向不存在的文件：{src}"
+    assert _Path(src).name == emi.name, f"来源路径不对：{src}"
+
+    # 有了路径之后 header 必须读得出来
+    h = pe.read_measurement_header(src)
+    assert h.get('ex_wl') is not None, \
+        f"有路径却读不出 EX 波长：{h}"
+    assert h.get('em_bw') is not None, \
+        f"有路径却读不出带宽：{h}"
+
+
 def main():
     strict = '--strict' in sys.argv
 

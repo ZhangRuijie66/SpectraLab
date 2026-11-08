@@ -902,7 +902,7 @@ class PlotMixin:
             canvas.setToolTip("")
 
     def _run_compare(self):
-        """「数据比较」按钮：画点线图并切到该标签页（v4.37）。"""
+        """「数据比较」按钮：先做可比性预检，再画点线图并切到该标签页（v4.37）。"""
         if self.spectrum_type not in ('absorption', 'emission'):
             return
         try:
@@ -914,6 +914,13 @@ class PlotMixin:
             QMessageBox.warning(self, "提示",
                                 "请先在左侧勾选至少一个样品\n（数据比较只统计勾选的样品）")
             return
+        # v5.0.6：画图前先检查「这批样品能不能放在一起平均」。
+        # 同编号的多个文件会被自动当平行样求均值±SD，但实测同编号里常有
+        # EX 波长不同、扫描被截断、峰强取到散射峰的文件混进来——
+        # 而 Grubbs 离群检验抓不到（离群点自己把 SD 撑大了）。
+        # 这里只**提示**，不阻止用户继续（是否剔除由用户决定）。
+        self._check_compare_comparability()
+
         try:
             res = self._do_compare_plot(cfg)
         except Exception as e:
@@ -931,6 +938,98 @@ class PlotMixin:
         except Exception:
             pass
         self.status_bar.showMessage(self._compare_status_text(res))
+
+    def _check_compare_comparability(self):
+        """对当前勾选的样品做可比性预检，结果写进信息页与状态栏（v5.0.6）。
+
+        检查四项（详见 ``plot_compare.check_comparability`` 的说明）：
+        元数据一致性 / 数据完整性 / 谱形一致性 / 散射污染。
+
+        **只提示、不改数据**：用户可能明知差异仍要画（比如就想看两批对比），
+        所以这里既不拦、也不自动剔除，只把问题摆出来。
+        """
+        try:
+            import plot_compare as _pc
+            import plot_emission as _pe
+            from pathlib import Path as _Path
+
+            files = [f for f in self.get_checked_files() if f in self.data_cache]
+            if not files:
+                return
+            samples, headers = [], {}
+            for f in files:
+                entry = self.data_cache[f]
+                data = entry.get('data', {})
+                wl = data.get('wavelength', data.get('wl'))
+                y = data.get('intensity', data.get('absorption'))
+                if wl is None or y is None:
+                    continue
+                samples.append((self._sample_name(f, data), f,
+                                np.asarray(wl, float), np.asarray(y, float)))
+                # 注意：data_cache 的**键是显示名**，真实文件路径在
+                # entry['path'] 里。拿显示名去读 header 会永远读不到
+                # （read_measurement_header 对不存在的路径静默返回全 None），
+                # 于是元数据/完整性/散射三项检查会全部失效——
+                # 实测这一处漏掉时只剩「谱形」一项能命中。
+                real = entry.get('path')
+                try:
+                    headers[f] = (_pe.read_measurement_header(str(real))
+                                  if real is not None else {})
+                except Exception:
+                    headers[f] = {}
+            if not samples:
+                return
+
+            info = getattr(self, 'xlsx_info', None)
+            nums = getattr(info, 'numbers', None) if info is not None else None
+            group_of = None
+            if nums:
+                from read_xlsx_info import match_number
+
+                def group_of(fname, _nums=nums):
+                    try:
+                        return match_number(_Path(fname).name, _nums)
+                    except Exception:
+                        return None
+
+            res = _pc.check_comparability(
+                samples, headers=headers, group_of=group_of,
+                kind=('absorption' if self.spectrum_type == 'absorption'
+                      else 'emission'))
+            self._last_comparability = res
+
+            n_err = sum(1 for it in res['issues'] if it['level'] == 'error')
+            n_warn = sum(1 for it in res['issues'] if it['level'] == 'warn')
+            if not res['issues']:
+                self.status_bar.showMessage(
+                    f"可比性预检：{res['summary']}")
+                return
+
+            # 信息页追加一段（不覆盖原有内容）
+            txt = _pc.format_comparability_report(res, max_detail=5)
+            prev = self.info_label.text()
+            head = ('⚠ 数据可比性预检发现问题——以下文件的条件与同组其它文件不同，'
+                    '被合进均值±SD 后误差棒会虚高：\n\n')
+            self.info_label.setText(
+                (prev + '\n\n' + '─' * 40 + '\n' + head + txt)
+                if prev else (head + txt))
+
+            self.status_bar.showMessage(
+                f"⚠ 可比性预检：{n_err} 项会影响结论、{n_warn} 项需留意"
+                f"（详见左侧信息页）")
+            logging.getLogger('spectra').info(
+                "数据比较可比性预检：%s", res['summary'])
+            if n_err:
+                QMessageBox.warning(
+                    self, "数据可比性提示",
+                    f"{res['summary']}\n\n"
+                    "这些文件被当作同一条件的平行样求了均值±SD，"
+                    "但它们测的其实不是同一个东西。\n\n"
+                    "图仍会照常画（可能你就想看差异），但请在解读时注意："
+                    "误差棒里混进了条件差异，不是纯实验噪声。\n"
+                    "明细见左侧信息页。")
+        except Exception as e:
+            log_exception("可比性预检失败", e)
 
     def _export_compare_csv(self, save_dir=None):
         """把点线图的取点结果导出 CSV（与积分结果导出一致的习惯，v4.37）。"""

@@ -1737,7 +1737,14 @@ class DataMixin:
                     base = f"{label}_{counter}"
                     counter += 1
                 # 兼容键名（保持与吸收光谱一致使用 wl/intensity 或 wavelength/absorption）
-                self.data_cache[base] = {'path': Path('<emission>'), 'data': ds}
+                # v5.0.6：保留真实来源路径。此前一律写死 Path('<emission>')，
+                # 于是「可比性预检」想读文件头时无路径可读，元数据/完整性/
+                # 散射三项检查静默失效。parse_csv 现在会带上 _source_path。
+                _src = ds.get('_source_path')
+                self.data_cache[base] = {
+                    'path': Path(_src) if _src else Path('<emission>'),
+                    'data': ds,
+                }
                 item = QListWidgetItem(base)
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked)

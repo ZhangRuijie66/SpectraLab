@@ -195,6 +195,86 @@ def detect_decay_file(filepath):
     return False, ''
 
 
+def read_measurement_header(filepath):
+    """读出文件头里声明的**测量条件**，供跨文件一致性检查用（v5.0.6）。
+
+    返回 dict，键值都可能是 ``None``（该格式没有这个字段）：
+
+        {'ex_wl', 'em_start', 'em_end', 'interval', 'ex_bw', 'em_bw',
+         'scan_speed', 'sensitivity', 'spectrum_type', 'xaxis', 'raw'}
+
+    为什么单独做一个函数而不塞进各解析器
+    ------------------------------------
+    解析器的返回结构是公开契约（``plot_emission.parse_csv`` 的调用方、
+    打包后的 CLI 都在用），往里加字段要同步改多处；而"一致性检查"只在
+    需要时才跑，用独立函数读一遍文件头最省事，也不会影响既有解析结果。
+
+    零风险：只读前 120 行、只做正则匹配，解析失败一律返回 ``None``。
+    """
+    out = {k: None for k in ('ex_wl', 'em_start', 'em_end', 'interval',
+                             'ex_bw', 'em_bw', 'scan_speed', 'sensitivity',
+                             'spectrum_type', 'xaxis')}
+    out['raw'] = {}
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            lines = [f.readline() for _ in range(120)]
+    except OSError:
+        return out
+    head = ''.join(lines)
+
+    def _grab(pat, cast=float):
+        m = re.search(pat, head, re.IGNORECASE)
+        if not m:
+            return None
+        try:
+            return cast(m.group(1).strip())
+        except (TypeError, ValueError):
+            return m.group(1).strip()
+
+    # LabSolutions RF-6000：`EX Wavelength:,520.0 nm` 这类 `键:,值 单位`
+    out['ex_wl'] = _grab(r'EX\s*Wavelength\s*:?\s*,?\s*([\d.]+)')
+    out['em_start'] = _grab(r'EM\s*Wavelength\s*Start\s*:?\s*,?\s*([\d.]+)')
+    out['em_end'] = _grab(r'EM\s*Wavelength\s*End\s*:?\s*,?\s*([\d.]+)')
+    out['interval'] = _grab(r'(?:Data\s*Interval|EM\s*读取间隔)\s*:?\s*,?\s*([\d.]+)')
+    out['ex_bw'] = _grab(r'EX\s*Bandwidth\s*:?\s*,?\s*([\d.]+)')
+    out['em_bw'] = _grab(r'(?:EM\s*Bandwidth|EM\s*带宽)\s*:?\s*,?\s*([\d.]+)')
+    out['scan_speed'] = _grab(r'Scan\s*Speed\s*:?\s*,?\s*([\d.]+)')
+    out['sensitivity'] = _grab(r'Sensitivity\s*:?\s*,?\s*([^\r\n,]+)', str)
+
+    # PerkinElmer FL WinLab：`Start,470.00,` / `Stop,800.00,` / `Step,0.500,`
+    if out['em_start'] is None:
+        out['em_start'] = _grab(r'^Start\s*,\s*([\d.]+)', float)
+    if out['em_end'] is None:
+        out['em_end'] = _grab(r'^Stop\s*,\s*([\d.]+)', float)
+    if out['interval'] is None:
+        out['interval'] = _grab(r'^Step\s*,\s*([\d.]+)', float)
+
+    # Spectrum Type / XAxis（两种大小写都认，见 D-M2）
+    m = re.search(r'Spectrum\s*Type\s*:?\s*,?\s*([^\r\n,]+)', head, re.IGNORECASE)
+    if m:
+        out['spectrum_type'] = m.group(1).strip()
+    else:
+        m = re.search(r'^Type\s*,\s*([^\r\n,]+)', head, re.IGNORECASE | re.MULTILINE)
+        if m:
+            out['spectrum_type'] = m.group(1).strip()
+    m = re.search(r'^XAxis\s*,\s*([^\r\n,]+)', head, re.IGNORECASE | re.MULTILINE)
+    if m:
+        out['xaxis'] = m.group(1).strip()
+
+    # Spectracle/FE30 的中文头部：`EX WL 起点,500,` 等
+    if out['ex_wl'] is None:
+        out['ex_wl'] = _grab(r'EX\s*WL\s*起点\s*,?\s*([\d.]+)')
+    if out['em_start'] is None:
+        out['em_start'] = _grab(r'EM\s*WL\s*起点\s*,?\s*([\d.]+)')
+    if out['em_end'] is None:
+        out['em_end'] = _grab(r'EM\s*WL\s*结束\s*,?\s*([\d.]+)')
+
+    for k, v in out.items():
+        if k != 'raw' and v is not None:
+            out['raw'][k] = v
+    return out
+
+
 def parse_rf6000_csv(filepath):
     """
     解析 LabSolutions RF / RF-6000 输出的 Emission CSV
@@ -518,6 +598,12 @@ def parse_csv(filepath):
 
     v5.0.4：**时间扫描/衰减文件直接抛错**，不再当成发射光谱返回。
     见 :func:`detect_decay_file` 的说明。
+
+    v5.0.6：给每个返回的数据集补 ``_source_path``（原始文件绝对路径）。
+    此前 ``load_spectra`` 把多个文件的数据集拍平成一个列表后，
+    **文件与数据集的对应关系就丢了**，GUI 只能用 ``Path('<emission>')``
+    占位——于是「数据可比性预检」想读文件头时无路径可读，
+    元数据/完整性/散射三项检查全部静默失效（实测只剩谱形一项能命中）。
     """
     is_decay, ev = detect_decay_file(filepath)
     if is_decay:
@@ -527,11 +613,19 @@ def parse_csv(filepath):
     fmt = detect_format(filepath)
     print(f"  📋 检测到格式: {fmt}")
     if fmt == 'rf6000':
-        return parse_rf6000_csv(filepath)
+        datasets, lines = parse_rf6000_csv(filepath)
     elif fmt == 'flwinlab':
-        return parse_flwinlab_csv(filepath)
+        datasets, lines = parse_flwinlab_csv(filepath)
     else:
-        return parse_spectracle_csv(filepath)
+        datasets, lines = parse_spectracle_csv(filepath)
+    # 记录来源文件，供 GUI 回溯（图例/信息页/可比性预检都要用）
+    try:
+        _src = str(Path(filepath).resolve())
+    except Exception:
+        _src = str(filepath)
+    for ds in datasets or []:
+        ds.setdefault('_source_path', _src)
+    return datasets, lines
 
 
 def _expand_files(files):
