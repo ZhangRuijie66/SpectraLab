@@ -49,3 +49,10 @@ _quarantine/
 
 # 过时的历史开发记录
 可视化分析GUI/docs/_archive/
+
+# Windows 保留设备名（某次命令重定向误建，0 字节、删不掉、无内容）
+# 出现在仓库根时会被 git 当成未跟踪文件；它永远没有实际内容，直接忽略。
+CON
+NUL
+AUX
+PRN
