@@ -12,6 +12,7 @@
 import os
 import sys
 import traceback
+from pathlib import Path
 
 # 必须在导入 PyQt5 之前设定离屏后端
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -3733,6 +3734,130 @@ def t_source_path_preserved():
         f"有路径却读不出 EX 波长：{h}"
     assert h.get('em_bw') is not None, \
         f"有路径却读不出带宽：{h}"
+
+
+@check("GUI：谱带分解/标定分组显隐正确、寿命与 3D 模式隐藏（v5.0.7）")
+def t_bands_calib_group_visibility():
+    """「谱带分解」与「标定」只对吸收/发射这种"一条条谱"有意义。
+
+    寿命模式的数据是衰减曲线（横轴是时间）、3D 是矩阵，都没有"谱带"概念；
+    在这两个模式显示这两组，用户会误以为能对衰减曲线做多峰分解。
+
+    顺带断言「标定横轴变量」下拉框在**没有说明.xlsx**时给出原因、
+    并把按钮禁用（而不是让用户点了之后才弹错）。
+    """
+    app, w = _make_gui()
+    cases = {
+        0: True,      # 吸收
+        1: True,      # 发射
+        2: False,     # 荧光寿命
+        3: False,     # 3D 扫描
+    }
+    for idx, expect_visible in cases.items():
+        w.spectrum_type_combo.setCurrentIndex(idx)
+        assert w.bands_options_group.isVisibleTo(w) == expect_visible, \
+            f"索引 {idx}: 谱带分解组显隐错误（期望 {expect_visible}）"
+        assert w.calib_options_group.isVisibleTo(w) == expect_visible, \
+            f"索引 {idx}: 标定组显隐错误（期望 {expect_visible}）"
+
+    # 3D 定量读出按钮只在 3D 模式下有意义（在 3D 组内，随组显隐）
+    w.spectrum_type_combo.setCurrentIndex(3)
+    assert w.scan3d_options_group.isVisibleTo(w)
+
+    # 标定下拉框：没有说明.xlsx 时必须给出原因 + 按钮禁用
+    w.spectrum_type_combo.setCurrentIndex(1)
+    w.xlsx_info = None
+    w._refresh_calib_xvars()
+    txt = w.calib_xvar_combo.currentText()
+    assert ('说明' in txt) or txt.startswith('（'), \
+        f"没有说明.xlsx 时下拉框应给出原因，实际 {txt!r}"
+    assert not w.calib_run_btn.isEnabled(), \
+        "没有说明.xlsx 时「线性标定」按钮应禁用"
+
+
+@check("GUI：三个新分析模块可导入且公开 API 齐全（v5.0.7）")
+def t_new_modules_api():
+    """GUI 的三个新入口依赖这些公开函数；名字对不上就会在点击时 AttributeError
+    （而这类错误在离屏回归里只有真正点到按钮才暴露，所以在这里先守一道）。"""
+    need = {
+        'plot_bands': ('decompose_bands', 'plot_decomposition',
+                       'format_decomposition', 'compare_band_ratios',
+                       'run_bands'),
+        'plot_calibration': ('linear_calibration', 'lod_loq', 'stern_volmer',
+                             'plot_calibration', 'calibrate_from_folder',
+                             'CalibrationError'),
+        'plot_eem_quant': ('assess_quantifiability', 'find_optimal_excitation',
+                           'emission_peak_table', 'band_area_table',
+                           'export_eem_quant', 'plot_eem_quant',
+                           'eem_quant_all'),
+    }
+    import importlib
+    for mod_name, funcs in need.items():
+        mod = importlib.import_module(mod_name)
+        missing = [f for f in funcs if not hasattr(mod, f)]
+        assert not missing, f"{mod_name} 缺少 GUI 要用的函数：{missing}"
+        # 新模块必须只用允许的依赖（打包 excluded 了 torch/rich）
+        src = (Path(GUI_DIR).parent / f'{mod_name}.py').read_text(
+            encoding='utf-8')
+        for banned in ('import torch', 'import rich', 'from torch',
+                       'from rich'):
+            assert banned not in src, \
+                f"{mod_name} 引入了打包环境没有的依赖：{banned}"
+
+
+@check("导出产物：溯源 meta 含版本/时间/源文件/可比性（v5.0.7）")
+def t_export_provenance():
+    """导出的图/JSON 要能回答「哪一版程序、什么时候、从哪些文件导的」。
+
+    审计实测此前 json 里拟合参数是齐全的，缺的只是这三件事；PNG 更彻底，
+    只有 matplotlib 自塞的 Software 标签。于是拿旧产物回来无法判断
+    是否还与本版算法可比。
+
+    可比性警告也进产物：v5.0.6 的预检提示只在状态栏停留几秒，
+    写进产物才能「换个时间看也知道当时提示过什么」。
+    """
+    from gui_provenance import (build_meta, meta_summary_lines,
+                                stamp_figure, write_sidecar)
+
+    comp = {'issues': [{'level': 'error', 'code': 'truncated',
+                        'title': '扫描数据不完整',
+                        'samples': ['R1.csv'], 'detail': '声明961点实际294点'}],
+            'summary': '1 个样品存在条件差异', 'n_flagged': 1}
+    meta = build_meta(
+        params={'dpi': 600, 'xlim_nm': [430, 560], 'time_unit': 'ns'},
+        sources=[__file__], comparability=comp)
+
+    for key in ('version', 'exported_at', 'app', 'params',
+                'source_files', 'comparability'):
+        assert key in meta, f"meta 缺少 {key}"
+    assert meta['version'], "版本号为空（应取自 gui_config.APP_VERSION）"
+    assert meta['source_files'][0]['exists'] is True
+    assert meta['comparability']['warning'], \
+        "可比性问题没有转成产物里的 warning"
+
+    # 可读摘要要能用（贴在图角 / 写进报告头）
+    lines = meta_summary_lines(meta)
+    assert lines and any('v' in ln for ln in lines), lines
+
+    # 好数据（无 issue）不该带 warning
+    ok_meta = build_meta(comparability={'issues': [], 'summary': '通过',
+                                        'n_flagged': 0})
+    assert 'warning' not in (ok_meta.get('comparability') or {})
+
+    # 打水印 + 写 sidecar 不能抛错（导出路径上任何异常都不该阻断保存）
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(3, 2))
+    ax = fig.add_subplot(111)
+    ax.plot([0, 1], [0, 1])
+    assert stamp_figure(fig, meta) in (True, False)
+    import tempfile
+    tmp = os.path.join(tempfile.mkdtemp(prefix='prov_'), 'a.png')
+    fig.savefig(tmp, dpi=50)
+    side = write_sidecar(tmp, meta)
+    assert side is not None and os.path.exists(side), \
+        "sidecar meta 没写出来"
 
 
 def main():

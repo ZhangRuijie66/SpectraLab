@@ -144,6 +144,445 @@ class PlotMixin:
             QMessageBox.critical(self, "错误", f"启动绘图失败: {str(e)}")
             return None
 
+    # ---------- v5.0.7：谱带分解 / 线性标定 ----------
+
+    def _bands_params(self):
+        """主线程采集谱带分解参数（工作线程只读这个 dict）。"""
+        model_map = {0: 'gaussian', 1: 'lorentzian', 2: 'pseudo_voigt'}
+        base_map = {0: 'const', 1: 'linear', 2: 'none'}
+        text = self.bands_npeaks_combo.currentText()
+        n_peaks = None if text.startswith('自动') else int(text)
+        return {
+            'model': model_map.get(self.bands_model_combo.currentIndex(),
+                                   'gaussian'),
+            'baseline': base_map.get(self.bands_baseline_combo.currentIndex(),
+                                     'const'),
+            'n_peaks': n_peaks,
+            'use_xlim': bool(self.bands_auto_band_check.isChecked()),
+            'xlim': self._get_xlim(),
+            'kind': ('absorption' if self.spectrum_type == 'absorption'
+                     else 'emission'),
+            'files': [f for f in self.get_checked_files()
+                      if f in self.data_cache],
+            # 当前选中项（主线程取，工作线程只读）——用来决定先画哪一条谱
+            'selected': (self.file_list.selectedItems()[0].text()
+                         if self.file_list.selectedItems() else None),
+        }
+
+    def _run_bands(self):
+        """「谱带分解」按钮：在后台线程里分解勾选的谱（v5.0.7）。
+
+        为什么要后台：自动定阶最多拟合 6 档 × 6 个起点 × 曲线拟合，
+        单条谱实测就要几秒到十几秒（真实数据 301 点还行，宽谱数秒），
+        26 条样品串起来足以把界面冻住。
+        """
+        if self.spectrum_type not in ('absorption', 'emission'):
+            return
+        params = self._bands_params()
+        if not params['files']:
+            QMessageBox.warning(self, "提示",
+                                "请先在左侧勾选至少一个样品")
+            return
+        if getattr(self, '_plotting', False):
+            QMessageBox.information(self, "提示", "正在计算中，请稍候…")
+            return
+        self.status_bar.showMessage("正在做谱带分解…")
+        self._start_worker(self._do_bands_plot, params,
+                           self._on_bands_finished, long_task=True,
+                           dialog_text="正在做谱带分解…")
+
+    def _do_bands_plot(self, params=None):
+        """后台：逐条分解 → 画到预览画布，返回结果列表。"""
+        import plot_bands as _pb
+        if params is None:
+            params = self._bands_params()
+        files = params.get('files') or []
+        xlim = params.get('xlim') if params.get('use_xlim') else None
+        wl_range = xlim if xlim else None
+        records = []
+        errors = []
+        for i, key in enumerate(files):
+            w = params.get('worker')
+            if w is not None:
+                try:
+                    # PlotWorker.progress 是 pyqtSignal(int, str)：两个参数都要给
+                    w.progress.emit(int(100 * i / max(len(files), 1)),
+                                    f"正在分解 {i + 1}/{len(files)}")
+                except Exception:
+                    pass
+            try:
+                entry = self.data_cache.get(key) or {}
+                data = entry.get('data') or {}
+                wl = data.get('wavelength', data.get('wl'))
+                y = data.get('intensity', data.get('absorption'))
+                if wl is None or y is None:
+                    errors.append((key, '没有波长/强度数据'))
+                    continue
+                res = _pb.decompose_bands(
+                    np.asarray(wl, float), np.asarray(y, float),
+                    n_peaks=params['n_peaks'], model=params['model'],
+                    baseline=params['baseline'], wl_range=wl_range)
+                records.append({'label': self._sample_name(key, data),
+                                'key': key, 'result': res,
+                                'wl': np.asarray(wl, float),
+                                'y': np.asarray(y, float)})
+            except Exception as e:
+                errors.append((key, f'{type(e).__name__}: {e}'))
+
+        # 画面：直接用画布自己的 fig 重画（MplCanvas 没有 set_figure，
+        # 新建 figure 再替换行不通；plot_decomposition 支持传 fig 就地画，
+        # 并且会自己恢复 subplots 边距——MplCanvas 初始边距是 0）。
+        fig = None
+        try:
+            self.setup_chinese_font()
+            self.canvas.clear_fig()
+            fig = self.canvas.fig
+            main = None
+            sel = params.get('selected')
+            if sel:
+                main = next((r for r in records if r['key'] == sel), None)
+            if main is None and records:
+                main = records[0]
+            if main is not None:
+                _pb.plot_decomposition(
+                    main['wl'], main['y'], main['result'],
+                    label=main['label'], fig=fig)
+                # 拟合窗口若限定了显示范围，套上去（该函数不管 xlim）
+                if wl_range:
+                    try:
+                        for ax in fig.axes:
+                            if ax.get_xlabel():
+                                ax.set_xlim(*wl_range)
+                                break
+                    except Exception:
+                        pass
+            else:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, '没有可分解的谱', transform=ax.transAxes,
+                        ha='center', va='center', fontsize=13,
+                        color=self._mpl_colors()['muted'])
+                ax.set_axis_off()
+                fig.subplots_adjust(left=0.10, right=0.97, top=0.93,
+                                    bottom=0.14)
+        except Exception as e:
+            log_exception("渲染谱带分解图失败", e)
+
+        return {'records': records, 'errors': errors, 'fig': fig}
+
+    def _on_bands_finished(self, result, gen=None):
+        """后台完成后：图已画在画布 fig 上，这里只需重绘 + 写信息页。"""
+        if gen is not None and self._is_stale(gen):
+            return
+        try:
+            self._close_progress_dialog("谱带分解完成")
+            if isinstance(result, dict):
+                self._last_bands_result = result
+                # 工作线程已经在 self.canvas.fig 上画好了，主线程重绘即可
+                try:
+                    self._refit_canvas_margins(self.canvas)
+                except Exception:
+                    pass
+                try:
+                    self.canvas.draw_idle() if hasattr(
+                        self.canvas, 'draw_idle') else self.canvas.draw()
+                except Exception:
+                    pass
+                self._render_bands_info(result)
+            self._set_canvas_busy(False)
+        except Exception as e:
+            log_exception("谱带分解完成回调失败", e)
+            self._set_canvas_busy(False)
+
+    @staticmethod
+    def _dispose_result_fig(result):
+        """保留接口（历史调用方），_do_bands_plot 现在就地画在画布上，
+        不产生独立 figure，因此无需释放。"""
+        return
+
+    def _render_bands_info(self, result):
+        """把谱带分解摘要写进信息页。"""
+        records = result.get('records') or []
+        errors = result.get('errors') or []
+        lines = [f"谱带分解：{len(records)} 条谱", '']
+        try:
+            import plot_bands as _pb
+        except Exception:
+            _pb = None
+        for rec in records[:6]:
+            res = rec.get('result') or {}
+            lines.append(f"【{rec.get('label', '')}】")
+            if _pb is not None and res.get('ok'):
+                try:
+                    lines.append(_pb.format_decomposition(res))
+                except Exception:
+                    lines.append(f"  {len(res.get('peaks') or [])} 峰")
+            else:
+                lines.append(f"  未能分解：{res.get('message', '未知原因')}")
+            lines.append('')
+        if len(records) > 6:
+            lines.append(f"… 另有 {len(records) - 6} 条未列出")
+        for key, why in errors[:5]:
+            lines.append(f"⚠ {key}: {why}")
+        self.info_label.setText('\n'.join(lines).rstrip())
+        self.status_bar.showMessage(
+            f"谱带分解完成：{len(records)} 条谱"
+            + (f"，{len(errors)} 条失败" if errors else ''))
+
+    def _run_calibration(self):
+        """「线性标定 + LOD」按钮：后台跑 calibrate_from_folder（v5.0.7）。"""
+        if self.spectrum_type not in ('absorption', 'emission'):
+            return
+        x_var = self.calib_xvar_combo.currentText().strip()
+        info = getattr(self, 'xlsx_info', None)
+        cols = list(info.numeric_columns()) if (info is not None and info.numbers) else []
+        if not x_var or x_var not in cols:
+            QMessageBox.warning(
+                self, "提示",
+                "请先在数据文件夹里放 说明.xlsx（含数值列），\n"
+                "并在下拉框里选一个横轴变量。")
+            return
+        folder = getattr(self, 'current_folder', None)
+        if folder is None:
+            QMessageBox.warning(self, "提示", "请先选择数据文件夹")
+            return
+        if getattr(self, '_plotting', False):
+            QMessageBox.information(self, "提示", "正在计算中，请稍候…")
+            return
+        params = {'folder': str(folder), 'x_var': x_var,
+                  'kind': ('absorption' if self.spectrum_type == 'absorption'
+                           else 'emission')}
+        self.status_bar.showMessage(f"正在做「{x_var}」线性标定…")
+        self._start_worker(self._do_calibration_plot, params,
+                           self._on_calibration_finished, long_task=True,
+                           dialog_text=f"正在做「{x_var}」线性标定…")
+
+    def _do_calibration_plot(self, params=None):
+        """后台：读谱 → 可比性预检 → 回归 → 出图 + 出表。"""
+        import plot_calibration as _pc
+        if params is None:
+            raise RuntimeError("缺少标定参数")
+        out = _pc.calibrate_from_folder(
+            params['folder'], x_var=params['x_var'],
+            kind=params.get('kind', 'emission'),
+            save_dir=self._dialog_start_dir(), verbose=False)
+        return out
+
+    def _on_calibration_finished(self, result, gen=None):
+        """完成后：把标定摘要写进信息页并弹一次结果提示。"""
+        if gen is not None and self._is_stale(gen):
+            return
+        try:
+            self._close_progress_dialog("标定完成")
+            if isinstance(result, dict):
+                self._last_calibration = result
+                self._render_calibration_info(result)
+            self._set_canvas_busy(False)
+        except Exception as e:
+            log_exception("标定完成回调失败", e)
+            self._set_canvas_busy(False)
+
+    def _render_calibration_info(self, out):
+        """把标定结果写进信息页（数值 + 哪些文件被排除）。"""
+        def g(key, default=None):
+            v = out.get(key, default)
+            return v
+
+        slope, intercept = g('slope'), g('intercept')
+        r2, s_yx = g('r2'), g('s_yx')
+        lod, loq = g('lod'), g('loq')
+        x_var = g('x_var') or ''
+        lines = [f"线性标定（横轴 = {x_var}）", '']
+        if slope is None:
+            lines.append(f"未能完成标定：{g('message') or '数据不足'}")
+        else:
+            lines.append(f"y = {intercept:.6g} + {slope:.6g}·x")
+            lines.append(f"R² = {r2:.6f}" if r2 is not None else 'R² = —')
+            if s_yx is not None:
+                lines.append(f"回归标准误 s_yx = {s_yx:.6g}")
+            if lod is not None:
+                lines.append(f"LOD = {lod:.4g}（{x_var} 单位）")
+            if loq is not None:
+                lines.append(f"LOQ = {loq:.4g}（{x_var} 单位）")
+            band = g('band')
+            if band:
+                lines.append(f"取数波段：{band[0]:g}–{band[1]:g} nm")
+        excluded = g('excluded') or []
+        if excluded:
+            lines.append('')
+            lines.append(f"⚠ 可比性预检排除了 {len(excluded)} 个文件"
+                         "（否则 LOD 会被算歪）：")
+            for item in excluded[:8]:
+                if isinstance(item, (tuple, list)):
+                    lines.append(f"   · {item[0]}：{item[1]}")
+                else:
+                    lines.append(f"   · {item}")
+        # qc_notes 是 **dict**（{样品名: 说明}），早期写成 notes[:5] 切片会报
+        # "unhashable type: 'slice'"；list 与 dict 都要能处理。
+        notes = g('qc_notes') or []
+        if notes:
+            lines.append('')
+            items = (list(notes.items()) if isinstance(notes, dict)
+                     else [(None, n) for n in notes])
+            for key, note in items[:5]:
+                lines.append(f"ℹ {key}：{note}" if key is not None
+                             else f"ℹ {note}")
+            if len(items) > 5:
+                lines.append(f"   … 另有 {len(items) - 5} 条")
+        fig = g('figure')
+        if fig:
+            lines.append('')
+            lines.append(f"图已存：{fig}")
+        self.info_label.setText('\n'.join(lines).rstrip())
+        bits = []
+        if r2 is not None:
+            bits.append(f"R²={r2:.4f}")
+        if lod is not None:
+            bits.append(f"LOD={lod:.4g}")
+        self.status_bar.showMessage(
+            "标定完成：" + ('，'.join(bits) if bits else '（统计量未算出）'))
+
+    def _run_eem_quant(self):
+        """「定量读出」按钮：3D 模式从 EEM 矩阵里读出可写进报告的数（v5.0.7）。
+
+        **先做可定量性诊断**再给数：实测示例数据 04 里有 11.35% 的饱和点、
+        周期 6.94 nm 且不随 EX 移动的梳状伪迹，换清洗参数最佳 EX 差 95 nm。
+        这种数据硬凑出来的"最佳激发波长"是伪迹驱动的伪数，所以诊断不通过时
+        结果会标 reliable=False 一路带到图注与 CSV 里。
+        """
+        if self.spectrum_type != 'scan3d':
+            return
+        if not self.data_cache:
+            QMessageBox.warning(self, "提示", "请先加载 3D 扫描数据")
+            return
+        if getattr(self, '_plotting', False):
+            QMessageBox.information(self, "提示", "正在计算中，请稍候…")
+            return
+        lo = self.scan3d_band_lo_spin.value()
+        hi = self.scan3d_band_hi_spin.value()
+        if not (hi > lo):
+            QMessageBox.warning(self, "提示",
+                                "发射区间上限必须大于下限")
+            return
+        key = self._current_file_key()
+        if key is None or key not in self.data_cache:
+            QMessageBox.warning(self, "提示", "请先在左侧选中一个 3D 扫描文件")
+            return
+        params = {'key': key, 'em_band': (float(lo), float(hi)),
+                  'save_dir': self._dialog_start_dir()}
+        self.status_bar.showMessage("正在做 EEM 定量读出…")
+        self._start_worker(self._do_eem_quant, params,
+                           self._on_eem_quant_finished, long_task=True,
+                           dialog_text="正在做 EEM 定量读出…")
+
+    def _current_file_key(self):
+        """当前选中项 → data_cache 的键；没选中就退回第一个。"""
+        try:
+            sel = self.file_list.selectedItems()
+            if sel:
+                return sel[0].text()
+        except Exception:
+            pass
+        return next(iter(self.data_cache), None)
+
+    def _do_eem_quant(self, params=None):
+        """后台：EEM 定量读出（诊断 + 三张定量图 + CSV/JSON）。
+
+        **必须显式传 raw=data**：可定量性诊断要用**原始矩阵**找伪迹证据，
+        而 prepare_grid 的清洗管线（陷波→中值→高斯→样条）会把伪迹连同信号
+        一起抹平。实测真实数据上若不传 raw，诊断读到的是"被销毁了证据的
+        数据集"，四条判据会全部通过 → 错判为可定量（假阴性）。
+        虽然 eem_quant_all 内部有 raw 的自动回填（传入含 intensity 的 data 时
+        会自己认出来），这里显式传是为了让意图一眼可见，别被将来的人改掉。
+        """
+        import plot_eem_quant as _eq
+        if params is None:
+            raise RuntimeError("缺少 EEM 定量参数")
+        entry = self.data_cache.get(params['key']) or {}
+        data = entry.get('data') or {}
+        out = _eq.eem_quant_all(
+            data, raw=data, save_dir=params['save_dir'],
+            label=str(params['key']),
+            em_band=params.get('em_band'), verbose=False)
+        return out
+
+    def _on_eem_quant_finished(self, result, gen=None):
+        """完成后：把诊断结论与关键数字写进信息页。"""
+        if gen is not None and self._is_stale(gen):
+            return
+        try:
+            self._close_progress_dialog("EEM 定量读出完成")
+            if isinstance(result, dict):
+                self._last_eem_quant = result
+                self._render_eem_quant_info(result)
+            self._set_canvas_busy(False)
+        except Exception as e:
+            log_exception("EEM 定量读出回调失败", e)
+            self._set_canvas_busy(False)
+
+    def _render_eem_quant_info(self, out):
+        """把 EEM 定量结果写进信息页（诊断结论优先，数字在后）。"""
+        q = out.get('quality') or {}
+        optimal = out.get('optimal') or {}
+        peaks = out.get('peaks') or {}
+        band = out.get('band') or {}
+        reliable = bool(out.get('reliable'))
+
+        lines = []
+        if reliable:
+            lines.append("EEM 定量读出：数据通过可定量性诊断")
+        else:
+            lines.append("⛔ EEM 定量读出：**数据未通过可定量性诊断**")
+            lines.append("   下列数字仅供参考，不要直接写进报告。")
+        lines.append('')
+
+        # v5.0.7：诊断自身可能"降级"（例如将来有人误传 prep 而不传 raw，
+        # 或某条判据缺少 stats）。这种降级必须让用户看见——
+        # 诊断失效比诊断报错更危险：它会安静地给出"通过"。
+        q_warn = q.get('warning') or q.get('warning_msg')
+        if q_warn:
+            lines.append(f"⚠ 诊断本身降级：{q_warn}")
+            lines.append('')
+
+        criteria = q.get('criteria') or []
+        if criteria:
+            lines.append("诊断依据：")
+            for c in criteria:
+                mark = '✓' if c.get('passed') else '✗'
+                lines.append(f"  {mark} {c.get('name', '')}："
+                             f"{c.get('value')} (阈值 {c.get('threshold')})"
+                             + (f"  {c.get('note')}" if c.get('note') else ''))
+            lines.append('')
+
+        if optimal:
+            lines.append(f"最佳激发波长：{optimal.get('best_ex', float('nan')):.1f} nm"
+                         f"（积分强度 {optimal.get('best_value', float('nan')):.4g}）")
+        rows = peaks.get('rows') or []
+        if rows:
+            exs = [r.get('ex') for r in rows if r.get('ex') is not None]
+            ems = [r.get('em_peak') for r in rows
+                   if r.get('em_peak') is not None and np.isfinite(r.get('em_peak'))]
+            if exs and ems:
+                lines.append(f"发射峰位：{min(ems):.1f}–{max(ems):.1f} nm"
+                             f"（随 EX {min(exs):.0f}–{max(exs):.0f} nm 变化）")
+                drift = float(max(ems) - min(ems))
+                lines.append(f"峰位漂移：{drift:.1f} nm"
+                             + ("（偏大，可能是内滤或多组分）" if drift > 15 else ""))
+        if band:
+            lines.append(f"发射带面积：区间 {band.get('em_band')}，"
+                         f"{len(band.get('rows') or [])} 个 EX")
+        files = out.get('files') or []
+        fig_path = out.get('figure')
+        if files or fig_path:
+            lines.append('')
+            shown = [str(f) for f in files[:5]]
+            if fig_path:
+                shown.append(str(fig_path))
+            lines.append("产物：" + "、".join(shown))
+        self.info_label.setText('\n'.join(lines).rstrip())
+        self.status_bar.showMessage(
+            "EEM 定量读出完成" + ("" if reliable
+                               else "（⚠ 未通过可定量性诊断，数字仅供参考）"))
+
     def on_plot_type_changed(self, index):
         """图表类型改变事件"""
         self.current_plot_type = "combined" if index == 0 else "single"
@@ -2038,12 +2477,65 @@ class PlotMixin:
         if hasattr(self, '_live_timer'):
             self._live_timer.start()
 
+    def _export_meta(self, params=None, sources=None):
+        """给导出产物组装溯源信息（v5.0.7）。
+
+        取「当前勾选的文件」当来源、`self._last_comparability` 当可比性警告，
+        再加上影响数值的关键参数。失败一律返回 None，绝不阻断导出。
+        """
+        try:
+            from gui_provenance import build_meta
+            if sources is None:
+                try:
+                    sources = [str(self.data_cache[f].get('path'))
+                               for f in self.get_checked_files()
+                               if f in self.data_cache
+                               and self.data_cache[f].get('path') is not None]
+                    # 去掉占位路径（<emission> 之类）
+                    sources = [s for s in sources
+                               if s and not s.startswith('<')]
+                except Exception:
+                    sources = []
+            if params is None:
+                params = {}
+                try:
+                    params['dpi'] = (self.dpi_spin.value()
+                                     if hasattr(self, 'dpi_spin') else None)
+                    xlim = self._get_xlim()
+                    if xlim:
+                        params['xlim_nm'] = list(xlim)
+                    params['spectrum_type'] = self.spectrum_type
+                    if self.spectrum_type == 'lifetime':
+                        params['tau_min_ns'] = self.lifetime_taumin_spin.value()
+                        params['tau_max_ns'] = self.lifetime_taumax_spin.value()
+                        params['time_unit'] = self.tau_unit_symbol()
+                        params['n_rates'] = self.lifetime_nrates_spin.value()
+                        params['method'] = self.lifetime_method_combo.currentText()
+                    if hasattr(self, 'normalize_check'):
+                        params['normalize'] = bool(
+                            self.normalize_check.isChecked())
+                    if hasattr(self, 'mark_peaks_check'):
+                        params['mark_peaks'] = bool(
+                            self.mark_peaks_check.isChecked())
+                except Exception:
+                    pass
+            return build_meta(params=params, sources=sources,
+                              comparability=getattr(
+                                  self, '_last_comparability', None))
+        except Exception as e:
+            logging.debug("组装导出溯源信息失败: %s", e)
+            return None
+
     def _savefig_pub(self, fig, path, dpi=None):
         """按出版图预设临时改尺寸后保存，再恢复（D6）。
 
         同时处理「导出用白底」：深色主题下界面是深底，但投稿/PPT 要白底深字，
         勾选后临时把 figure / axes / 文字 / 图例改成白底深字，保存完再恢复，
         界面外观不受影响。
+
+        v5.0.7：保存前在角落打一行**溯源水印**（版本/时间/源文件/可比性警告），
+        并在产物旁写 ``<name>_meta.json``。PNG/PDF 本身无法可靠携带自定义
+        元数据，而「三周后回看不知道这图是哪版程序、哪批数据导的」是真实痛点。
         """
         import matplotlib as mpl
         if dpi is None:
@@ -2122,7 +2614,21 @@ class PlotMixin:
                 _fc = fig.get_facecolor()
             except Exception:
                 _fc = 'white'
+            # v5.0.7：导出前打溯源水印 + 写 sidecar meta。
+            # 水印要在 savefig 之前打（之后 fig 就落盘了），但**只打在导出用的
+            # fig 上**——预览画布不走本函数，不会被污染。
+            _meta = self._export_meta()
+            try:
+                from gui_provenance import stamp_figure
+                stamp_figure(fig, _meta)
+            except Exception as e:
+                logging.debug("打溯源水印失败: %s", e)
             fig.savefig(path, dpi=dpi, bbox_inches='tight', facecolor=_fc)
+            try:
+                from gui_provenance import write_sidecar
+                write_sidecar(path, _meta)
+            except Exception as e:
+                logging.debug("写 sidecar meta 失败: %s", e)
         except TypeError:
             fig.savefig(path, dpi=dpi)
         finally:
@@ -2264,6 +2770,14 @@ class PlotMixin:
             slim['_curve_file'] = curve_path.name
         slim['_note'] = ('v5.0.2 起 json 只存结论；原始曲线/拟合曲线/残差'
                          '见同目录 *_curve.csv（time/decay/irf 等大数组已移出）')
+        # v5.0.7：溯源信息——版本/导出时间/源文件/参数快照/可比性警告。
+        # 审计实测此前 json 里拟合参数是齐全的，缺的只是"谁导的、什么时候、
+        # 从哪个文件"，于是拿旧产物回来无法判断是否还与本版算法可比。
+        try:
+            slim['meta'] = self._export_meta(
+                sources=[result.get('file') or result.get('path') or name])
+        except Exception as e:
+            logging.debug("寿命结果 json 写溯源信息失败: %s", e)
         json_path = out_dir / f"{name}_fit_result.json"
         with open(json_path, 'w', encoding='utf-8') as f:
             # v4.44：ensure_ascii=False —— 否则中文样品名/单位会被转义成

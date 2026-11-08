@@ -359,6 +359,93 @@ class DataMixin:
         """当前单位符号（'ns' / 'μs'）。"""
         return getattr(self, 'lifetime_unit_symbol', 'ns')
 
+    def _sync_mode_groups_visibility(self):
+        """按当前 self.spectrum_type 同步各模式专用参数组的显隐（v5.0.7）。
+
+        从 ``on_spectrum_type_changed`` 里抽出来，好让 ``__init__`` 也能复用：
+        各选项组建出来时全是 ``setVisible(False)``，只靠信号显示；而初始
+        index 就是 0（吸收），``setCurrentIndex(0)`` 不产生变化信号，
+        信号永不触发 → 首帧所有模式专用组都停在隐藏态。
+
+        本函数**只动显隐与标定下拉框**，不清缓存、不重载数据——
+        所以可以在 ``__init__`` 阶段安全调用。
+        """
+        is_lifetime = self.spectrum_type == "lifetime"
+        is_scan3d = self.spectrum_type == "scan3d"
+        is_spectrum = not is_lifetime and not is_scan3d
+        if hasattr(self, 'emission_options_group'):
+            self.emission_options_group.setVisible(self.spectrum_type == "emission")
+        if hasattr(self, 'lifetime_options_group'):
+            self.lifetime_options_group.setVisible(is_lifetime)
+        if hasattr(self, 'scan3d_options_group'):
+            self.scan3d_options_group.setVisible(is_scan3d)
+        # 谱带分解与标定只对吸收/发射这种「一条条谱」有意义：
+        # 寿命模式的数据是衰减曲线（横轴是时间）、3D 是矩阵，都没有"谱带"概念。
+        if hasattr(self, 'bands_options_group'):
+            self.bands_options_group.setVisible(is_spectrum)
+        if hasattr(self, 'calib_options_group'):
+            self.calib_options_group.setVisible(is_spectrum)
+        if is_spectrum:
+            # 标定的横轴变量来自说明.xlsx；换模式/换文件夹后列可能变，
+            # 这里刷一次，避免下拉框里留着上一个文件夹的列名。
+            try:
+                self._refresh_calib_xvars()
+            except Exception as _e:
+                log_exception("刷新标定变量列表失败", _e)
+        # 寿命专属的导出动作（「导出 ▾」菜单里的四项）跟着模式走。
+        # 放在本函数里而不是调用方，是为了让 __init__ 的首帧也正确——
+        # 否则吸收模式下这几项会停在"可见"，用户能点到没有意义的菜单项。
+        for _attr in ('act_export_sep', 'act_export_fit',
+                      'act_summary_plot', 'act_pdf_report'):
+            _act = getattr(self, _attr, None)
+            if _act is not None:
+                try:
+                    _act.setVisible(is_lifetime)
+                except Exception:
+                    pass
+
+    def _refresh_calib_xvars(self):
+        """把说明.xlsx 的数值列填进「标定」的横轴变量下拉框（v5.0.7）。
+
+        与「数据比较」共用同一套判定（是不是真的说明表），但**独立一个下拉框**：
+        数据比较的横轴与标定的横轴经常不是同一列（比如比较看 RB浓度、
+        标定想按 Ce6浓度 做），共用一个会让用户改了一个另一个跟着变。
+        """
+        combo = getattr(self, 'calib_xvar_combo', None)
+        btn = getattr(self, 'calib_run_btn', None)
+        if combo is None:
+            return
+        info = getattr(self, 'xlsx_info', None)
+        cols = list(info.numeric_columns()) if (info is not None and info.numbers) else []
+
+        prev = combo.currentText()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            if cols:
+                combo.addItems(cols)
+                if prev in cols:
+                    combo.setCurrentText(prev)
+                if btn is not None:
+                    btn.setEnabled(True)
+                    btn.setToolTip(
+                        "把每条谱压成一个读数（沿用「数据比较」的纵轴口径），"
+                        "做线性回归，\n给出斜率 / 截距 / R² / 回归标准误 / "
+                        "LOD / LOQ / 线性范围。\n\n"
+                        "跑之前先做可比性预检：激发波长或带宽不一致、"
+                        "扫描被截断的文件\n会自动排除在回归之外"
+                        "（否则 LOD 会被算歪）。")
+            else:
+                reason = ("未找到说明.xlsx" if info is None
+                          else "说明.xlsx 无数值列")
+                combo.addItem(f"（{reason}）")
+                if btn is not None:
+                    btn.setEnabled(False)
+                    btn.setToolTip(f"标定需要在数据文件夹里放 说明.xlsx "
+                                   f"（当前：{reason}）")
+        finally:
+            combo.blockSignals(False)
+
     def _save_session(self):
         """保存会话：模式 / 文件夹 / 窗口几何 / 白名单参数（D2 + E1）。"""
         try:
@@ -945,22 +1032,13 @@ class DataMixin:
                               else "lifetime" if index == 2
                               else "scan3d" if index == 3
                               else "absorption")
-        # 显示/隐藏各模式专用选项
+        self._sync_mode_groups_visibility()
+        # 下面一大段（参数组显隐 / 标签页 / 主按钮文案 / 信息页）都要用这三个
+        # 判定。_sync_mode_groups_visibility 内部也算了一份，但那是局部变量，
+        # 不共享——别删这三个，否则后半段全 NameError。
         is_lifetime = self.spectrum_type == "lifetime"
         is_scan3d = self.spectrum_type == "scan3d"
         is_spectrum = not is_lifetime and not is_scan3d
-        if hasattr(self, 'emission_options_group'):
-            self.emission_options_group.setVisible(self.spectrum_type == "emission")
-        if hasattr(self, 'lifetime_options_group'):
-            self.lifetime_options_group.setVisible(is_lifetime)
-        if hasattr(self, 'scan3d_options_group'):
-            self.scan3d_options_group.setVisible(is_scan3d)
-        # 寿命专属的三条导出动作只在寿命模式显示（v4.25：按钮 → 「导出 ▾」菜单项）
-        for attr in ('act_export_sep', 'act_export_fit',
-                     'act_summary_plot', 'act_pdf_report'):
-            act = getattr(self, attr, None)
-            if act is not None:
-                act.setVisible(is_lifetime)
         # 主操作按钮的文字随模式切换（v4.25）：
         # 光谱/3D 模式是"重新绘图"，寿命模式才是真正耗时 1–2 分钟的拟合
         if hasattr(self, 'preview_btn'):

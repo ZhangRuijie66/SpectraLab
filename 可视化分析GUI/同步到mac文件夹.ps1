@@ -69,6 +69,8 @@ $manifest = @(
     # v5.0.5：标准按钮中文化的 translator（absorption_gui / start_gui /
     # launch_hidden 三处入口都 import 它）。漏在清单外 mac 打包会 ImportError。
     "app|gui_i18n.py",
+    # v5.0.7：导出产物溯源（gui_plot 的 _savefig_pub / 寿命 json 都 import 它）
+    "app|gui_provenance.py",
     "app|app_icon.ico",
     "app|app_icon.png|optional",
     "app|splash.png",
@@ -89,6 +91,13 @@ $manifest = @(
     "parent|plot_compare使用说明.md",
     "parent|plot_lifetime.py",
     "parent|plot_3d_scan.py",
+    # v5.0.7 新增的三个分析模块（GUI 的「谱带分解」「标定」与 3D 定量读出要 import）
+    "parent|plot_bands.py",
+    "parent|plot_bands使用说明.md",
+    "parent|plot_calibration.py",
+    "parent|plot_calibration使用说明.md",
+    "parent|plot_eem_quant.py",
+    "parent|plot_eem_quant使用说明.md",
     "parent|read_xlsx_info.py",
     "parent|curve_colors.py"
 )

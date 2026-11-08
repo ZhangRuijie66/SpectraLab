@@ -1885,6 +1885,97 @@ class UiMixin:
         lifetime_group.setVisible(False)
         param_layout.addWidget(lifetime_group)
 
+        # ================= 谱带分解（v5.0.7，吸收/发射模式）=================
+        # 现存 find_peaks 只能拿局部极大：ESIPT 的 enol*/keto* 双发射要面积比、
+        # 罗丹明的振动肩峰根本不是局部极大、稀土多带彼此重叠——都定不出
+        # "每条带各占多少"。这一组接 plot_bands.decompose_bands。
+        bands_options = QVBoxLayout()
+
+        bands_options.addWidget(QLabel("峰形:"))
+        self.bands_model_combo = QComboBox()
+        self.bands_model_combo.addItems(["高斯", "洛伦兹", "伪Voigt"])
+        for _i, _tip in enumerate([
+                "仪器展宽为主时用高斯（最常见）",
+                "谱带两翼拖很长（稀土、固态谱）时用洛伦兹",
+                "两者之间的实际谱带；η 由拟合给出，最灵活但多一个参数"]):
+            self.bands_model_combo.setItemData(_i, _tip, Qt.ToolTipRole)
+        self._style_combo(self.bands_model_combo)
+        bands_options.addWidget(self.bands_model_combo)
+
+        bands_options.addWidget(QLabel("峰数:"))
+        self.bands_npeaks_combo = QComboBox()
+        self.bands_npeaks_combo.addItems(
+            ["自动（BIC 定阶）"] + [str(i) for i in range(1, 7)])
+        self.bands_npeaks_combo.setToolTip(
+            "「自动」按 BIC 在 1–6 峰里选，并排除相邻峰挤得过近（sep/FWHM<0.45）\n"
+            "的方案——实测过采样光谱上裸 BIC 会一路偏向最多峰数。\n"
+            "已知要几条带时直接指定更稳。")
+        self._style_combo(self.bands_npeaks_combo)
+        bands_options.addWidget(self.bands_npeaks_combo)
+
+        bands_options.addWidget(QLabel("本底:"))
+        self.bands_baseline_combo = QComboBox()
+        self.bands_baseline_combo.addItems(["常数", "线性", "不扣"])
+        self.bands_baseline_combo.setToolTip(
+            "常数：常规情形；线性：有基线漂移；不扣：已自行扣过本底")
+        self._style_combo(self.bands_baseline_combo)
+        bands_options.addWidget(self.bands_baseline_combo)
+
+        self.bands_auto_band_check = QCheckBox("用「显示范围」当拟合窗口")
+        self.bands_auto_band_check.setChecked(True)
+        self.bands_auto_band_check.setToolTip(
+            "勾选：只在上方「显示范围」内做分解（推荐——窗口越窄，\n"
+            "「有几条带」这个问题越明确，也自动排除窗口外的散射峰）\n"
+            "不勾：对整条谱分解")
+        bands_options.addWidget(self.bands_auto_band_check)
+
+        self.bands_run_btn = QPushButton("谱带分解")
+        self.bands_run_btn.setProperty("variant", "secondary")
+        self.bands_run_btn.setCursor(Qt.PointingHandCursor)
+        self.bands_run_btn.setToolTip(
+            "把当前勾选的谱分解成若干条带，给出每条带的峰位/峰高/半高宽/面积/占比。\n"
+            "面积用解析式（高斯 √(2π)σh、洛伦兹 πγh），不做数值积分——\n"
+            "梯形积分会把宽洛伦兹尾按窗口截断而系统性偏小。")
+        self.bands_run_btn.clicked.connect(self._run_bands)
+        bands_options.addWidget(self.bands_run_btn)
+
+        bands_group = QGroupBox("谱带分解")
+        bands_group.setLayout(bands_options)
+        self.bands_options_group = bands_group
+        bands_group.setVisible(False)
+        param_layout.addWidget(bands_group)
+
+        # ================= 标定（v5.0.7，吸收/发射模式）=================
+        # plot_compare 能把谱压成一个读数画成点线图，但止步于点线图：
+        # 没有回归、没有 R²、没有 LOD。而标定实验的产出物恰恰就是
+        # 斜率 / 截距 / R² / LOD / 线性范围。
+        calib_options = QVBoxLayout()
+
+        calib_options.addWidget(QLabel("横轴变量（说明.xlsx）:"))
+        self.calib_xvar_combo = QComboBox()
+        self.calib_xvar_combo.setToolTip(
+            "取自同目录 说明.xlsx 的数值列（如 RB浓度）。\n"
+            "需要先「选择数据文件夹」把说明.xlsx 读进来。")
+        self._style_combo(self.calib_xvar_combo)
+        calib_options.addWidget(self.calib_xvar_combo)
+
+        self.calib_run_btn = QPushButton("线性标定 + LOD")
+        self.calib_run_btn.setProperty("variant", "secondary")
+        self.calib_run_btn.setCursor(Qt.PointingHandCursor)
+        self.calib_run_btn.setToolTip(
+            "把每条谱压成一个读数（沿用「数据比较」的纵轴口径），做线性回归，\n"
+            "给出斜率 / 截距 / R² / 回归标准误 / LOD / LOQ / 线性范围。\n\n"
+            "跑之前先做可比性预检：激发波长或带宽不一致、扫描被截断的文件\n"
+            "会自动排除在回归之外（否则 LOD 会被算歪）。")
+        self.calib_run_btn.clicked.connect(self._run_calibration)
+        calib_options.addWidget(self.calib_run_btn)
+
+        calib_group = QGroupBox("标定")
+        calib_group.setLayout(calib_options)
+        self.calib_options_group = calib_group
+        calib_group.setVisible(False)
+        param_layout.addWidget(calib_group)
+
         # 3D 扫描（EEM）专用选项（默认隐藏，切换到 3D 扫描时显示）
         scan3d_options = QVBoxLayout()
 
@@ -1926,6 +2017,45 @@ class UiMixin:
         self.scan3d_log_check = QCheckBox("对数色标")
         self.scan3d_log_check.setToolTip("强度跨数量级时更清楚")
         scan3d_options.addWidget(self.scan3d_log_check)
+
+        # v5.0.7：EEM 定量读出。此前 3D 模式只有三张图 + 清洗统计，
+        # **零数值产物**——用户拿不到"最佳激发波长是多少""某 EX 下发射峰在哪"
+        # 这些能写进报告的数。这一项接 plot_eem_quant.eem_quant_all。
+        scan3d_options.addWidget(QLabel("发射区间 (nm):"))
+        scan3d_row = QHBoxLayout()
+        scan3d_row.setSpacing(4)
+        self.scan3d_band_lo_spin = QDoubleSpinBox()
+        self.scan3d_band_lo_spin.setRange(150, 1200)
+        self.scan3d_band_lo_spin.setDecimals(0)
+        self.scan3d_band_lo_spin.setValue(560)
+        self.scan3d_band_lo_spin.setMinimumWidth(70)
+        self.scan3d_band_lo_spin.setToolTip(
+            "发射区间的下限。定量读出会在这个区间内算每个 EX 的积分强度、\n"
+            "找发射峰位、算峰位漂移。**要避开激发波长附近的瑞利/拉曼带**\n"
+            "（一般从 EX_max + 30 nm 之后起算）。")
+        scan3d_row.addWidget(self.scan3d_band_lo_spin)
+        self.scan3d_band_hi_spin = QDoubleSpinBox()
+        self.scan3d_band_hi_spin.setRange(150, 1200)
+        self.scan3d_band_hi_spin.setDecimals(0)
+        self.scan3d_band_hi_spin.setValue(800)
+        self.scan3d_band_hi_spin.setMinimumWidth(70)
+        self.scan3d_band_hi_spin.setToolTip("发射区间的上限")
+        scan3d_row.addWidget(self.scan3d_band_hi_spin)
+        scan3d_options.addLayout(scan3d_row)
+
+        self.scan3d_quant_btn = QPushButton("定量读出")
+        self.scan3d_quant_btn.setProperty("variant", "secondary")
+        self.scan3d_quant_btn.setCursor(Qt.PointingHandCursor)
+        self.scan3d_quant_btn.setToolTip(
+            "从 EEM 矩阵里读出能写进报告的数：\n"
+            "· 最佳激发波长（发射区间内积分强度最大的 EX）\n"
+            "· 每个 EX 的发射峰位与峰位漂移（判断内滤/多组分的诊断量）\n"
+            "· 每个 EX 在指定区间的积分面积\n\n"
+            "**会先做可定量性诊断**（饱和占比、伪迹周期、归一化谱形一致性、\n"
+            "分块最佳 EX 是否一致）。诊断不通过时给出的数会标注「仅供参考」——\n"
+            "因为存在伪迹驱动的「峰位」是伪数，宁可说不可信也不硬凑。")
+        self.scan3d_quant_btn.clicked.connect(self._run_eem_quant)
+        scan3d_options.addWidget(self.scan3d_quant_btn)
 
         scan3d_group = QGroupBox("3D 扫描")
         scan3d_group.setLayout(scan3d_options)

@@ -80,6 +80,19 @@ class AbsorptionGUI(UiMixin, DataMixin, PlotMixin, QMainWindow):
         self._live_timer.timeout.connect(self.update_plot)
         self.setup_ui()
         self.setup_chinese_font()
+        # v5.0.7：setup_ui 之后必须**主动同步一次**模式专用选项的显隐。
+        # 各选项组建出来时都是 setVisible(False)，靠 on_spectrum_type_changed
+        # 信号来显示；而初始 index 就是 0（吸收），setCurrentIndex(0) 不产生
+        # 变化信号 → 信号永不触发 → 吸收模式下所有模式专用组
+        # （发射/寿命/3D/谱带分解/标定）全部停在隐藏态。首帧状态一直是测试盲区。
+        #
+        # 这里**只同步显隐**，不走 on_spectrum_type_changed：那个函数还会
+        # 清 data_cache、重载数据、刷新下拉框，在 __init__ 阶段跑属于多余副作用。
+        try:
+            self._sync_mode_groups_visibility()
+        except Exception as e:
+            from gui_log import log_exception
+            log_exception("初始化模式选项显隐失败", e)
         # 恢复上次会话（窗口/参数/文件夹，D2）；失败不影响启动
         try:
             self._restore_session()

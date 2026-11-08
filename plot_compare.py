@@ -706,6 +706,13 @@ def check_comparability(samples, headers=None, group_of=None, kind='emission',
                if fn not in near and abs(p - ref_med) > peak_tol_nm]
         if not odd:
             continue
+        # gkey 为 None 意味着"这批文件没归到任何编号组"（group_of 没给，
+        # 或给了但匹配不到编号）。此时把不同样品硬凑成一组的
+        # "峰位不一致"是废话——RB 和 R101 的峰位本来就不同。
+        # 所以无有效分组时不报这一项（判 gkey 而不是判 group_of：
+        # 调用方常传一个恒返回 None 的 group_of 占位）。
+        if gkey is None:
+            continue
         detail = ('同一编号（' + str(gkey) + '）下的文件谱形不一致：'
                   f'{len(near)} 个文件的峰位集中在 {ref_med:.1f} nm，'
                   + '；'.join(f'{fn} 却在 {peaks[fn]:.1f} nm'
@@ -796,6 +803,64 @@ def check_comparability(samples, headers=None, group_of=None, kind='emission',
             _add('warn', 'scatter_' + tag, '峰强可能取到散射/拉曼峰',
                  detail, fnames)
 
+    # ---------- ⑤ 吸收谱基线体检（v5.0.7）----------
+    # 这里**刻意不做"散射判定"**，只报客观测量值。原因是我实测证伪了三种
+    # 单谱判据，写下来免得后人再走一遍：
+    #
+    #   · 短波/长波基线比：真实干净数据（01-吸收 的 RB）就到 18.8，
+    #     与合成"中度散射"的 53.4 无法区分；
+    #   · 1/λ⁴ 回归 R²：真实 R101 的吸收带短波拖尾 R²=0.82，
+    #     与"重度散射"的 0.71 重叠，必然误报（实测误报 2/3）；
+    #   · 跨样品"基线/峰高"趋势：散射与吸收**都 ∝ 浓度**，
+    #     比值把 c 约掉了——合成数据从无散射到严重散射，slope 恒为 0.0002。
+    #
+    # 根本原因：单条吸收谱的「平滑单调曲线」既可以是散射也可以是真实吸收，
+    # 数学上不可分。要判断必须引入**额外信息**——最可靠的是溶剂空白参比
+    # （空白谱的吸收本应为 0，它在长波端若有正吸收就是散射/杂散光的直接证据）。
+    #
+    # 所以这里只给出体检数字，让用户对着空白谱自己判断，不替他下结论。
+    if kind == 'absorption':
+        for name, fname, wl, y in norm:
+            try:
+                arr_wl = np.asarray(wl, float)
+                arr_y = np.asarray(y, float)
+                fin = np.isfinite(arr_y)
+                if not fin.any() or arr_wl.size == 0:
+                    continue
+                ymax = float(np.nanmax(arr_y[fin]))
+                if ymax <= 0:
+                    continue
+                lo, hi = float(np.nanmin(arr_wl)), float(np.nanmax(arr_wl))
+                span = hi - lo
+                # 长波端基线：最高 15% 波长区间的中位数
+                m_tail = arr_wl >= hi - 0.15 * span
+                b_tail = (float(np.nanmedian(arr_y[m_tail]))
+                          if m_tail.any() else float('nan'))
+                ymin = float(np.nanmin(arr_y[fin]))
+            except Exception:
+                continue
+            pct = b_tail / ymax * 100 if ymax else float('nan')
+            # 只在"长波端基线明显不归零"时提示——这是**客观观察**不是判定
+            if np.isfinite(pct) and pct > 1.0:
+                detail = (f'长波端（{hi - 0.15 * span:.0f}–{hi:.0f} nm）的'
+                          f'基线中位数为 {b_tail:.4f}，占峰值的 {pct:.1f}%。'
+                          '理想情况下远离吸收带的长波端应回落到接近 0。'
+                          '基线抬高可能来自散射、杂散光或比色皿/溶剂差异——'
+                          '**单看这一条谱无法区分**这三种原因。'
+                          '判断方法：把同批测的**溶剂空白谱**也加载进来对比，'
+                          '空白在长波端若有相近的正吸收，就是散射/杂散光；'
+                          '若空白是 0 而样品不为 0，则更可能是样品本身的'
+                          '长波尾吸收或比色皿差异。')
+                _add('info', 'absorb_baseline', '长波端基线未归零（需人工判断）',
+                     detail, [fname])
+            if np.isfinite(ymin) and ymin < -0.01 * ymax:
+                detail = (f'全谱最小值为 {ymin:.4f}（峰值的 '
+                          f'{ymin / ymax * 100:.1f}%），出现了明显的**负吸收**。'
+                          '负吸收通常意味着扣错了空白（空白里含吸收物质）、'
+                          '基线漂移未校正，或参比与样品溶剂不一致。'
+                          '这会让峰面积/吸光系数整体偏大。')
+                _add('warn', 'absorb_negative', '出现负吸收', detail, [fname])
+
     # ---------- 汇总 ----------
     all_names = set()
     for name, fname, _wl, _y in norm:
@@ -818,6 +883,7 @@ def check_comparability(samples, headers=None, group_of=None, kind='emission',
 
     n_err = sum(1 for it in issues if it['level'] == 'error')
     n_warn = sum(1 for it in issues if it['level'] == 'warn')
+    n_info = sum(1 for it in issues if it['level'] == 'info')
     if not issues:
         summary = f'{len(all_names)} 个样品通过可比性检查（未发现条件差异）'
     else:
@@ -826,8 +892,14 @@ def check_comparability(samples, headers=None, group_of=None, kind='emission',
             bits.append(f'{n_err} 项会影响结论（error）')
         if n_warn:
             bits.append(f'{n_warn} 项需留意（warn）')
-        summary = (f'{len(all_names)} 个样品中发现 {len(issues)} 个可比性问题：'
-                   + '，'.join(bits) + f'；{len(flagged)} 个样品存在条件差异')
+        if n_info:
+            bits.append(f'{n_info} 项仅供参考（info）')
+        if not bits:                      # 只可能是 info 级别的项
+            bits.append(f'{len(issues)} 项提示')
+        summary = (f'{len(all_names)} 个样品中发现 {len(issues)} 条提示：'
+                   + '，'.join(bits))
+        if flagged:
+            summary += f'；{len(flagged)} 个样品存在条件差异'
     return {'issues': issues, 'groups': by_group,
             'n_ok': len(all_names) - len(flagged),
             'n_flagged': len(flagged), 'summary': summary}
