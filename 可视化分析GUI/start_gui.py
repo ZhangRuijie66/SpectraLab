@@ -39,6 +39,15 @@ try:
     _font.setFamily(UI_FONT_FAMILY)
     app.setFont(_font)
 
+    # v5.0.5：本入口不经过 absorption_gui.main()，而 Qt 标准按钮的中文化
+    # 装在那里——不在这里补一次，从本入口启动时弹窗按钮仍是英文。
+    # 必须在 ModuleLauncher 之前装：入口界面自己也可能弹对话框。
+    try:
+        from gui_i18n import install_zh_standard_buttons
+        install_zh_standard_buttons(app)
+    except Exception:
+        pass
+
     # 先显示入口界面，选择模块后再进入主窗口
     print("显示模块选择界面...")
     launcher = ModuleLauncher()

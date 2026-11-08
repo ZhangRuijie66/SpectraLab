@@ -26,6 +26,14 @@ app.setStyle('Fusion')
 _font = app.font()
 _font.setFamily(UI_FONT_FAMILY)
 app.setFont(_font)
+# v5.0.5：本入口不经过 absorption_gui.main()（桌面快捷方式走的就是这里），
+# 而 Qt 标准按钮的中文化是在 main() 里装的——不在这里补一次的话，
+# 从这个入口启动时弹窗按钮仍是英文。
+try:
+    from gui_i18n import install_zh_standard_buttons
+    install_zh_standard_buttons(app)
+except Exception:
+    pass
 window = AbsorptionGUI()
 window.setWindowTitle(f"光谱可视化分析工具 v{APP_VERSION}")
 window.setWindowFlags(window.windowFlags() | Qt.WindowStaysOnTopHint)

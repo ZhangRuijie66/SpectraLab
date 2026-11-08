@@ -9,7 +9,7 @@ import logging
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import Qt, QDir, QTimer, QSize, QEvent
+from PyQt5.QtCore import Qt, QDir, QTimer, QSize, QEvent, QObject
 from PyQt5.QtGui import QFont, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -117,6 +117,44 @@ class CollapsibleGroup(QGroupBox):
                 self._inner_layout.addItem(item)
         except Exception:
             pass
+
+
+class WheelGuard(QObject):
+    """滚动面板里的滚轮敏感控件：**未聚焦**时不响应滚轮，改为滚动父 QScrollArea。
+
+    为什么需要它
+    ------------
+    参数栏是一条必须滚动的长列表（1280×800 下吸收模式要滚 680 px ≈ 2.12 屏）。
+    而 Qt 的滚轮响应**不看 focusPolicy**——只要指针悬停在下拉框/数值框/滑块上，
+    滚一格就改值，面板却一动不动。实测这一情况：
+
+        QComboBox       '合并图' → index 0→1（整张图重画），滚动条仍 0
+        QDoubleSpinBox  线宽 1.5 → 1.4
+        QSlider         线宽滑块 14 → 11
+
+    而且没有任何提示，用户只会觉得「图怎么自己变了」。滚轮敏感控件覆盖了
+    参数栏视口的 **29.0%**（50771 / 175185 px²），每滚一屏约三成路径会误改参数。
+
+    行为
+    ----
+    * 未聚焦 + 滚轮 → 事件转交给 QScrollArea 的 viewport，面板正常滚动，控件值不变；
+    * **已聚焦**（用户主动 Tab/点击进入该控件）→ 保持原生行为，滚轮照常改值。
+      这一点很重要：聚焦后滚轮调数是这类控件的正当用法，不能一并禁掉。
+    """
+
+    def __init__(self, scroll_area, parent=None):
+        super().__init__(parent if parent is not None else scroll_area)
+        self._sa = scroll_area
+
+    def eventFilter(self, obj, ev):
+        try:
+            if ev.type() == QEvent.Wheel and not obj.hasFocus():
+                # 转交给滚动区：等价于"指针停在空白处滚轮"
+                QApplication.sendEvent(self._sa.viewport(), ev)
+                return True                 # 吃掉，别让控件自己改值
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
 
 
 class UiMixin:
@@ -2145,6 +2183,23 @@ class UiMixin:
         scroll.setWidget(content)
         scroll.setFrameShape(QFrame.NoFrame)
         outer.addWidget(scroll, 1)
+
+        # v5.0.5：给参数栏里所有滚轮敏感控件装 WheelGuard——
+        # 未聚焦时滚轮改为滚动本面板，不再静默改掉参数（见 WheelGuard 的说明）。
+        # 必须在 setWidget 之后做：findChildren 要能看到已挂上去的子控件。
+        try:
+            guard = WheelGuard(scroll, self)
+            from PyQt5.QtWidgets import QAbstractSpinBox
+            targets = []
+            for cls in (QComboBox, QAbstractSpinBox, QSlider):
+                targets.extend(content.findChildren(cls))
+            for wdg in targets:
+                wdg.installEventFilter(guard)
+            self._wheel_guard = guard          # 持引用，别被 GC
+            logging.getLogger('spectra').info(
+                "参数栏滚轮防护已装：%d 个控件", len(targets))
+        except Exception as e:
+            log_exception("安装参数栏滚轮防护失败", e)
 
         # 操作按钮组：固定在面板底部（滚动区之外，任何时刻都可见，无需滚动）
         # v4.25 按钮体系收口（设计方案 §5.1）：

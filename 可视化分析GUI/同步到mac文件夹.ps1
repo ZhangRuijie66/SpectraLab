@@ -66,6 +66,9 @@ $manifest = @(
     "app|gui_log.py",
     "app|gui_help.py",
     "app|gui_icons.py",
+    # v5.0.5：标准按钮中文化的 translator（absorption_gui / start_gui /
+    # launch_hidden 三处入口都 import 它）。漏在清单外 mac 打包会 ImportError。
+    "app|gui_i18n.py",
     "app|app_icon.ico",
     "app|app_icon.png|optional",
     "app|splash.png",

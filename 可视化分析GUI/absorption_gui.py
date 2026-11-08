@@ -132,6 +132,16 @@ def main(app=None, startup_splash=None):
         app = QApplication(sys.argv)
     app.setApplicationName("光谱可视化分析工具")
     app.setApplicationVersion(APP_VERSION)
+    # v5.0.5：把 Qt 内置标准按钮（OK/Cancel/Yes/No…）译成中文。
+    # PyQt5 wheel 只带 qtbase_zh_TW.qm 不带 zh_CN，installTranslator 装 .qm
+    # 走不通，改用内存 translator（详见 gui_i18n 的说明）。
+    # 必须在任何对话框创建之前装，否则先建出来的按钮文字不会刷新。
+    try:
+        from gui_i18n import install_zh_standard_buttons
+        install_zh_standard_buttons(app)
+    except Exception as e:
+        from gui_log import log_exception
+        log_exception("安装中文按钮翻译器失败", e)
     # 设置应用图标（任务栏/Dock/标题栏）
     try:
         icon_path = resource_path(APP_ICON_FILENAME)

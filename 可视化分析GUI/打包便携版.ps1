@@ -81,6 +81,7 @@ $args = @(
     "--hidden-import","gui_ui",
     "--hidden-import","gui_data",
     "--hidden-import","gui_plot",
+    "--hidden-import","gui_i18n",
     "--hidden-import","matplotlib.backends.backend_qt5agg",
     "--hidden-import","matplotlib.backends.backend_qtagg",
     "--workpath",$work,

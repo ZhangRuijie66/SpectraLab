@@ -3432,6 +3432,167 @@ def t_decay_rejected_by_emission():
                 f"PerkinElmer（Xaxis 小写）只有 {got}/{len(csvs)} 个能解析"
 
 
+@check("参数栏：未聚焦时滚轮滚面板、不改参数；聚焦后才调值（v5.0.5）")
+def t_param_panel_wheel_guard():
+    """参数栏是一条必须滚的长列表，而 Qt 的滚轮响应**不看 focusPolicy**——
+    只要指针悬停在下拉框/数值框/滑块上，滚一格就改值，面板却一动不动。
+
+    实测（审计 A）：吸收模式需滚 680 px（2.12 屏），滚轮敏感控件覆盖视口
+    **29.0%**（50771 / 175185 px²）。于是每滚一屏约三成路径会误改参数：
+
+        QComboBox       '合并图' → index 0→1（整张图重画），滚动条仍 0
+        QDoubleSpinBox  线宽 1.5 → 1.4
+        QSlider         线宽滑块 14 → 11
+
+    且没有任何提示，用户只会觉得「图怎么自己变了」。
+
+    本条测**双向**行为：
+      · 未聚焦 + 滚轮 → 控件值不变、面板滚动条前进；
+      · 已聚焦 + 滚轮 → 保持原生行为（能调值）——聚焦后滚轮调数是正当用法，
+        不能一并禁掉，否则就是修好一个坑又挖一个。
+    """
+    from PyQt5.QtCore import Qt as _Q, QPoint, QPointF
+    from PyQt5.QtGui import QWheelEvent
+    from PyQt5.QtWidgets import (QApplication as _QA, QScrollArea as _SA,
+                                 QComboBox as _CB, QAbstractSpinBox as _AS,
+                                 QSlider as _SL)
+
+    app, w = _make_gui()
+    w.show()                                  # 焦点行为需要真显示
+    app.processEvents()
+
+    # 找参数栏那个能滚的 QScrollArea（多标签页，按"能滚"挑）
+    scroll = None
+    for cand in w.findChildren(_SA):
+        if cand.widget() is not None and cand.verticalScrollBar().maximum() > 0:
+            scroll = cand
+            break
+    assert scroll is not None, "找不到可滚动的参数栏 QScrollArea"
+    assert getattr(w, '_wheel_guard', None) is not None, \
+        "WheelGuard 没有挂到窗口上（参数栏滚轮陷阱会复现）"
+
+    content = scroll.widget()
+    spins = content.findChildren(_AS)
+    combos = content.findChildren(_CB)
+    sliders = content.findChildren(_SL)
+    assert spins or combos, "参数栏里没找到滚轮敏感控件，测试前提不成立"
+
+    def _wheel(delta=-120):
+        return QWheelEvent(QPointF(10, 10), QPointF(10, 10),
+                           QPoint(0, 0), QPoint(0, delta),
+                           _Q.NoButton, _Q.NoModifier, _Q.NoScrollPhase, False)
+
+    sb = scroll.verticalScrollBar()
+
+    # ---- ① 未聚焦：值不变 + 面板滚动 ----
+    if combos:
+        cb = combos[0]
+        cb.clearFocus()
+        app.processEvents()
+        before_idx = cb.currentIndex()
+        sb.setValue(0)
+        _QA.sendEvent(cb, _wheel())
+        assert cb.currentIndex() == before_idx, (
+            f"未聚焦滚轮改掉了下拉框选项：{before_idx} → {cb.currentIndex()}")
+        assert sb.value() > 0, \
+            "未聚焦滚轮没有滚动面板（事件既没改值也没滚动＝被吃掉后丢弃）"
+
+    if spins:
+        sp = spins[0]
+        sp.clearFocus()
+        app.processEvents()
+        before = sp.value()
+        _QA.sendEvent(sp, _wheel())
+        assert abs(sp.value() - before) < 1e-12, \
+            f"未聚焦滚轮改掉了数值框：{before} → {sp.value()}"
+
+    if sliders:
+        sl = sliders[0]
+        sl.clearFocus()
+        app.processEvents()
+        before_sl = sl.value()
+        _QA.sendEvent(sl, _wheel())
+        assert sl.value() == before_sl, \
+            f"未聚焦滚轮改掉了滑块：{before_sl} → {sl.value()}"
+
+    # ---- ② 已聚焦：保持原生行为 ----
+    if spins:
+        sp = spins[0]
+        sp.setFocus()
+        app.processEvents()
+        if sp.hasFocus():                     # 离屏下焦点拿不到就跳过这半边
+            before = sp.value()
+            _QA.sendEvent(sp, _wheel())
+            assert abs(sp.value() - before) > 1e-12, (
+                "聚焦后滚轮也调不动值了——WheelGuard 把合法用法一起禁掉了\n"
+                f"  {before} → {sp.value()}")
+
+
+@check("弹窗：Qt 标准按钮已中文化，且不误伤自定义文字（v5.0.5）")
+def t_standard_buttons_chinese():
+    """界面全中文，但所有系统级按钮是英文：确认框 ``&Yes`` / ``&No``
+    （还带 Windows 助记符 ``&``），错误框 ``OK`` / ``Cancel``。
+
+    根因：``QLocale.system()`` 是 zh_CN，但 PyQt5 wheel **只带
+    ``qtbase_zh_TW.qm``（繁体）、不带 ``zh_CN``**，所以
+    ``QApplication.translate("QPlatformTheme", "OK")`` 原样返回 'OK'。
+    而 QFileDialog 走原生（中文）——同一个程序里文件框中文、确认框英文。
+
+    修法用内存 QTranslator（``gui_i18n.ZhStandardButtons``）而不是改 53 处
+    调用点：一处代码，所有标准按钮（含 QDialogButtonBox）一起生效。
+
+    本条测四件事：
+      1. Ok/Cancel 变中文；
+      2. Yes/No 变中文；
+      3. QDialogButtonBox 同样生效（不是只对 QMessageBox 有效）；
+      4. **自定义文字不被改写**（translator 未命中返回空串 = Qt 回退原文）。
+    """
+    from PyQt5.QtCore import QCoreApplication
+    from PyQt5.QtWidgets import (QMessageBox as _MB,
+                                 QDialogButtonBox as _DBB)
+    from gui_i18n import install_zh_standard_buttons
+
+    app, w = _make_gui()
+
+    # 先卸掉（窗口构造时可能已装），测"未装基线"确实是英文
+    old = getattr(app, '_zh_standard_buttons', None)
+    if old is not None:
+        app.removeTranslator(old)
+        app._zh_standard_buttons = None
+    b0 = _MB()
+    b0.setStandardButtons(_MB.Ok | _MB.Cancel)
+    baseline = [b.text() for b in b0.buttons()]
+    assert 'OK' in baseline or 'Ok' in baseline, \
+        f"测试前提不成立：未装 translator 时已是中文 {baseline}"
+
+    tr = install_zh_standard_buttons(app)
+    assert tr is not None, "translator 安装失败"
+
+    b1 = _MB()
+    b1.setStandardButtons(_MB.Ok | _MB.Cancel)
+    got = [b.text() for b in b1.buttons()]
+    assert got == ['确定', '取消'], f"Ok/Cancel 未汉化：{got}"
+
+    b2 = _MB()
+    b2.setStandardButtons(_MB.Yes | _MB.No)
+    got_yn = [b.text() for b in b2.buttons()]
+    assert all(('是' in t or '否' in t) for t in got_yn), \
+        f"Yes/No 未汉化：{got_yn}"
+
+    dbb = _DBB(_DBB.Ok | _DBB.Cancel)
+    got_dbb = [b.text() for b in dbb.buttons()]
+    assert got_dbb == ['确定', '取消'], \
+        f"QDialogButtonBox 未汉化：{got_dbb}"
+
+    # 不误伤自定义文字
+    probe = QCoreApplication.translate('AnyContext', '自定义按钮文字')
+    assert probe in ('', '自定义按钮文字'), \
+        f"自定义文字被 translator 改写了：{probe!r}"
+
+    # 重复调用安全（多个入口都会调一次）
+    assert install_zh_standard_buttons(app) is tr
+
+
 def main():
     strict = '--strict' in sys.argv
 
