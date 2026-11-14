@@ -36,6 +36,7 @@ from gui_config import (
 )
 from gui_components import (SliderSpin, ComboItemDelegate, MplCanvas,
                             resource_path, set_combo_palette)
+from gui_plot import CopyableTableWidget
 from gui_log import log_exception
 from plot_lifetime import TIME_UNIT_KEYS, TIME_UNIT_NAMES, unit_symbol, unit_factor
 
@@ -2665,7 +2666,9 @@ class UiMixin:
 
         # 结果表（v4.26）：原来是等宽文本的 QPlainTextEdit，像调试输出、不能排序、
         # 也没法只复制某几行。改成 QTableWidget——可排序、可框选、可复制局部。
-        self.integ_table = QTableWidget(0, 3)
+        # v5.0.8：用 CopyableTableWidget，让「框选后 Ctrl+C」这句承诺真正成立
+        # （原生 QTableWidget 只把当前单元格放进剪贴板，多选也只有一格）。
+        self.integ_table = CopyableTableWidget(0, 3)
         self.integ_table.setHorizontalHeaderLabels(["样品", "区间 (nm)", "积分值"])
         self.integ_table.verticalHeader().setVisible(False)
         self.integ_table.setEditTriggers(QAbstractItemView.NoEditTriggers)

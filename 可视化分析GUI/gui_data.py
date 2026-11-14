@@ -1318,6 +1318,10 @@ class DataMixin:
                 if key not in self._ranged_folders():
                     self._ranged_folders().add(key)
                     self._auto_set_range()
+                    # v5.0.8：积分区间与显示范围同一时机校正一次，否则
+                    # 700–800 nm 的谱会配着 450–550 nm 的出厂积分区间，
+                    # 下方结果表永远是空的（复制/导出两个按钮也跟着不可用）
+                    self._auto_set_integ_range()
 
             # 自动更新预览
             if self.data_cache:
@@ -1381,12 +1385,71 @@ class DataMixin:
         except Exception as e:
             log_exception("自动设置显示范围失败", e)
 
+    def _auto_set_integ_range(self):
+        """把**积分区间**也按数据实际范围设一次（v5.0.8）。
+
+        为什么必须单独做：`_auto_set_range` 只管**显示范围**（wl_min/max），
+        积分区间一直是出厂默认的 450–550 nm 并随会话记下来。于是打开一份
+        700–800 nm 的谱时，图上画得好好的，下方「光谱积分」却是一张空表、
+        标签写着「无数据重叠」——而「复制结果」「⤓ CSV」两个按钮此时都只会
+        弹"暂无结果"。用户看到的就是**积分功能对这份数据根本不可用**，
+        且没有任何一处告诉他"去把区间改一下"。
+
+        规则（保守，只在明显不合理时动手）：
+        * 区间与数据**完全没有重叠** → 改成数据范围（这是纯帮用户，不会改错）；
+        * 区间**超出**数据范围且超出量超过一半 → 收窄到数据范围；
+        * 其余情况（区间落在数据里，哪怕很窄）**一律不动**——那是用户自己
+          选的分析窗口，不许程序替他改。
+
+        只在「该文件夹首次加载」时调用（与显示范围同一时机），不覆盖用户手填。
+        """
+        try:
+            mins, maxs = [], []
+            for info in self.data_cache.values():
+                wl = info['data'].get('wl', info['data'].get('wavelength'))
+                if wl is not None and len(wl) > 0:
+                    mins.append(float(np.nanmin(wl)))
+                    maxs.append(float(np.nanmax(wl)))
+            if not mins or not maxs:
+                return
+            data_lo, data_hi = min(mins), max(maxs)
+            if not (np.isfinite(data_lo) and np.isfinite(data_hi)):
+                return
+            lo = float(self.integ_min_spin.value())
+            hi = float(self.integ_max_spin.value())
+            if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+                # 区间本身无效（填反了）：这是用户输入问题，不在这里替他猜，
+                # 交给结果表的「积分范围无效」提示
+                return
+            overlap = min(hi, data_hi) - max(lo, data_lo)
+            span = hi - lo
+            data_span = data_hi - data_lo
+            if overlap <= 0:
+                reason = "与原区间无重叠"
+            elif span > data_span * 1.5:
+                reason = "远超数据范围"
+            else:
+                return
+            self.integ_min_spin.setValue(data_lo)
+            self.integ_max_spin.setValue(data_hi)
+            try:
+                self.status_bar.showMessage(
+                    f"积分区间已按数据设为 {data_lo:.1f} – {data_hi:.1f} nm"
+                    f"（原区间 {lo:.1f} – {hi:.1f} nm {reason}）")
+            except Exception:
+                pass
+            logging.info("积分区间自动校正：%s → %.1f–%.1f nm（%s）",
+                         f"{lo:g}–{hi:g}", data_lo, data_hi, reason)
+        except Exception as e:
+            log_exception("自动设置积分区间失败", e)
+
     def _on_auto_range_clicked(self):
         """「自动（按数据范围）」按钮（E2）。"""
         if not self.data_cache:
             QMessageBox.warning(self, "提示", "请先加载数据")
             return
         self._auto_set_range()
+        self._auto_set_integ_range()
         self.update_plot()
 
     def _load_xlsx_info(self, folder):

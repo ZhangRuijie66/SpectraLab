@@ -3860,6 +3860,262 @@ def t_export_provenance():
         "sidecar meta 没写出来"
 
 
+@check("积分结果：导出 CSV 走「真实点击」路径也能落盘（v5.0.8）")
+def t_integ_csv_button_click():
+    """守住「点 ⤓ CSV 毫无反应」这个静默失败。
+
+    根因：``QPushButton.clicked`` 会带一个 bool 实参，PyQt 只对「只收 self 的槽」
+    截断参数，对 ``save_dir=None`` 这种带可选参数的槽会把 ``False`` 塞进去，
+    于是 ``if save_dir is None`` 失效、``if not save_dir: return`` 静默返回——
+    不弹目录框、不报错、状态栏也不动。用户看到的就是「按钮坏了」。
+
+    为什么以前没抓到：本文件与 test_batch3_smoke 都直接调
+    ``_export_integration_csv(save_dir=tmp)``，绕过了信号，等于**替被测代码
+    填好了参数**。所以这里必须 ``btn.click()``，让 PyQt 自己去传那个 bool。
+    """
+    import tempfile
+    from PyQt5.QtWidgets import QFileDialog
+
+    app, w = _make_gui()
+    try:
+        # EMISSION_DIR 是 RF-6000 发射谱，必须切到发射模式才解析得出来
+        w.spectrum_type_combo.setCurrentIndex(1)
+        app.processEvents()
+        if not w.data_cache:
+            w.load_data_from_folder(EMISSION_DIR)
+        w._do_plot()
+        w._update_integration_output()
+        app.processEvents()
+        rows = w.integ_table.rowCount()
+        assert rows > 0, "积分结果表应有数据行（否则本检查没意义）"
+
+        tmp = tempfile.mkdtemp(prefix='integ_click_')
+        calls = []
+
+        def fake_dir(*a, **k):
+            calls.append(1)
+            return tmp
+        orig = QFileDialog.getExistingDirectory
+        QFileDialog.getExistingDirectory = staticmethod(fake_dir)
+        try:
+            w.integ_csv_btn.click()          # ← 真实点击，PyQt 会传 False
+            app.processEvents()
+        finally:
+            QFileDialog.getExistingDirectory = orig
+
+        assert calls, ("点「⤓ CSV」没有弹出目录选择框——save_dir 被 clicked "
+                       "的 bool 顶掉了，导出被静默跳过")
+        out = os.listdir(tmp)
+        assert len(out) == 1, f"应导出 1 个 CSV，实际 {out}"
+        raw = open(os.path.join(tmp, out[0]), 'rb').read()
+        assert raw.startswith(b'\xef\xbb\xbf'), "CSV 应带 UTF-8 BOM"
+        lines = raw.decode('utf-8-sig').strip().splitlines()
+        assert len(lines) == rows + 1, f"CSV 应为表头 + {rows} 行，实际 {len(lines)}"
+
+        # 直接带 bool 调也不该静默（防御有人再写回 if save_dir is None）
+        calls.clear()
+        tmp2 = tempfile.mkdtemp(prefix='integ_bool_')
+        QFileDialog.getExistingDirectory = staticmethod(
+            lambda *a, **k: (calls.append(1), tmp2)[1])
+        try:
+            r = w._export_integration_csv(False)
+        finally:
+            QFileDialog.getExistingDirectory = orig
+        assert r and os.path.exists(r), "_export_integration_csv(False) 静默返回了 None"
+        assert calls, "传 False 时应退回到「弹目录框」而不是当作目录"
+    finally:
+        w.close()
+        del w
+
+
+@check("积分结果：表格框选后 Ctrl+C 复制的是选中行（v5.0.8）")
+def t_integ_table_ctrl_c():
+    """兑现 tooltip / 帮助里「框选后 Ctrl+C 复制选中行」的承诺。
+
+    原生 QTableWidget **没有**内置复制：框选 7 行按 Ctrl+C，剪贴板里只有
+    当前单元格那 4 个字符。以前没人发现，因为「复制结果」按钮能拿到整张表。
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeySequence
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    app, w = _make_gui()
+    try:
+        # EMISSION_DIR 是 RF-6000 发射谱，必须切到发射模式才解析得出来
+        w.spectrum_type_combo.setCurrentIndex(1)
+        app.processEvents()
+        if not w.data_cache:
+            w.load_data_from_folder(EMISSION_DIR)
+        w._do_plot()
+        w._update_integration_output()
+        app.processEvents()
+        tbl = w.integ_table
+        rows = tbl.rowCount()
+        assert rows >= 3, f"需要 ≥3 行数据才能区分「整表」与「选中」，实际 {rows}"
+        assert isinstance(tbl, __import__('gui_plot').CopyableTableWidget), \
+            "积分表应换成 CopyableTableWidget，否则 Ctrl+C 复制不了"
+
+        # 全选 → Ctrl+C → 整表（表头 + N 行）
+        tbl.setFocus()
+        tbl.selectAll()
+        app.processEvents()
+        QApplication.clipboard().clear()
+        QTest.keySequence(tbl, QKeySequence.Copy)
+        app.processEvents()
+        full = QApplication.clipboard().text()
+        assert full, "Ctrl+C 没有写进剪贴板（原生表格只会复制一格，且常为空）"
+        assert len(full.splitlines()) == rows + 1, \
+            f"全选复制应为表头 + {rows} 行，实际 {len(full.splitlines())}"
+        assert '\t' in full.splitlines()[0], "应为制表符分隔"
+
+        # 只选 2 行 → Ctrl+C → 只有 2 行 + 表头
+        tbl.clearSelection()
+        tbl.setFocus()
+        for r in range(2):
+            tbl.selectRow(r)
+        app.processEvents()
+        QApplication.clipboard().clear()
+        QTest.keySequence(tbl, QKeySequence.Copy)
+        app.processEvents()
+        part = QApplication.clipboard().text()
+        assert len(part.splitlines()) == 3, \
+            f"选中 2 行应复制 3 行（含表头），实际 {len(part.splitlines())}"
+
+        # 「复制结果」按钮也要遵循选中范围
+        tbl.clearSelection()
+        tbl.selectRow(0)
+        app.processEvents()
+        QApplication.clipboard().clear()
+        w.integ_copy_btn.click()
+        app.processEvents()
+        one = QApplication.clipboard().text()
+        assert len(one.splitlines()) == 2, \
+            f"选中 1 行时按钮应只复制 1 行，实际 {len(one.splitlines())}"
+
+        # 无选中 → 整表（与旧行为一致）
+        tbl.clearSelection()
+        app.processEvents()
+        QApplication.clipboard().clear()
+        w.integ_copy_btn.click()
+        app.processEvents()
+        whole = QApplication.clipboard().text()
+        assert len(whole.splitlines()) == rows + 1, \
+            f"无选中时应复制整表 {rows} 行，实际 {len(whole.splitlines())}"
+    finally:
+        w.close()
+        del w
+
+
+@check("积分区间：与数据不重叠时自动校正，结果表不再静默为空（v5.0.8）")
+def t_integ_range_autofit():
+    """700–800 nm 的谱配着出厂 450–550 nm 的积分区间 → 下方结果表永远是空的，
+    「复制结果」与「⤓ CSV」两个按钮此时都只弹"暂无结果"。用户以为积分功能坏了。
+
+    修法保守：只在**完全无重叠**或**远超数据范围**时改；用户手填的窄区间不动。
+    """
+    import tempfile
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
+
+    def make_spectrum(folder, lo, hi, names=('R1', 'R2')):
+        os.makedirs(folder, exist_ok=True)
+        wl = np.arange(lo, hi + 1, 1.0)
+        y = 1e5 * np.exp(-((wl - (lo + hi) / 2) ** 2) / (2 * 20.0 ** 2)) + 500
+        for nm in names:
+            with open(os.path.join(folder, f'{nm}.csv'), 'w',
+                      encoding='gbk', newline='') as f:
+                f.write("Summary\n[Software Information]\n")
+                f.write("Software Name:,LabSolutions RF\nVersion:,1.11\n")
+                f.write("[Data Information]\n")
+                f.write(f"Sample Name:,{nm}\nSample ID\nOption\nAnalyst\n")
+                f.write("Date/Time:,07/29/2026 06:14:46 PM\nComments\n")
+                f.write("[Instrument Information]\n")
+                f.write("Instrument Name:,RF-6000\n")
+                f.write("Instrument Type:,RF-6000 Series\n")
+                f.write("Model (S/N):,RF-6000 (A40245400432SA)\n\n")
+                f.write("Parameter\n[Measurement]\nSpectrum Type:,Emission\n")
+                f.write("EX Wavelength:,520.0 nm\n")
+                f.write(f"EM Wavelength Start:,{lo:.1f} nm\n")
+                f.write(f"EM Wavelength End:,{hi:.1f} nm\n")
+                f.write("Data Interval:,1.0 nm\nScan Speed:,2000 nm/min\n")
+                f.write("[Instrument]\nEX Bandwidth:,5.0 nm\n")
+                f.write("EM Bandwidth:,5.0 nm\nSensitivity:,Low\n")
+                f.write("[Attachment]\nAttachment:,None\n")
+                f.write("[Auto Print]\nAuto Print:,No\nReport File:,\n\n")
+                f.write(f"{nm} - CorrectionData\nWavelength nm.,Intensity\n")
+                for a, b in zip(wl, y):
+                    f.write(f"{a:.1f},{b:.3f}\n")
+        return folder
+
+    msgs = []
+    orig_warn = QMessageBox.warning
+    QMessageBox.warning = staticmethod(
+        lambda *a, **k: msgs.append(a[2] if len(a) > 2 else ''))
+    tmp_root = tempfile.mkdtemp(prefix='integ_range_')
+    try:
+        app, w = _make_gui()
+        try:
+            w.spectrum_type_combo.setCurrentIndex(1)      # 发射
+            app.processEvents()
+
+            # ① 出厂区间与数据完全无重叠 → 自动校正，表里有数
+            w.integ_min_spin.setValue(450)
+            w.integ_max_spin.setValue(550)
+            folder = make_spectrum(os.path.join(tmp_root, 'far'), 600, 750)
+            w.load_data_from_folder(folder)
+            w._do_plot()
+            w._update_integration_output()
+            app.processEvents()
+            lo, hi = w.integ_min_spin.value(), w.integ_max_spin.value()
+            assert 580 <= lo <= 620 and 730 <= hi <= 780, \
+                f"积分区间应被校正到数据范围 600–750，实际 {lo}–{hi}"
+            rows = w.integ_table.rowCount()
+            assert rows == 2, f"校正后结果表应有 2 行，实际 {rows}"
+            # 复制与导出此时都该可用
+            assert w._integration_tsv().strip(), "校正后复制文本不应为空"
+
+            # ② 用户手填、落在数据内的窄区间 → 不许覆盖
+            w2 = _make_gui()[1]
+            try:
+                w2.spectrum_type_combo.setCurrentIndex(1)
+                app.processEvents()
+                w2.integ_min_spin.setValue(620)
+                w2.integ_max_spin.setValue(640)
+                w2.load_data_from_folder(os.path.join(tmp_root, 'far'))
+                w2._do_plot()
+                w2._update_integration_output()
+                app.processEvents()
+                assert abs(w2.integ_min_spin.value() - 620) < 0.01, \
+                    f"用户填的 620 被改成了 {w2.integ_min_spin.value()}"
+                assert abs(w2.integ_max_spin.value() - 640) < 0.01, \
+                    f"用户填的 640 被改成了 {w2.integ_max_spin.value()}"
+            finally:
+                w2.close()
+                del w2
+
+            # ③ 区间填反 → 保持"无效"，不替他猜
+            w3 = _make_gui()[1]
+            try:
+                w3.spectrum_type_combo.setCurrentIndex(1)
+                app.processEvents()
+                w3.integ_min_spin.setValue(700)
+                w3.integ_max_spin.setValue(600)
+                w3.load_data_from_folder(os.path.join(tmp_root, 'far'))
+                w3._do_plot()
+                w3._update_integration_output()
+                app.processEvents()
+                assert w3.integ_min_spin.value() > w3.integ_max_spin.value(), \
+                    "填反的区间被自动改了——应保留并提示「积分范围无效」"
+            finally:
+                w3.close()
+                del w3
+        finally:
+            w.close()
+            del w
+    finally:
+        QMessageBox.warning = orig_warn
+
+
 def main():
     strict = '--strict' in sys.argv
 

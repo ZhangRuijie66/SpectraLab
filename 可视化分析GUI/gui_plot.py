@@ -15,8 +15,10 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from scipy.signal import find_peaks
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QMessageBox, QFileDialog, QApplication, QProgressDialog, QTableWidgetItem,
+    QTableWidget,
 )
 
 from gui_components import PlotWorker
@@ -44,6 +46,85 @@ class NumericTableItem(QTableWidgetItem):
             return float(self.text()) < float(other.text())
         except (TypeError, ValueError):
             return super().__lt__(other)
+
+
+class CopyableTableWidget(QTableWidget):
+    """支持「框选后 Ctrl+C 复制选中行」的只读结果表（v5.0.8）。
+
+    **为什么需要它**：积分结果表的 tooltip 与帮助正文都写着「框选后 Ctrl+C
+    复制选中行」，但 `QTableWidget` **没有**内置复制——实测框选全部行按 Ctrl+C
+    只把当前单元格文本（4 个字符 `1000`）放进剪贴板，选中多行时也只有一格。
+    「复制结果」按钮能拿到整张表，所以以前没人发现这个承诺是空的。
+
+    这里补三件事：
+    * Ctrl+C / Ctrl+Insert → 复制**选中行**（制表符分隔、按表格当前显示顺序，
+      即「点了表头排序之后」的顺序，和用户眼睛看到的一致）；
+    * 没有选中行时退化为整张表（与「复制结果」按钮同口径），不静默失败；
+    * Ctrl+A 全选行（默认只选单元格，复制出来仍是一格）。
+
+    只读表不参与编辑，因此不需要额外放行任何编辑类快捷键。
+    """
+
+    _COPY_KEYS = (QKeySequence.Copy, QKeySequence("Ctrl+Insert"))
+    _SELECT_ALL_KEYS = (QKeySequence.SelectAll,)
+
+    def keyPressEvent(self, event):
+        try:
+            seq = QKeySequence(event.modifiers() | event.key())
+        except Exception:
+            seq = QKeySequence()
+        if seq in self._COPY_KEYS:
+            self.copy_selection_to_clipboard()
+            event.accept()
+            return
+        if seq in self._SELECT_ALL_KEYS:
+            self.selectAll()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _row_texts(self, rows):
+        """把若干行拼成制表符文本（含表头，可直接粘进 Excel/Origin）。"""
+        heads = []
+        for c in range(self.columnCount()):
+            hdr = self.horizontalHeaderItem(c)
+            heads.append(hdr.text() if hdr is not None else "")
+        lines = ["\t".join(heads)]
+        for r in rows:
+            cells = []
+            for c in range(self.columnCount()):
+                item = self.item(r, c)
+                cells.append(item.text() if item is not None else "")
+            lines.append("\t".join(cells))
+        return "\n".join(lines)
+
+    def selected_rows(self):
+        """选中行号（升序）。按行选择模式下 selectionModel 更可靠。"""
+        try:
+            rows = sorted({idx.row()
+                           for idx in self.selectionModel().selectedRows()})
+            if rows:
+                return rows
+        except Exception:
+            pass
+        # 回退：单元格级选择（用户在单元格模式下框选）
+        try:
+            return sorted({idx.row() for idx in self.selectedIndexes()})
+        except Exception:
+            return []
+
+    def copy_selection_to_clipboard(self):
+        """复制选中行；没选中就复制整表。返回复制的行数（0 = 表为空）。"""
+        if self.rowCount() == 0:
+            QMessageBox.warning(self, "提示", "暂无可复制的积分结果，请先加载数据")
+            return 0
+        rows = self.selected_rows() or list(range(self.rowCount()))
+        text = self._row_texts(rows).strip()
+        if not text:
+            QMessageBox.warning(self, "提示", "暂无可复制的积分结果，请先加载数据")
+            return 0
+        QApplication.clipboard().setText(text)
+        return len(rows)
 
 
 class PlotMixin:
@@ -1175,26 +1256,61 @@ class PlotMixin:
             lines.append("\t".join(cells))
         return "\n".join(lines)
 
-    def _copy_integration_results(self):
-        """复制积分结果表到剪贴板（制表符分隔，可直接粘贴进 Excel/Origin）"""
+    def _copy_integration_results(self, _checked=False):
+        """复制积分结果表到剪贴板（制表符分隔，可直接粘贴进 Excel/Origin）
+
+        v5.0.8：改为与表格的 Ctrl+C 同一实现——**有选中行就只复制选中行**，
+        没选中才复制整表。以前无论选没选都复制整表，用户框选几行再点「复制结果」
+        会得到全部行，与「框选后 Ctrl+C 复制选中行」的说法不一致。
+
+        `_checked` 只用来吞掉 ``clicked`` / ``triggered`` 带来的布尔实参
+        （PyQt 对只收 self 的槽会自动截断，这里显式接住是为了让「显式带参调用」
+        同样不炸——实测直接 `fn(False)` 在旧签名下会抛 TypeError）。
+        """
         table = getattr(self, 'integ_table', None)
         if table is None or table.rowCount() == 0:
             QMessageBox.warning(self, "提示", "暂无可复制的积分结果，请先加载数据")
             return
-        text = self._integration_tsv().strip()
-        if not text:
-            QMessageBox.warning(self, "提示", "暂无可复制的积分结果，请先加载数据")
+        n = table.copy_selection_to_clipboard()
+        if not n:
             return
-        QApplication.clipboard().setText(text)
-        self.status_bar.showMessage(
-            f"已复制 {table.rowCount()} 行积分结果到剪贴板（可直接粘进 Excel）")
+        total = table.rowCount()
+        if n == total:
+            self.status_bar.showMessage(
+                f"已复制 {n} 行积分结果到剪贴板（可直接粘进 Excel）")
+        else:
+            self.status_bar.showMessage(
+                f"已复制选中的 {n} 行（全表 {total} 行）积分结果到剪贴板")
+
+    @staticmethod
+    def _resolve_save_dir(save_dir):
+        """把槽函数收到的 ``save_dir`` 归一到「真正要用的目录」或 None（v5.0.8）。
+
+        **为什么需要这一层**：``QPushButton.clicked`` 会带一个 ``bool`` 实参
+        （菜单的 ``triggered`` 同样），PyQt 只对「只收 self 的槽」截断参数，
+        对 ``save_dir=None`` 这种带可选参数的槽会把 ``False`` **塞进 save_dir**。
+        于是 ``if save_dir is None`` 判断失效，而 ``if not save_dir: return``
+        又静默返回——现象就是**点「⤓ CSV」毫无反应**：不弹目录框、不报错、
+        状态栏也不动（v5.0.7 及以前一直如此，v5.0.8 修）。
+
+        非字符串（含 False / True / None）一律视为「没有预置目录」，交给调用方
+        弹目录选择框；只有真正的路径字符串才直接用。
+        """
+        if isinstance(save_dir, str) and save_dir.strip():
+            return save_dir
+        return None
 
     def _export_integration_csv(self, save_dir=None):
         """把积分结果导出为 CSV（v4.26）。
 
         `save_dir=None`（按钮点击）时弹目录选择框；测试可传目录直接落地。
         编码用 utf-8-sig：Excel 双击打开中文不乱码。
+
+        v5.0.8：先用 `_resolve_save_dir` 过滤掉 ``clicked`` 带来的布尔实参——
+        否则按钮点击时 ``save_dir`` 变成 ``False``，整条导出链路静默返回，
+        用户看到的就是「点 CSV 没反应」。
         """
+        save_dir = self._resolve_save_dir(save_dir)
         table = getattr(self, 'integ_table', None)
         results = getattr(self, '_last_integration_results', None)
         if table is None or not results or table.rowCount() == 0:
@@ -1471,7 +1587,12 @@ class PlotMixin:
             log_exception("可比性预检失败", e)
 
     def _export_compare_csv(self, save_dir=None):
-        """把点线图的取点结果导出 CSV（与积分结果导出一致的习惯，v4.37）。"""
+        """把点线图的取点结果导出 CSV（与积分结果导出一致的习惯，v4.37）。
+
+        v5.0.8：同 `_export_integration_csv`，先过滤 ``clicked`` 的布尔实参，
+        否则「数据比较」的 CSV 按钮同样是点了毫无反应。
+        """
+        save_dir = self._resolve_save_dir(save_dir)
         res = getattr(self, '_last_compare_result', None)
         if not res or not res.get('points'):
             QMessageBox.warning(self, "提示", "暂无可导出的数据比较结果，请先点「数据比较」")
